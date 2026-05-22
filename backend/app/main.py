@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.ai_config import router as ai_config_router
 from app.case_imports import router as case_imports_router
+from app.case_reviews import router as case_reviews_router
 from app.config import Settings, get_settings
 from app.database import Database
 from app.gitlab import router as gitlab_router
@@ -95,7 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def dashboard_summary() -> dict[str, object]:
         return {
             "workspace": "QualiForge Lab",
-            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping 与历史用例导入",
+            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping、历史用例导入与用例评审治理",
             "work_items": [
                 {
                     "issue": "#1",
@@ -140,6 +141,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "blocked_by": ["#2", "#3", "#5"],
                 },
                 {
+                    "issue": "#7",
+                    "title": "评审候选用例并沉淀正式用例库",
+                    "status": "done",
+                    "owner": "Case Governance",
+                    "blocked_by": ["#6"],
+                },
+                {
+                    "issue": "#8",
+                    "title": "基于代码上下文生成候选测试用例",
+                    "status": "ready",
+                    "owner": "AI Generation",
+                    "blocked_by": ["#3", "#4", "#5", "#7"],
+                },
+                {
                     "issue": "#12",
                     "title": "生成、确认并导出发布测试报告",
                     "status": "blocked",
@@ -168,6 +183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(gitlab_router)
     app.include_router(modules_router)
     app.include_router(case_imports_router)
+    app.include_router(case_reviews_router)
 
     return app
 

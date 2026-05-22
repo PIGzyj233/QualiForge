@@ -651,6 +651,10 @@ button {
   grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
+.review-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .icon-button.subtle {
   background: var(--panel-muted);
 }
@@ -662,7 +666,7 @@ button {
 
 .audit-row {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr) 220px;
+  grid-template-columns: minmax(76px, 112px) minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   min-height: 44px;
@@ -676,6 +680,11 @@ button {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.audit-row small {
+  grid-column: 2;
+  overflow-wrap: anywhere;
 }
 
 .empty-state {

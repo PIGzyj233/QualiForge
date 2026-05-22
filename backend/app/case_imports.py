@@ -35,6 +35,14 @@ class ImportDraftStatus(StrEnum):
     imported = "imported"
 
 
+class TestCaseStatus(StrEnum):
+    draft = "draft"
+    pending_review = "pending_review"
+    approved = "approved"
+    rejected = "rejected"
+    archived = "archived"
+
+
 class ImportBatch(Base):
     __tablename__ = "import_batches"
 
@@ -96,6 +104,10 @@ class TestCase(Base):
     risk: Mapped[str] = mapped_column(String(80), default="medium", nullable=False)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     custom_fields: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default=TestCaseStatus.draft.value, nullable=False, index=True)
+    submitted_by: Mapped[str] = mapped_column(String(254), default="", nullable=False)
+    approved_by: Mapped[str] = mapped_column(String(254), default="", nullable=False)
+    current_revision_number: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
 
@@ -175,6 +187,10 @@ class TestCaseResponse(BaseModel):
     risk: str
     tags: list[str]
     custom_fields: dict
+    status: str
+    submitted_by: str
+    approved_by: str
+    current_revision_number: int
     created_at: datetime
     updated_at: datetime
 
@@ -447,6 +463,10 @@ def test_case_to_response(test_case: TestCase) -> TestCaseResponse:
         risk=test_case.risk,
         tags=test_case.tags,
         custom_fields=test_case.custom_fields,
+        status=test_case.status,
+        submitted_by=test_case.submitted_by,
+        approved_by=test_case.approved_by,
+        current_revision_number=test_case.current_revision_number,
         created_at=test_case.created_at,
         updated_at=test_case.updated_at,
     )
@@ -769,6 +789,10 @@ def bulk_import_test_cases(workspace_id: str, project_id: str, batch_id: str, db
                 risk=draft.risk,
                 tags=draft.tags,
                 custom_fields=draft.custom_fields,
+                status=TestCaseStatus.approved.value,
+                submitted_by=actor_email,
+                approved_by=actor_email,
+                current_revision_number=1,
             )
         )
         draft.status = ImportDraftStatus.imported.value
@@ -797,6 +821,7 @@ def list_test_cases(
     project_id: str,
     db: DbSession,
     module_id: str | None = Query(default=None),
+    case_status: TestCaseStatus | None = Query(default=None, alias="status"),
 ) -> list[TestCaseResponse]:
     get_workspace_or_404(db, workspace_id)
     get_project_or_404(db, workspace_id, project_id)
@@ -807,4 +832,6 @@ def list_test_cases(
     )
     if module_id:
         statement = statement.where(TestCase.module_id == module_id)
+    if case_status:
+        statement = statement.where(TestCase.status == case_status.value)
     return [test_case_to_response(test_case) for test_case in db.scalars(statement).all()]

@@ -19,9 +19,10 @@ def test_dashboard_summary_contains_issue_one() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["mvp_stage"] == "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping 与历史用例导入"
+    assert payload["mvp_stage"] == "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping、历史用例导入与用例评审治理"
     assert payload["work_items"][0]["issue"] == "#1"
     assert payload["work_items"][2]["issue"] == "#3"
+    assert payload["work_items"][6]["issue"] == "#7"
 
 
 def test_local_login_accepts_private_deployment_email() -> None:

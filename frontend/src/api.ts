@@ -284,6 +284,10 @@ export type TestCaseRecord = {
   risk: string;
   tags: string[];
   custom_fields: Record<string, string>;
+  status: "draft" | "pending_review" | "approved" | "rejected" | "archived";
+  submitted_by: string;
+  approved_by: string;
+  current_revision_number: number;
   created_at: string;
   updated_at: string;
 };
@@ -291,6 +295,55 @@ export type TestCaseRecord = {
 export type ImportResultRecord = {
   batch: ImportBatchRecord;
   imported_count: number;
+};
+
+export type ReviewSettingsRecord = {
+  id: string;
+  workspace_id: string;
+  allow_self_review: boolean;
+  require_review_on_case_update: boolean;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CaseReviewAction = "submitted" | "approved" | "rejected" | "changes_requested" | "commented" | "edited";
+
+export type CaseReviewRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  test_case_id: string;
+  revision_id: string | null;
+  actor_email: string;
+  action: CaseReviewAction;
+  comment: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  created_at: string;
+};
+
+export type CaseRevisionRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  test_case_id: string;
+  revision_number: number;
+  content_snapshot: Record<string, unknown>;
+  change_summary: string;
+  created_by: string;
+  created_at: string;
+};
+
+export type TestCasePayload = {
+  module_id?: string | null;
+  title: string;
+  steps: string[];
+  expected_result: string;
+  priority: string;
+  risk: string;
+  tags: string[];
+  custom_fields: Record<string, string>;
 };
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -773,7 +826,91 @@ export function bulkImportTestCases(workspaceId: string, projectId: string, batc
   );
 }
 
-export function listTestCases(workspaceId: string, projectId: string, moduleId?: string): Promise<TestCaseRecord[]> {
-  const suffix = moduleId ? `?module_id=${encodeURIComponent(moduleId)}` : "";
+export function listTestCases(workspaceId: string, projectId: string, moduleId?: string, status?: TestCaseRecord["status"]): Promise<TestCaseRecord[]> {
+  const params = new URLSearchParams();
+  if (moduleId) params.set("module_id", moduleId);
+  if (status) params.set("status", status);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
   return requestJson<TestCaseRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/test-cases${suffix}`);
+}
+
+export function getReviewSettings(workspaceId: string): Promise<ReviewSettingsRecord> {
+  return requestJson<ReviewSettingsRecord>(`/workspaces/${workspaceId}/review-settings`);
+}
+
+export function updateReviewSettings(
+  workspaceId: string,
+  actorEmail: string,
+  payload: { allow_self_review: boolean; require_review_on_case_update: boolean }
+): Promise<ReviewSettingsRecord> {
+  return requestJson<ReviewSettingsRecord>(`/workspaces/${workspaceId}/review-settings?actor_email=${encodeURIComponent(actorEmail)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function createTestCase(
+  workspaceId: string,
+  projectId: string,
+  actorEmail: string,
+  payload: TestCasePayload
+): Promise<TestCaseRecord> {
+  return requestJson<TestCaseRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/test-cases?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function updateTestCase(
+  workspaceId: string,
+  projectId: string,
+  caseId: string,
+  actorEmail: string,
+  payload: Partial<TestCasePayload>
+): Promise<TestCaseRecord> {
+  return requestJson<TestCaseRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/test-cases/${caseId}?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function submitTestCaseReview(workspaceId: string, projectId: string, caseId: string, actorEmail: string): Promise<TestCaseRecord> {
+  return requestJson<TestCaseRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/test-cases/${caseId}/submit-review?actor_email=${encodeURIComponent(actorEmail)}`,
+    { method: "POST" }
+  );
+}
+
+export function reviewTestCase(
+  workspaceId: string,
+  projectId: string,
+  caseId: string,
+  actorEmail: string,
+  payload: {
+    action: CaseReviewAction;
+    comment: string;
+    edits?: Partial<TestCasePayload>;
+  }
+): Promise<CaseReviewRecord> {
+  return requestJson<CaseReviewRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/test-cases/${caseId}/reviews?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function listCaseReviews(workspaceId: string, projectId: string, caseId: string): Promise<CaseReviewRecord[]> {
+  return requestJson<CaseReviewRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/test-cases/${caseId}/reviews`);
+}
+
+export function listCaseRevisions(workspaceId: string, projectId: string, caseId: string): Promise<CaseRevisionRecord[]> {
+  return requestJson<CaseRevisionRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/test-cases/${caseId}/revisions`);
 }

@@ -23,6 +23,7 @@ The current implementation covers the first MVP platform slice:
 - GitHub issue #4: Workspace-owned GitLab token storage, read-only repository binding, background mirror sync jobs, and isolated Git Sandbox paths with size, timeout, and symlink-escape guards.
 - GitHub issue #5: Project modules/function domains and ModuleMapping rules for directories, files, APIs, services, config keys, database migrations, and keywords.
 - GitHub issue #6: CSV/XLSX historical test case import batches with preserved raw files, AI-normalized drafts, preview bulk edits, review submission, and WorkspaceOwner bulk import into the formal case library.
+- GitHub issue #7: test case review governance with draft, pending review, approved, rejected, and archived states, revision snapshots, comments, edit requests, approval policy, and configurable self-review/update-review rules.
 
 ## Local Development
 
@@ -68,6 +69,16 @@ Useful API paths:
 - `POST /api/workspaces/{workspace_id}/projects/{project_id}/imports/{batch_id}/submit-review?actor_email=owner@qualiforge.local`
 - `POST /api/workspaces/{workspace_id}/projects/{project_id}/imports/{batch_id}/bulk-import?actor_email=owner@qualiforge.local`
 - `GET /api/workspaces/{workspace_id}/projects/{project_id}/test-cases`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/test-cases?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}`
+- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}?actor_email=owner@qualiforge.local`
+- `DELETE /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/review-settings`
+- `PUT /api/workspaces/{workspace_id}/review-settings?actor_email=owner@qualiforge.local`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}/submit-review?actor_email=owner@qualiforge.local`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}/reviews?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}/reviews`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}/revisions`
 
 Frontend:
 
