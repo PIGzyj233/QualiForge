@@ -28,6 +28,7 @@ The current implementation covers the first MVP platform slice:
 - GitHub issue #9: Diff-based AI test suggestions with source evidence, mapping-rule hits, related formal cases, feedback, draft AI case candidates, and temporary or formal PlanItem creation.
 - GitHub issue #10: release/regression/smoke/feature/custom TestPlan creation with version scope, owner, conclusion placeholder, formal case snapshots, AI temporary items, manual items, and audit-backed scope changes.
 - GitHub issue #11: PlanItem execution tracking with not-run/pass/fail/block/skip states, assignee, actual result, failure reason, defect links, uploaded evidence, executor timestamps, progress summary, and failure/blocking filters.
+- GitHub issue #12: release report drafts with Summary, Version & Diff, Scope, Execution Statistics, Failed/Blocked Items, Risk Assessment, AI Notes, owner-confirmed Release Decision, Appendix, Web viewing, Markdown export, and audit trails.
 
 ## Local Development
 
@@ -73,6 +74,11 @@ Useful API paths:
 - `POST /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/items?actor_email=owner@qualiforge.local`
 - `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/items/{item_id}/execution?actor_email=owner@qualiforge.local`
 - `POST /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/items/{item_id}/evidence?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/reports`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/reports/draft?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/reports/{report_id}`
+- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/reports/{report_id}/decision?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/reports/{report_id}/markdown`
 - `GET /api/workspaces/{workspace_id}/projects/{project_id}/modules`
 - `POST /api/workspaces/{workspace_id}/projects/{project_id}/modules?actor_email=owner@qualiforge.local`
 - `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/modules/{module_id}?actor_email=owner@qualiforge.local`

@@ -328,6 +328,26 @@ export type PlanItemRecord = {
   updated_at: string;
 };
 
+export type ReleaseReportRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  plan_id: string;
+  title: string;
+  status: "draft" | "confirmed";
+  version_ref: string;
+  sections: Record<string, unknown>;
+  ai_notes: string[];
+  release_suggestion: string;
+  release_decision: string;
+  decision_comment: string;
+  confirmed_by: string | null;
+  confirmed_at: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type MappingRuleType =
   | "directory"
   | "file"
@@ -937,6 +957,41 @@ export function uploadPlanItemEvidence(
       body
     }
   );
+}
+
+export function listReleaseReports(workspaceId: string, projectId: string, planId: string): Promise<ReleaseReportRecord[]> {
+  return requestJson<ReleaseReportRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/plans/${planId}/reports`);
+}
+
+export function createReleaseReportDraft(workspaceId: string, projectId: string, planId: string, actorEmail: string): Promise<ReleaseReportRecord> {
+  return requestJson<ReleaseReportRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/plans/${planId}/reports/draft?actor_email=${encodeURIComponent(actorEmail)}`,
+    { method: "POST" }
+  );
+}
+
+export function confirmReleaseReportDecision(
+  workspaceId: string,
+  projectId: string,
+  reportId: string,
+  actorEmail: string,
+  payload: { release_decision: string; decision_comment?: string }
+): Promise<ReleaseReportRecord> {
+  return requestJson<ReleaseReportRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/reports/${reportId}/decision?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export async function exportReleaseReportMarkdown(workspaceId: string, projectId: string, reportId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/projects/${projectId}/reports/${reportId}/markdown`);
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+  return response.text();
 }
 
 export function listModules(workspaceId: string, projectId: string): Promise<ProjectModuleRecord[]> {

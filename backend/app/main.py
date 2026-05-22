@@ -17,6 +17,7 @@ from app.diff_analysis import router as diff_analysis_router
 from app.gitlab import router as gitlab_router
 from app.health import check_redis
 from app.modules import router as modules_router
+from app.release_reports import router as release_reports_router
 from app.test_plans import router as test_plans_router
 from app.workspaces import router as workspace_router
 
@@ -99,7 +100,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def dashboard_summary() -> dict[str, object]:
         return {
             "workspace": "QualiForge Lab",
-            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping、历史用例导入、用例评审治理、Diff 决策分析、AI 测试建议、发布测试计划与执行证据",
+            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping、历史用例导入、用例评审治理、Diff 决策分析、AI 测试建议、发布测试计划、执行证据与发布报告",
             "work_items": [
                 {
                     "issue": "#1",
@@ -181,7 +182,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {
                     "issue": "#12",
                     "title": "生成、确认并导出发布测试报告",
-                    "status": "next",
+                    "status": "done",
                     "owner": "Release",
                     "blocked_by": ["#11", "#3"],
                 },
@@ -211,6 +212,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(diff_analysis_router)
     app.include_router(test_plans_router)
     app.include_router(ai_suggestions_router)
+    app.include_router(release_reports_router)
 
     return app
 
