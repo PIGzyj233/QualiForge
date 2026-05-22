@@ -132,13 +132,15 @@ import {
 const SESSION_KEY = "qualiforge.session";
 
 const navItems = [
-  { label: "工作台", icon: LayoutDashboard, active: true },
-  { label: "项目", icon: GitBranch, active: false },
-  { label: "用例库", icon: ClipboardCheck, active: false },
-  { label: "评审", icon: Users, active: false },
-  { label: "报告", icon: FileText, active: false },
-  { label: "设置", icon: ShieldCheck, active: false }
-];
+  { key: "workbench", label: "工作台", icon: LayoutDashboard, targetId: "nav-workbench" },
+  { key: "projects", label: "项目", icon: GitBranch, targetId: "nav-projects" },
+  { key: "library", label: "用例库", icon: ClipboardCheck, targetId: "nav-library" },
+  { key: "reviews", label: "评审", icon: Users, targetId: "nav-reviews" },
+  { key: "reports", label: "报告", icon: FileText, targetId: "nav-reports" },
+  { key: "settings", label: "设置", icon: ShieldCheck, targetId: "nav-settings" }
+] as const;
+
+type NavKey = (typeof navItems)[number]["key"];
 
 const statusLabel: Record<string, string> = {
   done: "已完成",
@@ -335,6 +337,7 @@ function Workbench({ session, onSignOut }: { session: Session; onSignOut: () => 
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeNav, setActiveNav] = useState<NavKey>("workbench");
 
   async function refresh() {
     setLoading(true);
@@ -359,6 +362,14 @@ function Workbench({ session, onSignOut }: { session: Session; onSignOut: () => 
     return Object.entries(health.services).map(([name, service]) => ({ name, ...service }));
   }, [health]);
 
+  function handleNavClick(item: (typeof navItems)[number]) {
+    setActiveNav(item.key);
+    const target = document.getElementById(item.targetId);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="主导航">
@@ -372,8 +383,15 @@ function Workbench({ session, onSignOut }: { session: Session; onSignOut: () => 
         <nav>
           {navItems.map((item) => {
             const Icon = item.icon;
+            const isActive = activeNav === item.key;
             return (
-              <button className={item.active ? "nav-button active" : "nav-button"} key={item.label} type="button">
+              <button
+                aria-current={isActive ? "page" : undefined}
+                className={isActive ? "nav-button active" : "nav-button"}
+                key={item.key}
+                onClick={() => handleNavClick(item)}
+                type="button"
+              >
                 <Icon size={18} aria-hidden="true" />
                 <span>{item.label}</span>
               </button>
@@ -383,7 +401,7 @@ function Workbench({ session, onSignOut }: { session: Session; onSignOut: () => 
       </aside>
 
       <main className="workspace">
-        <header className="topbar">
+        <header className="topbar" id="nav-workbench">
           <div>
             <span className="eyebrow">{session.workspace.name}</span>
             <h1>工作台</h1>
@@ -462,16 +480,26 @@ function Workbench({ session, onSignOut }: { session: Session; onSignOut: () => 
               </div>
             </section>
 
-            <WorkspaceAdmin session={session} />
-            <GitLabSandboxAdmin session={session} />
-            <ModuleMappingAdmin session={session} />
-            <DiffAnalysisAdmin session={session} />
-            <AISuggestionAdmin session={session} />
-            <TestPlanAdmin session={session} />
-            <ReleaseReportAdmin session={session} />
-            <CaseImportAdmin session={session} />
-            <CaseReviewAdmin session={session} />
-            <AIConfigAdmin session={session} />
+            <div className="nav-section-group" id="nav-projects">
+              <WorkspaceAdmin session={session} />
+              <GitLabSandboxAdmin session={session} />
+              <ModuleMappingAdmin session={session} />
+              <DiffAnalysisAdmin session={session} />
+            </div>
+            <div className="nav-section-group" id="nav-library">
+              <AISuggestionAdmin session={session} />
+              <TestPlanAdmin session={session} />
+              <CaseImportAdmin session={session} />
+            </div>
+            <div className="nav-section-group" id="nav-reviews">
+              <CaseReviewAdmin session={session} />
+            </div>
+            <div className="nav-section-group" id="nav-reports">
+              <ReleaseReportAdmin session={session} />
+            </div>
+            <div className="nav-section-group" id="nav-settings">
+              <AIConfigAdmin session={session} />
+            </div>
           </div>
 
           <aside className="side-column" aria-label="待办概览">

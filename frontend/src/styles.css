@@ -337,6 +337,16 @@ button {
   gap: 16px;
 }
 
+.nav-section-group {
+  display: grid;
+  gap: 16px;
+  scroll-margin-top: 16px;
+}
+
+#nav-workbench {
+  scroll-margin-top: 16px;
+}
+
 .section-block {
   overflow: hidden;
 }
