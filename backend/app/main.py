@@ -12,6 +12,7 @@ from app.case_imports import router as case_imports_router
 from app.case_reviews import router as case_reviews_router
 from app.config import Settings, get_settings
 from app.database import Database
+from app.diff_analysis import router as diff_analysis_router
 from app.gitlab import router as gitlab_router
 from app.health import check_redis
 from app.modules import router as modules_router
@@ -96,7 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def dashboard_summary() -> dict[str, object]:
         return {
             "workspace": "QualiForge Lab",
-            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping、历史用例导入与用例评审治理",
+            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping、历史用例导入、用例评审治理与 Diff 决策分析",
             "work_items": [
                 {
                     "issue": "#1",
@@ -149,10 +150,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
                 {
                     "issue": "#8",
-                    "title": "基于代码上下文生成候选测试用例",
-                    "status": "ready",
-                    "owner": "AI Generation",
+                    "title": "运行 tag diff 分析并展示模块影响",
+                    "status": "done",
+                    "owner": "Diff Analysis",
                     "blocked_by": ["#3", "#4", "#5", "#7"],
+                },
+                {
+                    "issue": "#9",
+                    "title": "基于 Diff 生成 AI 测试建议和候选用例",
+                    "status": "next",
+                    "owner": "AI Generation",
+                    "blocked_by": ["#8", "#3"],
                 },
                 {
                     "issue": "#12",
@@ -184,6 +192,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(modules_router)
     app.include_router(case_imports_router)
     app.include_router(case_reviews_router)
+    app.include_router(diff_analysis_router)
 
     return app
 

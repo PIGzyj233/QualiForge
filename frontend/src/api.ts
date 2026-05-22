@@ -191,6 +191,64 @@ export type JobRecord = {
   finished_at: string | null;
 };
 
+export type DiffStructureChange = {
+  type: string;
+  name: string;
+  state: string;
+  evidence?: string;
+};
+
+export type DiffFileChange = {
+  path: string;
+  old_path: string | null;
+  directory: string;
+  language: string;
+  change_type: "added" | "modified" | "deleted" | "renamed";
+  additions: number;
+  deletions: number;
+  module_id: string | null;
+  module_key: string | null;
+  module_name: string | null;
+  is_test_file: boolean;
+  is_migration: boolean;
+  structure_changes: DiffStructureChange[];
+  risk_level: "low" | "medium" | "high";
+  confidence: number;
+  evidence: string[];
+};
+
+export type DiffModuleImpact = {
+  module_id: string | null;
+  module_key: string;
+  module_name: string;
+  risk_level: "low" | "medium" | "high";
+  changed_file_count: number;
+  recommended_tests: string[];
+  evidence: string[];
+  confidence: number;
+};
+
+export type DiffAnalysisRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  repository_id: string;
+  job_id: string;
+  base_ref: string;
+  target_ref: string;
+  status: "running" | "succeeded" | "failed";
+  risk_level: "low" | "medium" | "high";
+  summary: string;
+  recommended_scope: string[];
+  file_changes: DiffFileChange[];
+  module_impacts: DiffModuleImpact[];
+  key_logs: string[];
+  error_summary: string;
+  created_by: string;
+  created_at: string;
+  completed_at: string | null;
+};
+
 export type MappingRuleType =
   | "directory"
   | "file"
@@ -638,6 +696,30 @@ export function syncRepository(workspaceId: string, repositoryId: string, actorE
 export function listJobs(workspaceId: string, repositoryId?: string): Promise<JobRecord[]> {
   const suffix = repositoryId ? `?repository_id=${encodeURIComponent(repositoryId)}` : "";
   return requestJson<JobRecord[]>(`/workspaces/${workspaceId}/jobs${suffix}`);
+}
+
+export function createDiffAnalysis(
+  workspaceId: string,
+  projectId: string,
+  actorEmail: string,
+  payload: { repository_id: string; base_ref: string; target_ref: string }
+): Promise<DiffAnalysisRecord> {
+  return requestJson<DiffAnalysisRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/diff-analyses?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function listDiffAnalyses(workspaceId: string, projectId: string, repositoryId?: string): Promise<DiffAnalysisRecord[]> {
+  const suffix = repositoryId ? `?repository_id=${encodeURIComponent(repositoryId)}` : "";
+  return requestJson<DiffAnalysisRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/diff-analyses${suffix}`);
+}
+
+export function getDiffAnalysis(workspaceId: string, projectId: string, analysisId: string): Promise<DiffAnalysisRecord> {
+  return requestJson<DiffAnalysisRecord>(`/workspaces/${workspaceId}/projects/${projectId}/diff-analyses/${analysisId}`);
 }
 
 export function listModules(workspaceId: string, projectId: string): Promise<ProjectModuleRecord[]> {

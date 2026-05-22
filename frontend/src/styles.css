@@ -611,22 +611,36 @@ button {
   background: #ffffff;
 }
 
+.impact-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 68px;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  background: #ffffff;
+}
+
 .data-row.wide {
   grid-template-columns: minmax(0, 1fr);
 }
 
 .data-row:last-child,
+.impact-row:last-child,
 .audit-row:last-child {
   border-bottom: 0;
 }
 
 .data-row strong,
+.impact-row strong,
 .audit-row strong {
   display: block;
   overflow-wrap: anywhere;
 }
 
-.data-row span {
+.data-row span,
+.impact-row span {
   display: block;
   margin-top: 3px;
   color: var(--muted);
@@ -634,13 +648,69 @@ button {
   line-height: 1.35;
 }
 
-.data-row small {
+.data-row small,
+.impact-row small {
   display: block;
   margin-top: 3px;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.decision-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.decision-panel strong {
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.decision-panel span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.decision-panel ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #324036;
+  line-height: 1.45;
+}
+
+.risk-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-width: 74px;
+  min-height: 28px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.risk-pill.low {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.risk-pill.medium {
+  color: #8c5a00;
+  background: var(--amber-soft);
+}
+
+.risk-pill.high {
+  color: var(--red);
+  background: var(--red-soft);
 }
 
 .git-row {
