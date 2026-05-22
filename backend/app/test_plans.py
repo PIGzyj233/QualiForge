@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, ForeignKey, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.case_imports import TestCase, TestCaseStatus
+from app.case_imports import TestCase, TestCaseStatus, safe_filename
 from app.database import Base
 from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
 
@@ -36,8 +37,7 @@ class PlanItemSource(StrEnum):
 
 
 class PlanItemStatus(StrEnum):
-    todo = "todo"
-    in_progress = "in_progress"
+    not_run = "not_run"
     passed = "passed"
     failed = "failed"
     blocked = "blocked"
@@ -74,7 +74,14 @@ class PlanItem(Base):
     title: Mapped[str] = mapped_column(String(220), nullable=False)
     snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     rationale: Mapped[str] = mapped_column(String(700), default="", nullable=False)
-    status: Mapped[str] = mapped_column(String(40), default=PlanItemStatus.todo.value, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), default=PlanItemStatus.not_run.value, nullable=False, index=True)
+    assignee_email: Mapped[str] = mapped_column(String(254), default="", nullable=False, index=True)
+    actual_result: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    failure_reason: Mapped[str] = mapped_column(String(700), default="", nullable=False)
+    defect_links: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    executed_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str] = mapped_column(String(254), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
@@ -94,6 +101,14 @@ class PlanItemCreate(BaseModel):
     title: str = Field(default="", max_length=220)
     snapshot: dict[str, Any] = Field(default_factory=dict)
     rationale: str = Field(default="", max_length=700)
+
+
+class PlanItemExecutionUpdate(BaseModel):
+    status: PlanItemStatus
+    assignee_email: str | None = Field(default=None, max_length=254)
+    actual_result: str = Field(default="", max_length=1000)
+    failure_reason: str = Field(default="", max_length=700)
+    defect_links: list[str] = Field(default_factory=list, max_length=10)
 
 
 class TestPlanResponse(BaseModel):
@@ -123,6 +138,13 @@ class PlanItemResponse(BaseModel):
     snapshot: dict[str, Any]
     rationale: str
     status: str
+    assignee_email: str
+    actual_result: str
+    failure_reason: str
+    defect_links: list[str]
+    evidence: list[dict[str, Any]]
+    executed_by: str | None
+    executed_at: datetime | None
     created_by: str
     created_at: datetime
     updated_at: datetime
@@ -183,6 +205,13 @@ def plan_item_to_response(item: PlanItem) -> PlanItemResponse:
         snapshot=item.snapshot,
         rationale=item.rationale,
         status=item.status,
+        assignee_email=item.assignee_email,
+        actual_result=item.actual_result,
+        failure_reason=item.failure_reason,
+        defect_links=item.defect_links,
+        evidence=item.evidence,
+        executed_by=item.executed_by,
+        executed_at=item.executed_at,
         created_by=item.created_by,
         created_at=item.created_at,
         updated_at=item.updated_at,
@@ -200,6 +229,24 @@ def get_plan_or_404(db: Session, workspace_id: str, project_id: str, plan_id: st
     if plan is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test plan not found")
     return plan
+
+
+def get_plan_item_or_404(db: Session, workspace_id: str, project_id: str, plan_id: str, item_id: str) -> PlanItem:
+    item = db.scalar(
+        select(PlanItem).where(
+            PlanItem.id == item_id,
+            PlanItem.workspace_id == workspace_id,
+            PlanItem.project_id == project_id,
+            PlanItem.plan_id == plan_id,
+        )
+    )
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan item not found")
+    return item
+
+
+def normalize_links(links: list[str]) -> list[str]:
+    return list(dict.fromkeys(link.strip() for link in links if link.strip()))[:10]
 
 
 def get_or_create_release_plan(
@@ -315,11 +362,23 @@ def create_test_plan(
 
 
 @router.get("/plans/{plan_id}/items", response_model=list[PlanItemResponse])
-def list_plan_items(workspace_id: str, project_id: str, plan_id: str, db: DbSession) -> list[PlanItemResponse]:
+def list_plan_items(
+    workspace_id: str,
+    project_id: str,
+    plan_id: str,
+    db: DbSession,
+    status_filter: Annotated[list[PlanItemStatus] | None, Query(alias="status")] = None,
+    assignee_email: Annotated[str | None, Query(max_length=254)] = None,
+) -> list[PlanItemResponse]:
     get_plan_or_404(db, workspace_id, project_id, plan_id)
+    filters = [PlanItem.workspace_id == workspace_id, PlanItem.project_id == project_id, PlanItem.plan_id == plan_id]
+    if status_filter:
+        filters.append(PlanItem.status.in_([item.value for item in status_filter]))
+    if assignee_email:
+        filters.append(PlanItem.assignee_email == assignee_email)
     items = db.scalars(
         select(PlanItem)
-        .where(PlanItem.workspace_id == workspace_id, PlanItem.project_id == project_id, PlanItem.plan_id == plan_id)
+        .where(*filters)
         .order_by(PlanItem.created_at, PlanItem.id)
     ).all()
     return [plan_item_to_response(item) for item in items]
@@ -367,6 +426,127 @@ def create_plan_item(
         entity_id=item.id,
         summary=f"Added {item.source_type} item to {plan.name}",
         after={"plan_id": plan.id, "source_type": item.source_type, "source_id": item.source_id, "title": item.title},
+    )
+    db.commit()
+    db.refresh(item)
+    return plan_item_to_response(item)
+
+
+@router.patch("/plans/{plan_id}/items/{item_id}/execution", response_model=PlanItemResponse)
+def update_plan_item_execution(
+    workspace_id: str,
+    project_id: str,
+    plan_id: str,
+    item_id: str,
+    payload: PlanItemExecutionUpdate,
+    db: DbSession,
+    actor_email: ActorEmail,
+) -> PlanItemResponse:
+    plan = get_plan_or_404(db, workspace_id, project_id, plan_id)
+    item = get_plan_item_or_404(db, workspace_id, project_id, plan_id, item_id)
+    before = {
+        "status": item.status,
+        "assignee_email": item.assignee_email,
+        "actual_result": item.actual_result,
+        "failure_reason": item.failure_reason,
+        "defect_links": item.defect_links,
+        "executed_by": item.executed_by,
+        "executed_at": item.executed_at.isoformat() if item.executed_at else None,
+    }
+
+    item.status = payload.status.value
+    item.assignee_email = payload.assignee_email or ""
+    item.actual_result = payload.actual_result
+    item.failure_reason = payload.failure_reason
+    item.defect_links = normalize_links(payload.defect_links)
+    if payload.status == PlanItemStatus.not_run:
+        item.executed_by = None
+        item.executed_at = None
+    else:
+        item.executed_by = actor_email
+        item.executed_at = now_utc()
+        if plan.status == TestPlanStatus.draft.value:
+            plan.status = TestPlanStatus.in_progress.value
+    item.updated_at = now_utc()
+    plan.updated_at = now_utc()
+    audit(
+        db,
+        workspace_id=workspace_id,
+        actor_email=actor_email,
+        action="plan_item.execution_updated",
+        entity_type="PlanItem",
+        entity_id=item.id,
+        summary=f"Updated execution result for {item.title}",
+        before=before,
+        after={
+            "plan_id": plan.id,
+            "status": item.status,
+            "assignee_email": item.assignee_email,
+            "actual_result": item.actual_result,
+            "failure_reason": item.failure_reason,
+            "defect_links": item.defect_links,
+            "executed_by": item.executed_by,
+            "executed_at": item.executed_at.isoformat() if item.executed_at else None,
+        },
+    )
+    db.commit()
+    db.refresh(item)
+    return plan_item_to_response(item)
+
+
+@router.post("/plans/{plan_id}/items/{item_id}/evidence", response_model=PlanItemResponse, status_code=status.HTTP_201_CREATED)
+async def upload_plan_item_evidence(
+    workspace_id: str,
+    project_id: str,
+    plan_id: str,
+    item_id: str,
+    db: DbSession,
+    request: Request,
+    actor_email: ActorEmail,
+    note: Annotated[str, Form(max_length=500)] = "",
+    file: UploadFile = File(...),
+) -> PlanItemResponse:
+    plan = get_plan_or_404(db, workspace_id, project_id, plan_id)
+    item = get_plan_item_or_404(db, workspace_id, project_id, plan_id, item_id)
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Evidence file is empty")
+
+    evidence_id = new_id()
+    filename = safe_filename(file.filename or "evidence.bin")
+    storage_dir = (
+        Path(request.app.state.settings.evidence_storage_root).expanduser()
+        / workspace_id[:12]
+        / project_id[:12]
+        / plan_id
+        / item_id
+    )
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    storage_path = storage_dir / f"{evidence_id}-{filename}"
+    storage_path.write_bytes(content)
+    uploaded_at = now_utc()
+    record = {
+        "id": evidence_id,
+        "file_name": filename,
+        "content_type": file.content_type or "application/octet-stream",
+        "size_bytes": len(content),
+        "storage_path": str(storage_path.resolve(strict=False)),
+        "note": note,
+        "uploaded_by": actor_email,
+        "uploaded_at": uploaded_at.isoformat(),
+    }
+    item.evidence = [*item.evidence, record]
+    item.updated_at = uploaded_at
+    plan.updated_at = uploaded_at
+    audit(
+        db,
+        workspace_id=workspace_id,
+        actor_email=actor_email,
+        action="plan_item.evidence_uploaded",
+        entity_type="PlanItem",
+        entity_id=item.id,
+        summary=f"Uploaded execution evidence for {item.title}",
+        after={"plan_id": plan.id, "evidence_id": evidence_id, "file_name": filename, "size_bytes": len(content)},
     )
     db.commit()
     db.refresh(item)

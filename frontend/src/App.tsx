@@ -112,11 +112,13 @@ import {
   updateMappingRule,
   updateModule,
   updateReviewSettings,
+  updatePlanItemExecution,
   updateTestCase,
   updateAISuggestion,
   updateProject,
   updateAISettings,
   uploadImportBatch,
+  uploadPlanItemEvidence,
   upsertGitLabToken,
   upsertModelProfile,
   WorkspaceRecord
@@ -168,7 +170,10 @@ const statusLabel: Record<string, string> = {
   accepted: "已采纳",
   ignored: "已忽略",
   modified: "已修改",
+  not_run: "未执行",
   todo: "待执行",
+  passed: "通过",
+  skipped: "跳过",
   formal_case: "正式用例",
   ai_temp: "AI 临时项",
   manual: "手工项",
@@ -196,6 +201,10 @@ const suggestionTypeLabel: Record<string, string> = {
   regression: "回归建议",
   case_candidate: "候选用例"
 };
+
+type ExecutionStatus = Exclude<PlanItemRecord["status"], "todo" | "in_progress">;
+
+const executionStatuses: ExecutionStatus[] = ["not_run", "passed", "failed", "blocked", "skipped"];
 
 const purposeLabel: Record<AIPurpose, string> = {
   import_cleanup: "导入清洗",
@@ -2365,15 +2374,45 @@ function TestPlanAdmin({ session }: { session: Session }) {
   const [itemTitle, setItemTitle] = useState("Manual payment observability check");
   const [itemRationale, setItemRationale] = useState("Release scope item");
   const [itemSnapshot, setItemSnapshot] = useState("{\"steps\":[\"Open dashboard\",\"Verify payment metrics\"]}");
+  const [executionFilter, setExecutionFilter] = useState<"all" | "failed_blocked" | ExecutionStatus>("all");
+  const [selectedExecutionItemId, setSelectedExecutionItemId] = useState("");
+  const [executionStatus, setExecutionStatus] = useState<ExecutionStatus>("not_run");
+  const [executionAssignee, setExecutionAssignee] = useState(session.user.email);
+  const [actualResult, setActualResult] = useState("");
+  const [failureReason, setFailureReason] = useState("");
+  const [defectLinksText, setDefectLinksText] = useState("");
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
+  const [evidenceNote, setEvidenceNote] = useState("Execution evidence");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  function setExecutionFormFromItem(item: PlanItemRecord | undefined) {
+    if (!item) {
+      setSelectedExecutionItemId("");
+      setExecutionStatus("not_run");
+      setExecutionAssignee(session.user.email);
+      setActualResult("");
+      setFailureReason("");
+      setDefectLinksText("");
+      return;
+    }
+    setSelectedExecutionItemId(item.id);
+    setExecutionStatus(executionStatuses.includes(item.status as ExecutionStatus) ? (item.status as ExecutionStatus) : "not_run");
+    setExecutionAssignee(item.assignee_email || session.user.email);
+    setActualResult(item.actual_result);
+    setFailureReason(item.failure_reason);
+    setDefectLinksText(item.defect_links.join("\n"));
+  }
 
   async function refreshPlanItems(workspaceId: string, projectId: string, planId: string) {
     if (!planId) {
       setPlanItems([]);
+      setExecutionFormFromItem(undefined);
       return;
     }
-    setPlanItems(await listPlanItems(workspaceId, projectId, planId));
+    const nextItems = await listPlanItems(workspaceId, projectId, planId);
+    setPlanItems(nextItems);
+    setExecutionFormFromItem(nextItems.find((item) => item.id === selectedExecutionItemId) ?? nextItems[0]);
   }
 
   async function refreshPlanProject(workspaceId: string, projectId: string, preferredPlanId?: string) {
@@ -2510,8 +2549,74 @@ function TestPlanAdmin({ session }: { session: Session }) {
     }
   }
 
+  async function handleSaveExecution(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId || !selectedProjectId || !selectedPlanId || !selectedExecutionItemId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const updated = await updatePlanItemExecution(selectedWorkspaceId, selectedProjectId, selectedPlanId, selectedExecutionItemId, actorEmail, {
+        status: executionStatus,
+        assignee_email: executionAssignee,
+        actual_result: actualResult,
+        failure_reason: failureReason,
+        defect_links: defectLinksText
+          .split(/\r?\n|,/)
+          .map((link) => link.trim())
+          .filter(Boolean)
+      });
+      setMessage(`已保存执行结果：${updated.title} · ${statusLabel[updated.status]}`);
+      setExecutionFormFromItem(updated);
+      await refreshPlanProject(selectedWorkspaceId, selectedProjectId, selectedPlanId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "执行结果保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUploadEvidence(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId || !selectedProjectId || !selectedPlanId || !selectedExecutionItemId || !evidenceFile) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const updated = await uploadPlanItemEvidence(selectedWorkspaceId, selectedProjectId, selectedPlanId, selectedExecutionItemId, actorEmail, evidenceFile, evidenceNote);
+      setMessage(`已上传证据：${evidenceFile.name}`);
+      setEvidenceFile(null);
+      setExecutionFormFromItem(updated);
+      await refreshPlanProject(selectedWorkspaceId, selectedProjectId, selectedPlanId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "证据上传失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
   const selectedPlan = plans.find((plan) => plan.id === selectedPlanId);
+  const selectedExecutionItem = planItems.find((item) => item.id === selectedExecutionItemId);
+  const filteredPlanItems = useMemo(() => {
+    if (executionFilter === "all") return planItems;
+    if (executionFilter === "failed_blocked") return planItems.filter((item) => item.status === "failed" || item.status === "blocked");
+    return planItems.filter((item) => item.status === executionFilter);
+  }, [executionFilter, planItems]);
+  const planProgress = useMemo(() => {
+    const counts = { total: planItems.length, not_run: 0, passed: 0, failed: 0, blocked: 0, skipped: 0 };
+    for (const item of planItems) {
+      const status = item.status === "todo" || item.status === "in_progress" ? "not_run" : item.status;
+      if (status in counts) {
+        counts[status as keyof typeof counts] += 1;
+      }
+    }
+    const finished = counts.passed + counts.failed + counts.blocked + counts.skipped;
+    return { ...counts, finished, percent: counts.total ? Math.round((finished / counts.total) * 100) : 0 };
+  }, [planItems]);
+  const selectedSteps = Array.isArray(selectedExecutionItem?.snapshot.steps)
+    ? selectedExecutionItem.snapshot.steps.map((step) => String(step))
+    : typeof selectedExecutionItem?.snapshot.steps === "string"
+      ? selectedExecutionItem.snapshot.steps.split(/\r?\n/).filter(Boolean)
+      : [];
 
   return (
     <section className="section-block test-plan-admin">
@@ -2695,18 +2800,131 @@ function TestPlanAdmin({ session }: { session: Session }) {
             </div>
             <ClipboardCheck size={18} aria-hidden="true" />
           </div>
+          <div className="execution-summary">
+            <strong>{planProgress.percent}%</strong>
+            <span>
+              {planProgress.finished}/{planProgress.total} 已记录 · {planProgress.passed} 通过 · {planProgress.failed} 失败 · {planProgress.blocked} 阻塞 · {planProgress.not_run} 未执行
+            </span>
+            <label className="select-label">
+              筛选
+              <select value={executionFilter} onChange={(event) => setExecutionFilter(event.target.value as typeof executionFilter)}>
+                <option value="all">全部</option>
+                <option value="failed_blocked">失败或阻塞</option>
+                {executionStatuses.map((status) => (
+                  <option value={status} key={status}>
+                    {statusLabel[status]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="data-list">
-            {planItems.map((item) => (
-              <div className="data-row wide" key={item.id}>
+            {filteredPlanItems.map((item) => (
+              <div className="data-row module-row" key={item.id}>
                 <div>
                   <strong>{item.title} · {statusLabel[item.source_type]}</strong>
-                  <span>{statusLabel[item.status]} · source {item.source_id?.slice(0, 8) ?? "none"}</span>
-                  <small>{item.rationale || "无依据"} · snapshot {String(item.snapshot.title ?? item.snapshot.steps ?? item.snapshot.interfaces ?? "stored")}</small>
+                  <span>{statusLabel[item.status] ?? item.status} · assignee {item.assignee_email || "unassigned"} · source {item.source_id?.slice(0, 8) ?? "none"}</span>
+                  <small>
+                    {item.rationale || "无依据"} · evidence {item.evidence.length} · defects {item.defect_links.length} · executed {item.executed_at ? new Date(item.executed_at).toLocaleString() : "pending"}
+                  </small>
                 </div>
+                <button className="ghost-button" type="button" onClick={() => setExecutionFormFromItem(item)}>
+                  执行
+                </button>
               </div>
             ))}
-            {planItems.length === 0 ? <p className="empty-state">暂无计划项</p> : null}
+            {filteredPlanItems.length === 0 ? <p className="empty-state">暂无匹配计划项</p> : null}
           </div>
+        </section>
+
+        <section className="audit-pane execution-pane" aria-label="单项执行">
+          <div className="pane-heading">
+            <div>
+              <span className="eyebrow">Execution</span>
+              <h3>单项执行</h3>
+            </div>
+            <CheckCircle2 size={18} aria-hidden="true" />
+          </div>
+          {selectedExecutionItem ? (
+            <div className="execution-detail">
+              <div className="execution-card">
+                <strong>{selectedExecutionItem.title}</strong>
+                <span>{statusLabel[selectedExecutionItem.source_type]} · {statusLabel[selectedExecutionItem.status] ?? selectedExecutionItem.status}</span>
+                <small>{String(selectedExecutionItem.snapshot.expected_result ?? selectedExecutionItem.snapshot.interfaces ?? "查看步骤并录入执行结果")}</small>
+                {selectedSteps.length > 0 ? (
+                  <ol className="step-list">
+                    {selectedSteps.map((step, index) => (
+                      <li key={`${selectedExecutionItem.id}-${index}`}>{step}</li>
+                    ))}
+                  </ol>
+                ) : null}
+              </div>
+
+              <form className="stack-form" onSubmit={handleSaveExecution}>
+                <div className="form-row">
+                  <label>
+                    执行人
+                    <input value={executionAssignee} onChange={(event) => setExecutionAssignee(event.target.value)} />
+                  </label>
+                  <label>
+                    状态
+                    <select value={executionStatus} onChange={(event) => setExecutionStatus(event.target.value as ExecutionStatus)}>
+                      {executionStatuses.map((status) => (
+                        <option value={status} key={status}>
+                          {statusLabel[status]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  实际结果
+                  <textarea value={actualResult} onChange={(event) => setActualResult(event.target.value)} rows={3} />
+                </label>
+                <label>
+                  失败原因
+                  <textarea value={failureReason} onChange={(event) => setFailureReason(event.target.value)} rows={2} />
+                </label>
+                <label>
+                  缺陷链接
+                  <textarea value={defectLinksText} onChange={(event) => setDefectLinksText(event.target.value)} rows={2} />
+                </label>
+                <button className="primary-button small" type="submit" disabled={busy || !selectedExecutionItemId}>
+                  保存执行结果
+                </button>
+              </form>
+
+              <form className="stack-form evidence-form" onSubmit={handleUploadEvidence}>
+                <div className="form-row">
+                  <label>
+                    证据文件
+                    <input type="file" onChange={(event) => setEvidenceFile(event.target.files?.[0] ?? null)} />
+                  </label>
+                  <label>
+                    说明
+                    <input value={evidenceNote} onChange={(event) => setEvidenceNote(event.target.value)} />
+                  </label>
+                </div>
+                <button className="ghost-button" type="submit" disabled={busy || !selectedExecutionItemId || !evidenceFile}>
+                  上传证据
+                </button>
+              </form>
+
+              <div className="data-list">
+                {selectedExecutionItem.evidence.map((item) => (
+                  <div className="data-row wide" key={item.id}>
+                    <div>
+                      <strong>{item.file_name}</strong>
+                      <span>{item.note || "无说明"} · {Math.round(item.size_bytes / 1024)} KB · {item.uploaded_by}</span>
+                    </div>
+                  </div>
+                ))}
+                {selectedExecutionItem.evidence.length === 0 ? <p className="empty-state">暂无执行证据</p> : null}
+              </div>
+            </div>
+          ) : (
+            <p className="empty-state">选择计划项后录入执行结果</p>
+          )}
         </section>
       </div>
     </section>

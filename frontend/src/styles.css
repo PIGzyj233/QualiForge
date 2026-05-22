@@ -38,7 +38,9 @@ body {
 }
 
 button,
-input {
+input,
+textarea,
+select {
   font: inherit;
 }
 
@@ -521,6 +523,7 @@ button {
 
 .compact-form input,
 .stack-form input,
+.stack-form textarea,
 .stack-form select,
 .select-label select {
   width: 100%;
@@ -534,10 +537,16 @@ button {
 
 .compact-form input:focus,
 .stack-form input:focus,
+.stack-form textarea:focus,
 .stack-form select:focus,
 .select-label select:focus {
   outline: 2px solid rgba(29, 124, 117, 0.22);
   border-color: var(--teal);
+}
+
+.stack-form textarea {
+  resize: vertical;
+  line-height: 1.45;
 }
 
 .primary-button.small {
@@ -729,6 +738,57 @@ button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.execution-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 220px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-muted);
+}
+
+.execution-summary strong {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.execution-summary span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.execution-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.execution-card {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.execution-card span,
+.execution-card small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.step-list {
+  margin: 4px 0 0;
+  padding-left: 20px;
+  color: #324036;
+  line-height: 1.45;
+}
+
 .helper-copy {
   color: var(--muted);
   font-size: 12px;
@@ -805,7 +865,8 @@ button {
   }
 
   .admin-toolbar,
-  .admin-grid {
+  .admin-grid,
+  .execution-summary {
     grid-template-columns: 1fr;
   }
 }

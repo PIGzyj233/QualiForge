@@ -306,7 +306,23 @@ export type PlanItemRecord = {
   title: string;
   snapshot: Record<string, unknown>;
   rationale: string;
-  status: "todo" | "in_progress" | "passed" | "failed" | "blocked" | "skipped";
+  status: "not_run" | "passed" | "failed" | "blocked" | "skipped" | "todo" | "in_progress";
+  assignee_email: string;
+  actual_result: string;
+  failure_reason: string;
+  defect_links: string[];
+  evidence: Array<{
+    id: string;
+    file_name: string;
+    content_type: string;
+    size_bytes: number;
+    storage_path: string;
+    note: string;
+    uploaded_by: string;
+    uploaded_at: string;
+  }>;
+  executed_by: string | null;
+  executed_at: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -875,6 +891,50 @@ export function createPlanItem(
     {
       method: "POST",
       body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function updatePlanItemExecution(
+  workspaceId: string,
+  projectId: string,
+  planId: string,
+  itemId: string,
+  actorEmail: string,
+  payload: {
+    status: Exclude<PlanItemRecord["status"], "todo" | "in_progress">;
+    assignee_email?: string | null;
+    actual_result?: string;
+    failure_reason?: string;
+    defect_links?: string[];
+  }
+): Promise<PlanItemRecord> {
+  return requestJson<PlanItemRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/plans/${planId}/items/${itemId}/execution?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function uploadPlanItemEvidence(
+  workspaceId: string,
+  projectId: string,
+  planId: string,
+  itemId: string,
+  actorEmail: string,
+  file: File,
+  note: string
+): Promise<PlanItemRecord> {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("note", note);
+  return requestFormJson<PlanItemRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/plans/${planId}/items/${itemId}/evidence?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body
     }
   );
 }

@@ -45,6 +45,10 @@ def test_test_plan_types_items_snapshots_and_audit(tmp_path: Path) -> None:
     assert formal_item.status_code == 201
     formal_payload = formal_item.json()
     assert formal_payload["source_type"] == "formal_case"
+    assert formal_payload["status"] == "not_run"
+    assert formal_payload["assignee_email"] == ""
+    assert formal_payload["executed_by"] is None
+    assert formal_payload["executed_at"] is None
     assert formal_payload["title"] == formal_case["title"]
     assert formal_payload["snapshot"]["title"] == formal_case["title"]
     assert formal_payload["snapshot"]["revision"] == formal_case["current_revision_number"]
@@ -117,3 +121,83 @@ def test_only_approved_formal_cases_can_be_added_to_plan(tmp_path: Path) -> None
 
     assert response.status_code == 409
     assert "approved" in response.json()["detail"]
+
+
+def test_plan_item_execution_result_evidence_and_filters(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    workspace, project = create_workspace_project(client)
+    module = create_module_with_rules(client, workspace["id"], project["id"])
+    formal_case = create_approved_case(client, workspace["id"], project["id"], module["id"])
+    plan = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/plans?actor_email={OWNER}",
+        json={"name": "Release plan v3", "plan_type": "release", "version_ref": "v3"},
+    ).json()
+    item = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/plans/{plan['id']}/items?actor_email={OWNER}",
+        json={"source_type": "formal_case", "source_id": formal_case["id"], "rationale": "Payment release gate"},
+    ).json()
+
+    assigned = client.patch(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/plans/{plan['id']}/items/{item['id']}/execution?actor_email={OWNER}",
+        json={
+            "status": "not_run",
+            "assignee_email": "qa@qualiforge.local",
+            "actual_result": "",
+            "failure_reason": "",
+            "defect_links": [],
+        },
+    )
+    assert assigned.status_code == 200
+    assert assigned.json()["assignee_email"] == "qa@qualiforge.local"
+    assert assigned.json()["executed_at"] is None
+
+    executed = client.patch(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/plans/{plan['id']}/items/{item['id']}/execution?actor_email=runner@qualiforge.local",
+        json={
+            "status": "failed",
+            "assignee_email": "qa@qualiforge.local",
+            "actual_result": "Checkout returned HTTP 500 after payment authorization.",
+            "failure_reason": "Payment callback timeout.",
+            "defect_links": [" https://bugs.local/QUALI-42 ", "https://bugs.local/QUALI-42", "https://bugs.local/QUALI-43"],
+        },
+    )
+    assert executed.status_code == 200
+    execution_payload = executed.json()
+    assert execution_payload["status"] == "failed"
+    assert execution_payload["actual_result"].startswith("Checkout returned")
+    assert execution_payload["failure_reason"] == "Payment callback timeout."
+    assert execution_payload["defect_links"] == ["https://bugs.local/QUALI-42", "https://bugs.local/QUALI-43"]
+    assert execution_payload["executed_by"] == "runner@qualiforge.local"
+    assert execution_payload["executed_at"]
+
+    evidence = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/plans/{plan['id']}/items/{item['id']}/evidence?actor_email=runner@qualiforge.local",
+        data={"note": "Failure screenshot"},
+        files={"file": ("failure.png", b"fake-png", "image/png")},
+    )
+    assert evidence.status_code == 201
+    evidence_payload = evidence.json()
+    assert evidence_payload["evidence"][0]["file_name"] == "failure.png"
+    assert evidence_payload["evidence"][0]["content_type"] == "image/png"
+    assert evidence_payload["evidence"][0]["note"] == "Failure screenshot"
+    assert evidence_payload["evidence"][0]["uploaded_by"] == "runner@qualiforge.local"
+
+    failed_items = client.get(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/plans/{plan['id']}/items",
+        params={"status": ["failed"], "assignee_email": "qa@qualiforge.local"},
+    )
+    assert failed_items.status_code == 200
+    assert [row["id"] for row in failed_items.json()] == [item["id"]]
+    blocked_items = client.get(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/plans/{plan['id']}/items",
+        params={"status": ["blocked"]},
+    )
+    assert blocked_items.status_code == 200
+    assert blocked_items.json() == []
+
+    updated_plan = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/plans").json()[0]
+    assert updated_plan["status"] == "in_progress"
+
+    audit_actions = [entry["action"] for entry in client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()]
+    assert "plan_item.execution_updated" in audit_actions
+    assert "plan_item.evidence_uploaded" in audit_actions

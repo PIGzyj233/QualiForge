@@ -4,6 +4,7 @@ node_modules/
 dist/
 build/
 artifacts/
+.qualiforge/
 __pycache__/
 .pytest_cache/
 .ruff_cache/

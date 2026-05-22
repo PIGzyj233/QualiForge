@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     git_repo_size_limit_mb: int = 1024
     git_diff_file_limit: int = 500
     import_storage_root: str = ".qualiforge/imports"
+    evidence_storage_root: str = ".qualiforge/evidence"
 
     @property
     def cors_origin_list(self) -> list[str]:
