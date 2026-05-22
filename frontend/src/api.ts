@@ -844,8 +844,39 @@ export function listTestPlans(workspaceId: string, projectId: string): Promise<T
   return requestJson<TestPlanRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/plans`);
 }
 
+export function createTestPlan(
+  workspaceId: string,
+  projectId: string,
+  actorEmail: string,
+  payload: { name: string; plan_type: TestPlanRecord["plan_type"]; scope_summary?: string; version_ref?: string; owner_email?: string }
+): Promise<TestPlanRecord> {
+  return requestJson<TestPlanRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/plans?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
 export function listPlanItems(workspaceId: string, projectId: string, planId: string): Promise<PlanItemRecord[]> {
   return requestJson<PlanItemRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/plans/${planId}/items`);
+}
+
+export function createPlanItem(
+  workspaceId: string,
+  projectId: string,
+  planId: string,
+  actorEmail: string,
+  payload: { source_type: PlanItemRecord["source_type"]; source_id?: string | null; title?: string; snapshot?: Record<string, unknown>; rationale?: string }
+): Promise<PlanItemRecord> {
+  return requestJson<PlanItemRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/plans/${planId}/items?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
 }
 
 export function listModules(workspaceId: string, projectId: string): Promise<ProjectModuleRecord[]> {

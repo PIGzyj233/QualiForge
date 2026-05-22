@@ -99,7 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def dashboard_summary() -> dict[str, object]:
         return {
             "workspace": "QualiForge Lab",
-            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping、历史用例导入、用例评审治理、Diff 决策分析与 AI 测试建议",
+            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping、历史用例导入、用例评审治理、Diff 决策分析、AI 测试建议与发布测试计划",
             "work_items": [
                 {
                     "issue": "#1",
@@ -167,9 +167,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {
                     "issue": "#10",
                     "title": "从正式用例和 AI 建议创建发布测试计划",
-                    "status": "next",
+                    "status": "done",
                     "owner": "Test Planning",
                     "blocked_by": ["#7", "#9"],
+                },
+                {
+                    "issue": "#11",
+                    "title": "执行测试计划项并录入结果和证据",
+                    "status": "next",
+                    "owner": "Execution",
+                    "blocked_by": ["#10"],
                 },
                 {
                     "issue": "#12",

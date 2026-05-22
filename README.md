@@ -26,6 +26,7 @@ The current implementation covers the first MVP platform slice:
 - GitHub issue #7: test case review governance with draft, pending review, approved, rejected, and archived states, revision snapshots, comments, edit requests, approval policy, and configurable self-review/update-review rules.
 - GitHub issue #8: tag/ref diff analysis jobs that run in the Git Sandbox and surface impacted modules, risk level, recommended test scope, changed files, structural evidence, and confidence.
 - GitHub issue #9: Diff-based AI test suggestions with source evidence, mapping-rule hits, related formal cases, feedback, draft AI case candidates, and temporary or formal PlanItem creation.
+- GitHub issue #10: release/regression/smoke/feature/custom TestPlan creation with version scope, owner, conclusion placeholder, formal case snapshots, AI temporary items, manual items, and audit-backed scope changes.
 
 ## Local Development
 

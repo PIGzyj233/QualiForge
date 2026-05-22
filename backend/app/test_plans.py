@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, ForeignKey, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.case_imports import TestCase
+from app.case_imports import TestCase, TestCaseStatus
 from app.database import Base
 from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
 
@@ -343,6 +343,8 @@ def create_plan_item(
         test_case = db.get(TestCase, payload.source_id)
         if test_case is None or test_case.workspace_id != workspace_id or test_case.project_id != project_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test case not found")
+        if test_case.status != TestCaseStatus.approved.value:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only approved formal cases can be added to a plan")
         snapshot = test_case_snapshot(test_case)
         title = title or test_case.title
     item = add_plan_item(
