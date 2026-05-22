@@ -25,6 +25,7 @@ The current implementation covers the first MVP platform slice:
 - GitHub issue #6: CSV/XLSX historical test case import batches with preserved raw files, AI-normalized drafts, preview bulk edits, review submission, and WorkspaceOwner bulk import into the formal case library.
 - GitHub issue #7: test case review governance with draft, pending review, approved, rejected, and archived states, revision snapshots, comments, edit requests, approval policy, and configurable self-review/update-review rules.
 - GitHub issue #8: tag/ref diff analysis jobs that run in the Git Sandbox and surface impacted modules, risk level, recommended test scope, changed files, structural evidence, and confidence.
+- GitHub issue #9: Diff-based AI test suggestions with source evidence, mapping-rule hits, related formal cases, feedback, draft AI case candidates, and temporary or formal PlanItem creation.
 
 ## Local Development
 
@@ -59,6 +60,15 @@ Useful API paths:
 - `GET /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses`
 - `GET /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses/{analysis_id}`
 - `GET /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses/{analysis_id}/job`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses/{analysis_id}/ai-suggestions?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses/{analysis_id}/ai-suggestions`
+- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/ai-suggestions/{suggestion_id}?actor_email=owner@qualiforge.local`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/ai-suggestions/{suggestion_id}/candidate?actor_email=owner@qualiforge.local`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/ai-suggestions/{suggestion_id}/plan-items?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/plans`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/plans?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/items`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/items?actor_email=owner@qualiforge.local`
 - `GET /api/workspaces/{workspace_id}/projects/{project_id}/modules`
 - `POST /api/workspaces/{workspace_id}/projects/{project_id}/modules?actor_email=owner@qualiforge.local`
 - `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/modules/{module_id}?actor_email=owner@qualiforge.local`

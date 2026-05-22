@@ -249,6 +249,69 @@ export type DiffAnalysisRecord = {
   completed_at: string | null;
 };
 
+export type AISuggestionStatus = "suggested" | "accepted" | "ignored" | "modified";
+export type AISuggestionType = "regression" | "case_candidate";
+
+export type AISuggestionRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  diff_analysis_id: string;
+  suggestion_type: AISuggestionType;
+  status: AISuggestionStatus;
+  title: string;
+  rationale: string;
+  confidence: number;
+  module_id: string | null;
+  module_key: string;
+  source_diff: Record<string, unknown>;
+  mapping_evidence: string[];
+  code_paths: string[];
+  interfaces: string[];
+  config_keys: string[];
+  related_case_ids: string[];
+  selected_case_ids: string[];
+  candidate_payload: TestCasePayload & { custom_fields: Record<string, string> };
+  candidate_case_id: string | null;
+  plan_item_ids: string[];
+  feedback_history: Array<{ actor_email: string; comment: string; created_at: string }>;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TestPlanRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  name: string;
+  plan_type: "release" | "regression" | "smoke" | "feature" | "custom";
+  status: "draft" | "in_progress" | "completed" | "archived";
+  scope_summary: string;
+  version_ref: string;
+  owner_email: string;
+  final_conclusion: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PlanItemRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  plan_id: string;
+  source_type: "formal_case" | "ai_temp" | "manual";
+  source_id: string | null;
+  title: string;
+  snapshot: Record<string, unknown>;
+  rationale: string;
+  status: "todo" | "in_progress" | "passed" | "failed" | "blocked" | "skipped";
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type MappingRuleType =
   | "directory"
   | "file"
@@ -720,6 +783,69 @@ export function listDiffAnalyses(workspaceId: string, projectId: string, reposit
 
 export function getDiffAnalysis(workspaceId: string, projectId: string, analysisId: string): Promise<DiffAnalysisRecord> {
   return requestJson<DiffAnalysisRecord>(`/workspaces/${workspaceId}/projects/${projectId}/diff-analyses/${analysisId}`);
+}
+
+export function generateAISuggestions(workspaceId: string, projectId: string, analysisId: string, actorEmail: string): Promise<AISuggestionRecord[]> {
+  return requestJson<AISuggestionRecord[]>(
+    `/workspaces/${workspaceId}/projects/${projectId}/diff-analyses/${analysisId}/ai-suggestions?actor_email=${encodeURIComponent(actorEmail)}`,
+    { method: "POST" }
+  );
+}
+
+export function listAISuggestions(workspaceId: string, projectId: string, analysisId: string): Promise<AISuggestionRecord[]> {
+  return requestJson<AISuggestionRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/diff-analyses/${analysisId}/ai-suggestions`);
+}
+
+export function updateAISuggestion(
+  workspaceId: string,
+  projectId: string,
+  suggestionId: string,
+  actorEmail: string,
+  payload: { status?: AISuggestionStatus; title?: string; feedback_comment?: string; selected_case_ids?: string[] }
+): Promise<AISuggestionRecord> {
+  return requestJson<AISuggestionRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/ai-suggestions/${suggestionId}?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function createCandidateFromSuggestion(
+  workspaceId: string,
+  projectId: string,
+  suggestionId: string,
+  actorEmail: string
+): Promise<{ test_case: TestCaseRecord; suggestion: AISuggestionRecord }> {
+  return requestJson<{ test_case: TestCaseRecord; suggestion: AISuggestionRecord }>(
+    `/workspaces/${workspaceId}/projects/${projectId}/ai-suggestions/${suggestionId}/candidate?actor_email=${encodeURIComponent(actorEmail)}`,
+    { method: "POST" }
+  );
+}
+
+export function createSuggestionPlanItems(
+  workspaceId: string,
+  projectId: string,
+  suggestionId: string,
+  actorEmail: string,
+  payload: { plan_id?: string; version_ref?: string; test_case_ids?: string[]; include_ai_candidate?: boolean }
+): Promise<{ plan: Pick<TestPlanRecord, "id" | "name" | "plan_type" | "status" | "version_ref">; items: PlanItemRecord[]; suggestion: AISuggestionRecord }> {
+  return requestJson<{ plan: Pick<TestPlanRecord, "id" | "name" | "plan_type" | "status" | "version_ref">; items: PlanItemRecord[]; suggestion: AISuggestionRecord }>(
+    `/workspaces/${workspaceId}/projects/${projectId}/ai-suggestions/${suggestionId}/plan-items?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function listTestPlans(workspaceId: string, projectId: string): Promise<TestPlanRecord[]> {
+  return requestJson<TestPlanRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/plans`);
+}
+
+export function listPlanItems(workspaceId: string, projectId: string, planId: string): Promise<PlanItemRecord[]> {
+  return requestJson<PlanItemRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/plans/${planId}/items`);
 }
 
 export function listModules(workspaceId: string, projectId: string): Promise<ProjectModuleRecord[]> {

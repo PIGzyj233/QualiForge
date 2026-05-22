@@ -725,6 +725,16 @@ button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.ai-action-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.helper-copy {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .icon-button.subtle {
   background: var(--panel-muted);
 }

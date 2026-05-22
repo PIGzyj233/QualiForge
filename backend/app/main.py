@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.ai_config import router as ai_config_router
+from app.ai_suggestions import router as ai_suggestions_router
 from app.case_imports import router as case_imports_router
 from app.case_reviews import router as case_reviews_router
 from app.config import Settings, get_settings
@@ -16,6 +17,7 @@ from app.diff_analysis import router as diff_analysis_router
 from app.gitlab import router as gitlab_router
 from app.health import check_redis
 from app.modules import router as modules_router
+from app.test_plans import router as test_plans_router
 from app.workspaces import router as workspace_router
 
 
@@ -97,7 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def dashboard_summary() -> dict[str, object]:
         return {
             "workspace": "QualiForge Lab",
-            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping、历史用例导入、用例评审治理与 Diff 决策分析",
+            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping、历史用例导入、用例评审治理、Diff 决策分析与 AI 测试建议",
             "work_items": [
                 {
                     "issue": "#1",
@@ -158,9 +160,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {
                     "issue": "#9",
                     "title": "基于 Diff 生成 AI 测试建议和候选用例",
-                    "status": "next",
+                    "status": "done",
                     "owner": "AI Generation",
                     "blocked_by": ["#8", "#3"],
+                },
+                {
+                    "issue": "#10",
+                    "title": "从正式用例和 AI 建议创建发布测试计划",
+                    "status": "next",
+                    "owner": "Test Planning",
+                    "blocked_by": ["#7", "#9"],
                 },
                 {
                     "issue": "#12",
@@ -193,6 +202,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(case_imports_router)
     app.include_router(case_reviews_router)
     app.include_router(diff_analysis_router)
+    app.include_router(test_plans_router)
+    app.include_router(ai_suggestions_router)
 
     return app
 
