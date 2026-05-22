@@ -191,6 +191,44 @@ export type JobRecord = {
   finished_at: string | null;
 };
 
+export type MappingRuleType =
+  | "directory"
+  | "file"
+  | "api"
+  | "service"
+  | "config_key"
+  | "database_migration"
+  | "keyword";
+
+export type MappingSource = "manual" | "ai_repository" | "ai_history" | "diff_confirmation";
+
+export type ModuleMappingRuleRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  module_id: string;
+  rule_type: MappingRuleType;
+  pattern: string;
+  source: MappingSource;
+  description: string;
+  confidence: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProjectModuleRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  key: string;
+  name: string;
+  description: string;
+  owner: string;
+  mapping_rules: ModuleMappingRuleRecord[];
+  created_at: string;
+  updated_at: string;
+};
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
@@ -466,4 +504,117 @@ export function syncRepository(workspaceId: string, repositoryId: string, actorE
 export function listJobs(workspaceId: string, repositoryId?: string): Promise<JobRecord[]> {
   const suffix = repositoryId ? `?repository_id=${encodeURIComponent(repositoryId)}` : "";
   return requestJson<JobRecord[]>(`/workspaces/${workspaceId}/jobs${suffix}`);
+}
+
+export function listModules(workspaceId: string, projectId: string): Promise<ProjectModuleRecord[]> {
+  return requestJson<ProjectModuleRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/modules`);
+}
+
+export function createModule(
+  workspaceId: string,
+  projectId: string,
+  actorEmail: string,
+  payload: { key: string; name: string; description: string; owner: string }
+): Promise<ProjectModuleRecord> {
+  return requestJson<ProjectModuleRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/modules?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function updateModule(
+  workspaceId: string,
+  projectId: string,
+  moduleId: string,
+  actorEmail: string,
+  payload: { name?: string; description?: string; owner?: string }
+): Promise<ProjectModuleRecord> {
+  return requestJson<ProjectModuleRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/modules/${moduleId}?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function deleteModule(workspaceId: string, projectId: string, moduleId: string, actorEmail: string): Promise<void> {
+  return requestNoContent(
+    `/workspaces/${workspaceId}/projects/${projectId}/modules/${moduleId}?actor_email=${encodeURIComponent(actorEmail)}`,
+    { method: "DELETE" }
+  );
+}
+
+export function listMappingRules(
+  workspaceId: string,
+  projectId: string,
+  filters?: { moduleId?: string; ruleType?: MappingRuleType; source?: MappingSource }
+): Promise<ModuleMappingRuleRecord[]> {
+  const params = new URLSearchParams();
+  if (filters?.moduleId) params.set("module_id", filters.moduleId);
+  if (filters?.ruleType) params.set("rule_type", filters.ruleType);
+  if (filters?.source) params.set("source", filters.source);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return requestJson<ModuleMappingRuleRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/mapping-rules${suffix}`);
+}
+
+export function createMappingRule(
+  workspaceId: string,
+  projectId: string,
+  moduleId: string,
+  actorEmail: string,
+  payload: {
+    rule_type: MappingRuleType;
+    pattern: string;
+    source: MappingSource;
+    description: string;
+    confidence: number;
+  }
+): Promise<ModuleMappingRuleRecord> {
+  return requestJson<ModuleMappingRuleRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/modules/${moduleId}/mapping-rules?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function updateMappingRule(
+  workspaceId: string,
+  projectId: string,
+  moduleId: string,
+  ruleId: string,
+  actorEmail: string,
+  payload: {
+    rule_type?: MappingRuleType;
+    pattern?: string;
+    source?: MappingSource;
+    description?: string;
+    confidence?: number;
+  }
+): Promise<ModuleMappingRuleRecord> {
+  return requestJson<ModuleMappingRuleRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/modules/${moduleId}/mapping-rules/${ruleId}?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function deleteMappingRule(
+  workspaceId: string,
+  projectId: string,
+  moduleId: string,
+  ruleId: string,
+  actorEmail: string
+): Promise<void> {
+  return requestNoContent(
+    `/workspaces/${workspaceId}/projects/${projectId}/modules/${moduleId}/mapping-rules/${ruleId}?actor_email=${encodeURIComponent(actorEmail)}`,
+    { method: "DELETE" }
+  );
 }

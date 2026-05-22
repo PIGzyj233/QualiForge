@@ -19,7 +19,7 @@ def test_dashboard_summary_contains_issue_one() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["mvp_stage"] == "基础平台、Workspace、AI 配置与 Git Sandbox"
+    assert payload["mvp_stage"] == "基础平台、Workspace、AI 配置、Git Sandbox 与 Module Mapping"
     assert payload["work_items"][0]["issue"] == "#1"
     assert payload["work_items"][2]["issue"] == "#3"
 

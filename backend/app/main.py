@@ -12,6 +12,7 @@ from app.config import Settings, get_settings
 from app.database import Database
 from app.gitlab import router as gitlab_router
 from app.health import check_redis
+from app.modules import router as modules_router
 from app.workspaces import router as workspace_router
 
 
@@ -93,7 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def dashboard_summary() -> dict[str, object]:
         return {
             "workspace": "QualiForge Lab",
-            "mvp_stage": "基础平台、Workspace、AI 配置与 Git Sandbox",
+            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox 与 Module Mapping",
             "work_items": [
                 {
                     "issue": "#1",
@@ -126,7 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {
                     "issue": "#5",
                     "title": "维护模块/功能域和 ModuleMapping 规则",
-                    "status": "next",
+                    "status": "done",
                     "owner": "Module Mapping",
                     "blocked_by": ["#2", "#4"],
                 },
@@ -164,6 +165,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(workspace_router)
     app.include_router(ai_config_router)
     app.include_router(gitlab_router)
+    app.include_router(modules_router)
 
     return app
 

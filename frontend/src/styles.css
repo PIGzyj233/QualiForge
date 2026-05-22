@@ -647,6 +647,10 @@ button {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.module-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
 .icon-button.subtle {
   background: var(--panel-muted);
 }
