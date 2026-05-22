@@ -22,6 +22,7 @@ The current implementation covers the first MVP platform slice:
 - GitHub issue #3: OpenAI-compatible Provider, Model Profile, Workspace AI data policy, and AI invocation summary logging.
 - GitHub issue #4: Workspace-owned GitLab token storage, read-only repository binding, background mirror sync jobs, and isolated Git Sandbox paths with size, timeout, and symlink-escape guards.
 - GitHub issue #5: Project modules/function domains and ModuleMapping rules for directories, files, APIs, services, config keys, database migrations, and keywords.
+- GitHub issue #6: CSV/XLSX historical test case import batches with preserved raw files, AI-normalized drafts, preview bulk edits, review submission, and WorkspaceOwner bulk import into the formal case library.
 
 ## Local Development
 
@@ -60,6 +61,13 @@ Useful API paths:
 - `POST /api/workspaces/{workspace_id}/projects/{project_id}/modules/{module_id}/mapping-rules?actor_email=owner@qualiforge.local`
 - `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/modules/{module_id}/mapping-rules/{rule_id}?actor_email=owner@qualiforge.local`
 - `DELETE /api/workspaces/{workspace_id}/projects/{project_id}/modules/{module_id}/mapping-rules/{rule_id}?actor_email=owner@qualiforge.local`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/imports?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/imports`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/imports/{batch_id}/drafts`
+- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/imports/{batch_id}/drafts-bulk?actor_email=owner@qualiforge.local`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/imports/{batch_id}/submit-review?actor_email=owner@qualiforge.local`
+- `POST /api/workspaces/{workspace_id}/projects/{project_id}/imports/{batch_id}/bulk-import?actor_email=owner@qualiforge.local`
+- `GET /api/workspaces/{workspace_id}/projects/{project_id}/test-cases`
 
 Frontend:
 

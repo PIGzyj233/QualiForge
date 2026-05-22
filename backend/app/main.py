@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.ai_config import router as ai_config_router
+from app.case_imports import router as case_imports_router
 from app.config import Settings, get_settings
 from app.database import Database
 from app.gitlab import router as gitlab_router
@@ -94,7 +95,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def dashboard_summary() -> dict[str, object]:
         return {
             "workspace": "QualiForge Lab",
-            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox 与 Module Mapping",
+            "mvp_stage": "基础平台、Workspace、AI 配置、Git Sandbox、Module Mapping 与历史用例导入",
             "work_items": [
                 {
                     "issue": "#1",
@@ -134,7 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {
                     "issue": "#6",
                     "title": "导入 Excel/CSV 历史用例为可评审草稿",
-                    "status": "blocked",
+                    "status": "done",
                     "owner": "Case Assets",
                     "blocked_by": ["#2", "#3", "#5"],
                 },
@@ -166,6 +167,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ai_config_router)
     app.include_router(gitlab_router)
     app.include_router(modules_router)
+    app.include_router(case_imports_router)
 
     return app
 

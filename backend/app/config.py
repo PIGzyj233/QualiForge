@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     git_sync_timeout_seconds: int = 120
     git_repo_size_limit_mb: int = 1024
     git_diff_file_limit: int = 500
+    import_storage_root: str = ".qualiforge/imports"
 
     @property
     def cors_origin_list(self) -> list[str]:

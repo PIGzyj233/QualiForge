@@ -229,6 +229,70 @@ export type ProjectModuleRecord = {
   updated_at: string;
 };
 
+export type ImportBatchRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  job_id: string | null;
+  file_name: string;
+  file_type: "csv" | "xlsx";
+  original_file_path: string;
+  status: "uploaded" | "preview_ready" | "review_submitted" | "imported" | "failed";
+  created_by: string;
+  row_count: number;
+  raw_rows: Record<string, unknown>[];
+  ai_conversion_result: Record<string, unknown>[];
+  manual_changes: Record<string, unknown>[];
+  error_summary: string;
+  created_at: string;
+  updated_at: string;
+  submitted_at: string | null;
+  imported_at: string | null;
+};
+
+export type ImportDraftRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  batch_id: string;
+  module_id: string | null;
+  title: string;
+  steps: string[];
+  expected_result: string;
+  priority: string;
+  risk: string;
+  tags: string[];
+  custom_fields: Record<string, string>;
+  source_row_index: number;
+  raw_row: Record<string, unknown>;
+  ai_confidence: number;
+  status: "draft" | "review_submitted" | "imported";
+  created_at: string;
+  updated_at: string;
+};
+
+export type TestCaseRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  module_id: string | null;
+  import_batch_id: string | null;
+  title: string;
+  steps: string[];
+  expected_result: string;
+  priority: string;
+  risk: string;
+  tags: string[];
+  custom_fields: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ImportResultRecord = {
+  batch: ImportBatchRecord;
+  imported_count: number;
+};
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
@@ -265,6 +329,23 @@ async function requestNoContent(path: string, init?: RequestInit): Promise<void>
     }
     throw new Error(detail);
   }
+}
+
+async function requestFormJson<T>(path: string, init: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, init);
+
+  if (!response.ok) {
+    let detail = `Request failed with status ${response.status}`;
+    try {
+      const payload = (await response.json()) as { detail?: string };
+      detail = payload.detail ?? detail;
+    } catch {
+      // Keep the HTTP status fallback when the response is not JSON.
+    }
+    throw new Error(detail);
+  }
+
+  return response.json() as Promise<T>;
 }
 
 export function login(payload: LoginPayload): Promise<Session> {
@@ -617,4 +698,82 @@ export function deleteMappingRule(
     `/workspaces/${workspaceId}/projects/${projectId}/modules/${moduleId}/mapping-rules/${ruleId}?actor_email=${encodeURIComponent(actorEmail)}`,
     { method: "DELETE" }
   );
+}
+
+export function uploadImportBatch(workspaceId: string, projectId: string, actorEmail: string, file: File): Promise<ImportBatchRecord> {
+  const body = new FormData();
+  body.append("file", file);
+  return requestFormJson<ImportBatchRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/imports?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body
+    }
+  );
+}
+
+export function listImportBatches(workspaceId: string, projectId: string): Promise<ImportBatchRecord[]> {
+  return requestJson<ImportBatchRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/imports`);
+}
+
+export function getImportBatch(workspaceId: string, projectId: string, batchId: string): Promise<ImportBatchRecord> {
+  return requestJson<ImportBatchRecord>(`/workspaces/${workspaceId}/projects/${projectId}/imports/${batchId}`);
+}
+
+export function listImportDrafts(workspaceId: string, projectId: string, batchId: string): Promise<ImportDraftRecord[]> {
+  return requestJson<ImportDraftRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/imports/${batchId}/drafts`);
+}
+
+export function updateImportDraft(
+  workspaceId: string,
+  projectId: string,
+  batchId: string,
+  draftId: string,
+  actorEmail: string,
+  payload: Partial<Pick<ImportDraftRecord, "module_id" | "title" | "steps" | "expected_result" | "priority" | "risk" | "tags" | "custom_fields">>
+): Promise<ImportDraftRecord> {
+  return requestJson<ImportDraftRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/imports/${batchId}/drafts/${draftId}?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function bulkUpdateImportDrafts(
+  workspaceId: string,
+  projectId: string,
+  batchId: string,
+  actorEmail: string,
+  payload: Partial<Pick<ImportDraftRecord, "module_id" | "title" | "steps" | "expected_result" | "priority" | "risk" | "tags" | "custom_fields">> & {
+    draft_ids?: string[];
+  }
+): Promise<ImportDraftRecord[]> {
+  return requestJson<ImportDraftRecord[]>(
+    `/workspaces/${workspaceId}/projects/${projectId}/imports/${batchId}/drafts-bulk?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function submitImportReview(workspaceId: string, projectId: string, batchId: string, actorEmail: string): Promise<ImportBatchRecord> {
+  return requestJson<ImportBatchRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/imports/${batchId}/submit-review?actor_email=${encodeURIComponent(actorEmail)}`,
+    { method: "POST" }
+  );
+}
+
+export function bulkImportTestCases(workspaceId: string, projectId: string, batchId: string, actorEmail: string): Promise<ImportResultRecord> {
+  return requestJson<ImportResultRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/imports/${batchId}/bulk-import?actor_email=${encodeURIComponent(actorEmail)}`,
+    { method: "POST" }
+  );
+}
+
+export function listTestCases(workspaceId: string, projectId: string, moduleId?: string): Promise<TestCaseRecord[]> {
+  const suffix = moduleId ? `?module_id=${encodeURIComponent(moduleId)}` : "";
+  return requestJson<TestCaseRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/test-cases${suffix}`);
 }
