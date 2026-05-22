@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-qualiforge}
+      POSTGRES_USER: ${POSTGRES_USER:-qualiforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qualiforge}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-qualiforge} -d ${POSTGRES_DB:-qualiforge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      QUALIFORGE_DATABASE_URL: ${QUALIFORGE_DATABASE_URL:-postgresql://qualiforge:qualiforge@postgres:5432/qualiforge}
+      QUALIFORGE_REDIS_URL: ${QUALIFORGE_REDIS_URL:-redis://redis:6379/0}
+      QUALIFORGE_GIT_SANDBOX_ROOT: ${QUALIFORGE_GIT_SANDBOX_ROOT:-/data/git-sandbox}
+    ports:
+      - "8000:8000"
+    volumes:
+      - git_sandbox_data:/data/git-sandbox
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      QUALIFORGE_DATABASE_URL: ${QUALIFORGE_DATABASE_URL:-postgresql://qualiforge:qualiforge@postgres:5432/qualiforge}
+      QUALIFORGE_REDIS_URL: ${QUALIFORGE_REDIS_URL:-redis://redis:6379/0}
+      QUALIFORGE_GIT_SANDBOX_ROOT: ${QUALIFORGE_GIT_SANDBOX_ROOT:-/data/git-sandbox}
+    volumes:
+      - git_sandbox_data:/data/git-sandbox
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  git_sandbox_data:

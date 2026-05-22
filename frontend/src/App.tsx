@@ -1,0 +1,1477 @@
+import {
+  Activity,
+  AlertCircle,
+  BrainCircuit,
+  CheckCircle2,
+  ClipboardCheck,
+  Database,
+  FileText,
+  FolderKanban,
+  GitBranch,
+  GitCommitHorizontal,
+  History,
+  KeyRound,
+  LayoutDashboard,
+  LogIn,
+  PencilLine,
+  Plus,
+  RefreshCcw,
+  Settings2,
+  ShieldCheck,
+  ShieldAlert,
+  Sparkles,
+  Trash2,
+  UserPlus,
+  Users
+} from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  addMember,
+  AIDataPolicy,
+  AIInvocationRecord,
+  AIPurpose,
+  AISettingsRecord,
+  AuditLogRecord,
+  bindRepository,
+  completeAIInvocation,
+  createLLMProvider,
+  createProject,
+  createWorkspace,
+  DashboardSummary,
+  getGitLabToken,
+  getDashboardSummary,
+  getHealth,
+  getAISettings,
+  GitLabTokenRecord,
+  GitRepositoryRecord,
+  HealthPayload,
+  JobRecord,
+  listAuditLogs,
+  listAIInvocations,
+  listJobs,
+  listLLMProviders,
+  listMembers,
+  listModelProfiles,
+  listProjects,
+  listRepositories,
+  listWorkspaces,
+  LLMProviderRecord,
+  login,
+  MemberRecord,
+  ModelProfileRecord,
+  ProjectRecord,
+  removeMember,
+  Session,
+  startAIInvocation,
+  syncRepository,
+  updateProject,
+  updateAISettings,
+  upsertGitLabToken,
+  upsertModelProfile,
+  WorkspaceRecord
+} from "./api";
+
+const SESSION_KEY = "qualiforge.session";
+
+const navItems = [
+  { label: "工作台", icon: LayoutDashboard, active: true },
+  { label: "项目", icon: GitBranch, active: false },
+  { label: "用例库", icon: ClipboardCheck, active: false },
+  { label: "评审", icon: Users, active: false },
+  { label: "报告", icon: FileText, active: false },
+  { label: "设置", icon: ShieldCheck, active: false }
+];
+
+const statusLabel: Record<string, string> = {
+  done: "已完成",
+  in_progress: "进行中",
+  next: "下一步",
+  blocked: "等待依赖",
+  ok: "正常",
+  degraded: "降级",
+  unavailable: "不可用",
+  configured: "已配置",
+  queued: "排队中",
+  rejected: "已拒绝",
+  succeeded: "成功",
+  failed: "失败",
+  active: "活跃",
+  archived: "归档",
+  pending: "待同步",
+  synced: "已同步",
+  sync_failed: "同步失败",
+  running: "运行中",
+  cancelled: "已取消"
+};
+
+const purposeLabel: Record<AIPurpose, string> = {
+  import_cleanup: "导入清洗",
+  diff_analysis: "Diff 分析",
+  case_generation: "用例生成",
+  report_summary: "报告总结"
+};
+
+const policyLabel: Record<AIDataPolicy, string> = {
+  ExternalAllowed: "ExternalAllowed",
+  NoSourceCode: "NoSourceCode",
+  InternalOnly: "InternalOnly",
+  AIDisabled: "AIDisabled"
+};
+
+export function App() {
+  const [session, setSession] = useState<Session | null>(() => {
+    const stored = localStorage.getItem(SESSION_KEY);
+    return stored ? (JSON.parse(stored) as Session) : null;
+  });
+
+  const handleSession = (nextSession: Session) => {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
+    setSession(nextSession);
+  };
+
+  if (!session) {
+    return <LoginView onSession={handleSession} />;
+  }
+
+  return (
+    <Workbench
+      session={session}
+      onSignOut={() => {
+        localStorage.removeItem(SESSION_KEY);
+        setSession(null);
+      }}
+    />
+  );
+}
+
+function LoginView({ onSession }: { onSession: (session: Session) => void }) {
+  const [email, setEmail] = useState("owner@qualiforge.local");
+  const [displayName, setDisplayName] = useState("Workspace Owner");
+  const [workspaceName, setWorkspaceName] = useState("QualiForge Lab");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      const nextSession = await login({ email, display_name: displayName, workspace_name: workspaceName });
+      onSession(nextSession);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "登录失败");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="login-shell">
+      <section className="login-panel" aria-label="QualiForge 登录">
+        <div className="brand-mark">
+          <Sparkles size={22} aria-hidden="true" />
+          <span>QualiForge</span>
+        </div>
+        <div>
+          <h1>私有化测试资产工作台</h1>
+          <p>团队测试资产与发布决策的私有工作台。</p>
+        </div>
+        <form onSubmit={handleSubmit} className="login-form">
+          <label>
+            邮箱
+            <input value={email} type="email" onChange={(event) => setEmail(event.target.value)} required />
+          </label>
+          <label>
+            显示名称
+            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
+          </label>
+          <label>
+            Workspace
+            <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} required />
+          </label>
+          {error ? <p className="form-error">{error}</p> : null}
+          <button className="primary-button" type="submit" disabled={submitting}>
+            <LogIn size={18} aria-hidden="true" />
+            <span>{submitting ? "进入中" : "进入工作台"}</span>
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function Workbench({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
+  const [health, setHealth] = useState<HealthPayload | null>(null);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [nextHealth, nextSummary] = await Promise.all([getHealth(), getDashboardSummary()]);
+      setHealth(nextHealth);
+      setSummary(nextSummary);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "工作台数据加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const services = useMemo(() => {
+    if (!health) return [];
+    return Object.entries(health.services).map(([name, service]) => ({ name, ...service }));
+  }, [health]);
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar" aria-label="主导航">
+        <div className="brand-lockup">
+          <div className="brand-icon">QF</div>
+          <div>
+            <strong>QualiForge</strong>
+            <span>MVP Workbench</span>
+          </div>
+        </div>
+        <nav>
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button className={item.active ? "nav-button active" : "nav-button"} key={item.label} type="button">
+                <Icon size={18} aria-hidden="true" />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
+
+      <main className="workspace">
+        <header className="topbar">
+          <div>
+            <span className="eyebrow">{session.workspace.name}</span>
+            <h1>工作台</h1>
+          </div>
+          <div className="topbar-actions">
+            <StatusPill status={health?.status ?? "degraded"} />
+            <button className="icon-button" type="button" onClick={() => void refresh()} title="刷新状态">
+              <RefreshCcw size={18} aria-hidden="true" />
+            </button>
+            <button className="ghost-button" type="button" onClick={onSignOut}>
+              退出
+            </button>
+          </div>
+        </header>
+
+        {error ? (
+          <section className="notice error">
+            <AlertCircle size={18} aria-hidden="true" />
+            <span>{error}</span>
+          </section>
+        ) : null}
+
+        <section className="status-grid" aria-label="服务状态">
+          <StatusTile label="Backend API" status={health?.status ?? (loading ? "checking" : "degraded")} detail={health?.environment ?? "local"} />
+          {services.map((service) => (
+            <StatusTile key={service.name} label={service.name} status={service.status} detail={service.detail} />
+          ))}
+        </section>
+
+        <section className="workbench-layout">
+          <div className="main-column">
+            <section className="section-block">
+              <div className="section-heading">
+                <div>
+                  <span className="eyebrow">Issue Chain</span>
+                  <h2>{summary?.mvp_stage ?? "基础平台"}</h2>
+                </div>
+                <Activity size={20} aria-hidden="true" />
+              </div>
+              <div className="issue-table" role="table" aria-label="MVP issue 队列">
+                <div className="issue-row issue-head" role="row">
+                  <span>Issue</span>
+                  <span>标题</span>
+                  <span>Owner</span>
+                  <span>状态</span>
+                </div>
+                {(summary?.work_items ?? []).map((item) => (
+                  <div className="issue-row" role="row" key={item.issue}>
+                    <span className="issue-id">{item.issue}</span>
+                    <span>{item.title}</span>
+                    <span>{item.owner}</span>
+                    <StatusPill status={item.status} />
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="section-block">
+              <div className="section-heading">
+                <div>
+                  <span className="eyebrow">Jobs</span>
+                  <h2>最近任务</h2>
+                </div>
+                <Database size={20} aria-hidden="true" />
+              </div>
+              <div className="job-list">
+                {(summary?.recent_jobs ?? []).map((job) => (
+                  <div className="job-row" key={`${job.type}-${job.created_at}`}>
+                    <CheckCircle2 size={18} aria-hidden="true" />
+                    <div>
+                      <strong>{job.summary}</strong>
+                      <span>{job.type} · {job.status}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <WorkspaceAdmin session={session} />
+            <GitLabSandboxAdmin session={session} />
+            <AIConfigAdmin session={session} />
+          </div>
+
+          <aside className="side-column" aria-label="待办概览">
+            {(summary?.queues ?? []).map((queue) => (
+              <div className="metric-card" key={queue.label}>
+                <span>{queue.label}</span>
+                <strong>{queue.value}</strong>
+                <small>{queue.trend}</small>
+              </div>
+            ))}
+          </aside>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function WorkspaceAdmin({ session }: { session: Session }) {
+  const actorEmail = session.user.email;
+  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
+  const [members, setMembers] = useState<MemberRecord[]>([]);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
+  const [workspaceName, setWorkspaceName] = useState(session.workspace.name);
+  const [memberEmail, setMemberEmail] = useState("tester@qualiforge.local");
+  const [memberName, setMemberName] = useState("Tester");
+  const [memberRole, setMemberRole] = useState<"WorkspaceOwner" | "WorkspaceMember">("WorkspaceMember");
+  const [projectName, setProjectName] = useState("Checkout");
+  const [projectKey, setProjectKey] = useState("CHECKOUT");
+  const [projectDescription, setProjectDescription] = useState("Checkout regression surface");
+  const [projectStatus, setProjectStatus] = useState<"active" | "archived">("active");
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function refreshWorkspaces(preferredWorkspaceId?: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const nextWorkspaces = await listWorkspaces(actorEmail);
+      setWorkspaces(nextWorkspaces);
+      const nextSelectedId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      setSelectedWorkspaceId(nextSelectedId);
+      if (nextSelectedId) {
+        await refreshWorkspaceDetails(nextSelectedId);
+      } else {
+        setMembers([]);
+        setProjects([]);
+        setAuditLogs([]);
+      }
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Workspace 数据加载失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshWorkspaceDetails(workspaceId: string) {
+    const [nextMembers, nextProjects, nextAuditLogs] = await Promise.all([
+      listMembers(workspaceId),
+      listProjects(workspaceId),
+      listAuditLogs(workspaceId)
+    ]);
+    setMembers(nextMembers);
+    setProjects(nextProjects);
+    setAuditLogs(nextAuditLogs);
+  }
+
+  useEffect(() => {
+    void refreshWorkspaces();
+  }, []);
+
+  async function handleCreateWorkspace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage(null);
+    try {
+      const workspace = await createWorkspace({
+        name: workspaceName,
+        owner_email: actorEmail,
+        owner_display_name: session.user.display_name
+      });
+      setMessage(`已创建 Workspace：${workspace.name}`);
+      await refreshWorkspaces(workspace.id);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Workspace 创建失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleWorkspaceSwitch(workspaceId: string) {
+    setSelectedWorkspaceId(workspaceId);
+    setBusy(true);
+    setMessage(null);
+    try {
+      await refreshWorkspaceDetails(workspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Workspace 切换失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleAddMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const member = await addMember(selectedWorkspaceId, actorEmail, {
+        email: memberEmail,
+        display_name: memberName,
+        role: memberRole
+      });
+      setMessage(`已添加成员：${member.email}`);
+      await refreshWorkspaceDetails(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "成员添加失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRemoveMember(memberId: string) {
+    if (!selectedWorkspaceId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await removeMember(selectedWorkspaceId, memberId, actorEmail);
+      setMessage("已移除成员");
+      await refreshWorkspaceDetails(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "成员移除失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      if (editingProjectId) {
+        const project = await updateProject(selectedWorkspaceId, editingProjectId, actorEmail, {
+          name: projectName,
+          description: projectDescription,
+          status: projectStatus
+        });
+        setMessage(`已更新项目：${project.key}`);
+      } else {
+        const project = await createProject(selectedWorkspaceId, actorEmail, {
+          name: projectName,
+          key: projectKey,
+          description: projectDescription
+        });
+        setMessage(`已创建项目：${project.key}`);
+      }
+      clearProjectForm();
+      await refreshWorkspaceDetails(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "项目保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function editProject(project: ProjectRecord) {
+    setEditingProjectId(project.id);
+    setProjectName(project.name);
+    setProjectKey(project.key);
+    setProjectDescription(project.description);
+    setProjectStatus(project.status);
+  }
+
+  function clearProjectForm() {
+    setEditingProjectId(null);
+    setProjectName("");
+    setProjectKey("");
+    setProjectDescription("");
+    setProjectStatus("active");
+  }
+
+  const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId);
+
+  return (
+    <section className="section-block workspace-admin">
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">Workspace</span>
+          <h2>成员、项目和审计</h2>
+        </div>
+        <FolderKanban size={20} aria-hidden="true" />
+      </div>
+
+      <div className="admin-body">
+        {message ? <div className="inline-notice">{message}</div> : null}
+
+        <div className="admin-toolbar">
+          <form className="compact-form" onSubmit={handleCreateWorkspace}>
+            <label>
+              Workspace 名称
+              <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} required />
+            </label>
+            <button className="primary-button small" type="submit" disabled={busy}>
+              <Plus size={16} aria-hidden="true" />
+              <span>创建</span>
+            </button>
+          </form>
+
+          <label className="select-label">
+            当前 Workspace
+            <select
+              value={selectedWorkspaceId}
+              onChange={(event) => void handleWorkspaceSwitch(event.target.value)}
+              disabled={busy || workspaces.length === 0}
+            >
+              <option value="">未选择</option>
+              {workspaces.map((workspace) => (
+                <option value={workspace.id} key={workspace.id}>
+                  {workspace.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="admin-context">
+          <strong>{selectedWorkspace?.name ?? "尚未创建 Workspace"}</strong>
+          <span>{selectedWorkspace ? `Owner ${selectedWorkspace.owner_email}` : "先创建 Workspace，然后添加成员和项目。"}</span>
+        </div>
+
+        <div className="admin-grid">
+          <section className="admin-pane" aria-label="成员管理">
+            <div className="pane-heading">
+              <div>
+                <span className="eyebrow">Members</span>
+                <h3>成员</h3>
+              </div>
+              <UserPlus size={18} aria-hidden="true" />
+            </div>
+            <form className="stack-form" onSubmit={handleAddMember}>
+              <div className="form-row">
+                <label>
+                  邮箱
+                  <input value={memberEmail} onChange={(event) => setMemberEmail(event.target.value)} required />
+                </label>
+                <label>
+                  显示名称
+                  <input value={memberName} onChange={(event) => setMemberName(event.target.value)} required />
+                </label>
+              </div>
+              <div className="form-row compact">
+                <label>
+                  角色
+                  <select value={memberRole} onChange={(event) => setMemberRole(event.target.value as "WorkspaceOwner" | "WorkspaceMember")}>
+                    <option value="WorkspaceMember">WorkspaceMember</option>
+                    <option value="WorkspaceOwner">WorkspaceOwner</option>
+                  </select>
+                </label>
+                <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId}>
+                  添加成员
+                </button>
+              </div>
+            </form>
+            <div className="data-list">
+              {members.map((member) => (
+                <div className="data-row" key={member.id}>
+                  <div>
+                    <strong>{member.display_name}</strong>
+                    <span>{member.email} · {member.role}</span>
+                  </div>
+                  <button
+                    className="icon-button subtle"
+                    type="button"
+                    disabled={busy || member.role === "WorkspaceOwner"}
+                    onClick={() => void handleRemoveMember(member.id)}
+                    title="移除成员"
+                  >
+                    <Trash2 size={16} aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="admin-pane" aria-label="项目管理">
+            <div className="pane-heading">
+              <div>
+                <span className="eyebrow">Projects</span>
+                <h3>项目</h3>
+              </div>
+              <PencilLine size={18} aria-hidden="true" />
+            </div>
+            <form className="stack-form" onSubmit={handleSaveProject}>
+              <div className="form-row">
+                <label>
+                  名称
+                  <input value={projectName} onChange={(event) => setProjectName(event.target.value)} required />
+                </label>
+                <label>
+                  Key
+                  <input
+                    value={projectKey}
+                    onChange={(event) => setProjectKey(event.target.value.toUpperCase())}
+                    disabled={Boolean(editingProjectId)}
+                    required
+                  />
+                </label>
+              </div>
+              <label>
+                描述
+                <input value={projectDescription} onChange={(event) => setProjectDescription(event.target.value)} />
+              </label>
+              <div className="form-row compact">
+                <label>
+                  状态
+                  <select value={projectStatus} onChange={(event) => setProjectStatus(event.target.value as "active" | "archived")}>
+                    <option value="active">active</option>
+                    <option value="archived">archived</option>
+                  </select>
+                </label>
+                <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId}>
+                  {editingProjectId ? "保存项目" : "创建项目"}
+                </button>
+                {editingProjectId ? (
+                  <button className="ghost-button" type="button" onClick={clearProjectForm}>
+                    取消
+                  </button>
+                ) : null}
+              </div>
+            </form>
+            <div className="data-list">
+              {projects.map((project) => (
+                <div className="data-row" key={project.id}>
+                  <div>
+                    <strong>{project.key} · {project.name}</strong>
+                    <span>{project.description || "无描述"} · {statusLabel[project.status]}</span>
+                  </div>
+                  <button className="icon-button subtle" type="button" onClick={() => editProject(project)} title="编辑项目">
+                    <PencilLine size={16} aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+
+        <section className="audit-pane" aria-label="审计日志">
+          <div className="pane-heading">
+            <div>
+              <span className="eyebrow">Audit</span>
+              <h3>最近审计</h3>
+            </div>
+            <History size={18} aria-hidden="true" />
+          </div>
+          <div className="audit-list">
+            {auditLogs.slice(0, 8).map((entry) => (
+              <div className="audit-row" key={entry.id}>
+                <span>{entry.action}</span>
+                <strong>{entry.summary}</strong>
+                <small>{entry.actor_email}</small>
+              </div>
+            ))}
+            {auditLogs.length === 0 ? <p className="empty-state">暂无审计记录</p> : null}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function GitLabSandboxAdmin({ session }: { session: Session }) {
+  const actorEmail = session.user.email;
+  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [tokenConfig, setTokenConfig] = useState<GitLabTokenRecord | null>(null);
+  const [repositories, setRepositories] = useState<GitRepositoryRecord[]>([]);
+  const [jobs, setJobs] = useState<JobRecord[]>([]);
+  const [gitlabBaseUrl, setGitlabBaseUrl] = useState("https://gitlab.example.com");
+  const [gitlabToken, setGitlabToken] = useState("");
+  const [projectId, setProjectId] = useState("");
+  const [repositoryName, setRepositoryName] = useState("Checkout API");
+  const [remoteUrl, setRemoteUrl] = useState("https://gitlab.example.com/team/checkout-api.git");
+  const [defaultBranch, setDefaultBranch] = useState("main");
+  const [repoSizeLimitMb, setRepoSizeLimitMb] = useState("1024");
+  const [diffFileLimit, setDiffFileLimit] = useState("500");
+  const [syncTimeoutSeconds, setSyncTimeoutSeconds] = useState("120");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function refreshGitWorkspaces(preferredWorkspaceId?: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const nextWorkspaces = await listWorkspaces(actorEmail);
+      setWorkspaces(nextWorkspaces);
+      const nextSelectedId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      setSelectedWorkspaceId(nextSelectedId);
+      if (nextSelectedId) {
+        await refreshGitConfig(nextSelectedId);
+      }
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "GitLab 配置加载失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshGitConfig(workspaceId: string) {
+    const [nextToken, nextProjects, nextRepositories, nextJobs] = await Promise.all([
+      getGitLabToken(workspaceId),
+      listProjects(workspaceId),
+      listRepositories(workspaceId),
+      listJobs(workspaceId)
+    ]);
+    setTokenConfig(nextToken);
+    if (nextToken) {
+      setGitlabBaseUrl(nextToken.gitlab_base_url);
+    }
+    setProjects(nextProjects);
+    setRepositories(nextRepositories);
+    setJobs(nextJobs);
+    if (!projectId && nextProjects[0]) {
+      setProjectId(nextProjects[0].id);
+    }
+  }
+
+  useEffect(() => {
+    void refreshGitWorkspaces();
+  }, []);
+
+  async function handleWorkspaceSwitch(workspaceId: string) {
+    setSelectedWorkspaceId(workspaceId);
+    setBusy(true);
+    setMessage(null);
+    try {
+      await refreshGitConfig(workspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Git Workspace 切换失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleTokenSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const token = await upsertGitLabToken(selectedWorkspaceId, actorEmail, {
+        gitlab_base_url: gitlabBaseUrl,
+        token: gitlabToken
+      });
+      setTokenConfig(token);
+      setGitlabToken("");
+      setMessage(`已保存 GitLab token：${token.token_masked}`);
+      await refreshGitConfig(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "GitLab token 保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRepositoryBind(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId || !projectId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const repository = await bindRepository(selectedWorkspaceId, actorEmail, {
+        project_id: projectId,
+        name: repositoryName,
+        remote_url: remoteUrl,
+        default_branch: defaultBranch,
+        repo_size_limit_mb: Number(repoSizeLimitMb),
+        diff_file_limit: Number(diffFileLimit),
+        sync_timeout_seconds: Number(syncTimeoutSeconds)
+      });
+      setMessage(`已绑定仓库：${repository.name}`);
+      await refreshGitConfig(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "仓库绑定失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRepositorySync(repositoryId: string) {
+    if (!selectedWorkspaceId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const job = await syncRepository(selectedWorkspaceId, repositoryId, actorEmail);
+      setMessage(`已创建同步 Job：${job.status}`);
+      await refreshGitConfig(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "仓库同步失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId);
+
+  return (
+    <section className="section-block git-admin">
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">GitLab</span>
+          <h2>只读仓库和 Git Sandbox</h2>
+        </div>
+        <GitCommitHorizontal size={20} aria-hidden="true" />
+      </div>
+      <div className="admin-body">
+        {message ? <div className="inline-notice">{message}</div> : null}
+
+        <div className="admin-toolbar">
+          <label className="select-label">
+            当前 Workspace
+            <select
+              value={selectedWorkspaceId}
+              onChange={(event) => void handleWorkspaceSwitch(event.target.value)}
+              disabled={busy || workspaces.length === 0}
+            >
+              <option value="">未选择</option>
+              {workspaces.map((workspace) => (
+                <option value={workspace.id} key={workspace.id}>
+                  {workspace.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="admin-context compact-context">
+            <strong>{selectedWorkspace?.name ?? "尚未选择 Workspace"}</strong>
+            <span>{tokenConfig ? `GitLab ${tokenConfig.gitlab_base_url} · token ${tokenConfig.token_masked}` : "保存 Workspace 级只读 GitLab token 后绑定项目仓库。"}</span>
+          </div>
+        </div>
+
+        <div className="admin-grid">
+          <section className="admin-pane" aria-label="GitLab token 配置">
+            <div className="pane-heading">
+              <div>
+                <span className="eyebrow">Credential</span>
+                <h3>Workspace GitLab Token</h3>
+              </div>
+              <KeyRound size={18} aria-hidden="true" />
+            </div>
+            <form className="stack-form" onSubmit={handleTokenSave}>
+              <label>
+                GitLab Base URL
+                <input value={gitlabBaseUrl} onChange={(event) => setGitlabBaseUrl(event.target.value)} required />
+              </label>
+              <div className="form-row compact">
+                <label>
+                  Token
+                  <input value={gitlabToken} onChange={(event) => setGitlabToken(event.target.value)} required />
+                </label>
+                <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId}>
+                  保存 Token
+                </button>
+              </div>
+            </form>
+            <div className="data-list">
+              {tokenConfig ? (
+                <div className="data-row wide">
+                  <div>
+                    <strong>{tokenConfig.gitlab_base_url}</strong>
+                    <span>token {tokenConfig.token_masked} · updated by {tokenConfig.updated_by}</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="empty-state">暂无 GitLab token</p>
+              )}
+            </div>
+          </section>
+
+          <section className="admin-pane" aria-label="Repository 绑定">
+            <div className="pane-heading">
+              <div>
+                <span className="eyebrow">Repositories</span>
+                <h3>项目仓库绑定</h3>
+              </div>
+              <GitBranch size={18} aria-hidden="true" />
+            </div>
+            <form className="stack-form" onSubmit={handleRepositoryBind}>
+              <label>
+                Project
+                <select value={projectId} onChange={(event) => setProjectId(event.target.value)} required>
+                  <option value="">未选择</option>
+                  {projects.map((project) => (
+                    <option value={project.id} key={project.id}>
+                      {project.key} · {project.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="form-row">
+                <label>
+                  仓库名称
+                  <input value={repositoryName} onChange={(event) => setRepositoryName(event.target.value)} required />
+                </label>
+                <label>
+                  默认分支
+                  <input value={defaultBranch} onChange={(event) => setDefaultBranch(event.target.value)} required />
+                </label>
+              </div>
+              <label>
+                Remote URL
+                <input value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} required />
+              </label>
+              <div className="form-row">
+                <label>
+                  大小限制 MB
+                  <input value={repoSizeLimitMb} onChange={(event) => setRepoSizeLimitMb(event.target.value)} />
+                </label>
+                <label>
+                  Diff 文件数限制
+                  <input value={diffFileLimit} onChange={(event) => setDiffFileLimit(event.target.value)} />
+                </label>
+              </div>
+              <div className="form-row compact">
+                <label>
+                  超时秒数
+                  <input value={syncTimeoutSeconds} onChange={(event) => setSyncTimeoutSeconds(event.target.value)} />
+                </label>
+                <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId || projects.length === 0}>
+                  绑定仓库
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+
+        <section className="audit-pane" aria-label="Git Repository 列表">
+          <div className="pane-heading">
+            <div>
+              <span className="eyebrow">Sandbox Mirrors</span>
+              <h3>仓库镜像</h3>
+            </div>
+            <GitCommitHorizontal size={18} aria-hidden="true" />
+          </div>
+          <div className="data-list">
+            {repositories.map((repository) => (
+              <div className="data-row git-row" key={repository.id}>
+                <div>
+                  <strong>{repository.name} · {statusLabel[repository.status]}</strong>
+                  <span>{repository.remote_url}</span>
+                  <small>{repository.mirror_path}</small>
+                  <small>
+                    {repository.repo_size_limit_mb} MB · diff {repository.diff_file_limit} files · timeout {repository.sync_timeout_seconds}s
+                  </small>
+                </div>
+                <button className="ghost-button" type="button" disabled={busy} onClick={() => void handleRepositorySync(repository.id)}>
+                  同步
+                </button>
+              </div>
+            ))}
+            {repositories.length === 0 ? <p className="empty-state">暂无仓库绑定</p> : null}
+          </div>
+        </section>
+
+        <section className="audit-pane" aria-label="Git Sync Jobs">
+          <div className="pane-heading">
+            <div>
+              <span className="eyebrow">Jobs</span>
+              <h3>同步任务</h3>
+            </div>
+            <Database size={18} aria-hidden="true" />
+          </div>
+          <div className="audit-list">
+            {jobs.slice(0, 8).map((job) => (
+              <div className="audit-row" key={job.id}>
+                <span>{statusLabel[job.status]}</span>
+                <strong>{job.input_summary}</strong>
+                <small>{job.error_summary || job.output_summary || job.key_logs[0]}</small>
+              </div>
+            ))}
+            {jobs.length === 0 ? <p className="empty-state">暂无同步任务</p> : null}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function AIConfigAdmin({ session }: { session: Session }) {
+  const actorEmail = session.user.email;
+  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
+  const [settings, setSettings] = useState<AISettingsRecord | null>(null);
+  const [providers, setProviders] = useState<LLMProviderRecord[]>([]);
+  const [profiles, setProfiles] = useState<ModelProfileRecord[]>([]);
+  const [invocations, setInvocations] = useState<AIInvocationRecord[]>([]);
+  const [providerName, setProviderName] = useState("OpenAI Compatible");
+  const [apiBaseUrl, setApiBaseUrl] = useState("https://api.openai.example/v1");
+  const [apiKey, setApiKey] = useState("");
+  const [headersText, setHeadersText] = useState("{\"X-Team\":\"qa\"}");
+  const [organization, setOrganization] = useState("qualiforge");
+  const [policy, setPolicy] = useState<AIDataPolicy>("ExternalAllowed");
+  const [profileProviderId, setProfileProviderId] = useState("");
+  const [profilePurpose, setProfilePurpose] = useState<AIPurpose>("import_cleanup");
+  const [modelName, setModelName] = useState("gpt-test");
+  const [reasoningEffort, setReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh">("medium");
+  const [inputTokenPrice, setInputTokenPrice] = useState("2.00");
+  const [outputTokenPrice, setOutputTokenPrice] = useState("8.00");
+  const [invocationPurpose, setInvocationPurpose] = useState<AIPurpose>("import_cleanup");
+  const [invocationSummary, setInvocationSummary] = useState("Normalize imported checkout test cases");
+  const [includesSourceCode, setIncludesSourceCode] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function refreshAIWorkspaces(preferredWorkspaceId?: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const nextWorkspaces = await listWorkspaces(actorEmail);
+      setWorkspaces(nextWorkspaces);
+      const nextSelectedId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      setSelectedWorkspaceId(nextSelectedId);
+      if (nextSelectedId) {
+        await refreshAIConfig(nextSelectedId);
+      }
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "AI 配置加载失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshAIConfig(workspaceId: string) {
+    const [nextSettings, nextProviders, nextProfiles, nextInvocations] = await Promise.all([
+      getAISettings(workspaceId),
+      listLLMProviders(workspaceId),
+      listModelProfiles(workspaceId),
+      listAIInvocations(workspaceId)
+    ]);
+    setSettings(nextSettings);
+    setPolicy(nextSettings.data_policy);
+    setProviders(nextProviders);
+    setProfiles(nextProfiles);
+    setInvocations(nextInvocations);
+    if (!profileProviderId && nextProviders[0]) {
+      setProfileProviderId(nextProviders[0].id);
+    }
+  }
+
+  useEffect(() => {
+    void refreshAIWorkspaces();
+  }, []);
+
+  async function handleWorkspaceSwitch(workspaceId: string) {
+    setSelectedWorkspaceId(workspaceId);
+    setBusy(true);
+    setMessage(null);
+    try {
+      await refreshAIConfig(workspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "AI Workspace 切换失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleProviderCreate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const defaultHeaders = headersText.trim() ? (JSON.parse(headersText) as Record<string, string>) : {};
+      const provider = await createLLMProvider(selectedWorkspaceId, actorEmail, {
+        name: providerName,
+        api_base_url: apiBaseUrl,
+        api_key: apiKey,
+        default_headers: defaultHeaders,
+        organization
+      });
+      setMessage(`已创建 Provider：${provider.name}`);
+      setProfileProviderId(provider.id);
+      setApiKey("");
+      await refreshAIConfig(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Provider 创建失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handlePolicyUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const nextSettings = await updateAISettings(selectedWorkspaceId, actorEmail, policy);
+      setSettings(nextSettings);
+      setMessage(`已更新 AI 数据策略：${nextSettings.data_policy}`);
+      await refreshAIConfig(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "AI 数据策略更新失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleProfileSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId || !profileProviderId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const profile = await upsertModelProfile(selectedWorkspaceId, actorEmail, {
+        provider_id: profileProviderId,
+        purpose: profilePurpose,
+        model_name: modelName,
+        reasoning_effort: reasoningEffort,
+        max_context_tokens: 128000,
+        max_output_tokens: 4096,
+        input_token_price: inputTokenPrice,
+        output_token_price: outputTokenPrice,
+        cache_policy: "semantic",
+        timeout_seconds: 90,
+        retry_count: 2,
+        budget_limit: "25.00"
+      });
+      setMessage(`已配置 Model Profile：${purposeLabel[profile.purpose]}`);
+      await refreshAIConfig(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Model Profile 保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleInvocationStart(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const invocation = await startAIInvocation(selectedWorkspaceId, actorEmail, {
+        purpose: invocationPurpose,
+        input_summary: invocationSummary,
+        input_data_types: includesSourceCode ? ["diff", "source_code"] : ["test_cases", "summary"],
+        includes_source_code: includesSourceCode
+      });
+      setMessage(`已通过策略检查并排队：${purposeLabel[invocation.purpose]}`);
+      await refreshAIConfig(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "AI 任务启动失败");
+      await refreshAIConfig(selectedWorkspaceId);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCompleteLatest() {
+    if (!selectedWorkspaceId) return;
+    const queued = invocations.find((invocation) => invocation.status === "queued");
+    if (!queued) {
+      setMessage("没有可记录摘要的排队 AI 任务");
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      await completeAIInvocation(selectedWorkspaceId, queued.id, actorEmail, {
+        status: "succeeded",
+        token_prompt: 1200,
+        token_completion: 480,
+        cache_hit: false,
+        latency_ms: 1420,
+        failure_reason: ""
+      });
+      setMessage("已记录 AI 调用摘要");
+      await refreshAIConfig(selectedWorkspaceId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "AI 调用摘要记录失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId);
+
+  return (
+    <section className="section-block ai-admin">
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">AI Platform</span>
+          <h2>模型配置和数据策略</h2>
+        </div>
+        <BrainCircuit size={20} aria-hidden="true" />
+      </div>
+      <div className="admin-body">
+        {message ? <div className="inline-notice">{message}</div> : null}
+
+        <div className="admin-toolbar">
+          <label className="select-label">
+            当前 Workspace
+            <select
+              value={selectedWorkspaceId}
+              onChange={(event) => void handleWorkspaceSwitch(event.target.value)}
+              disabled={busy || workspaces.length === 0}
+            >
+              <option value="">未选择</option>
+              {workspaces.map((workspace) => (
+                <option value={workspace.id} key={workspace.id}>
+                  {workspace.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <form className="compact-form" onSubmit={handlePolicyUpdate}>
+            <label>
+              AI 数据策略
+              <select value={policy} onChange={(event) => setPolicy(event.target.value as AIDataPolicy)} disabled={!selectedWorkspaceId}>
+                {(Object.keys(policyLabel) as AIDataPolicy[]).map((item) => (
+                  <option value={item} key={item}>
+                    {policyLabel[item]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="primary-button small" type="submit" disabled={busy || !selectedWorkspaceId}>
+              <ShieldAlert size={16} aria-hidden="true" />
+              <span>保存</span>
+            </button>
+          </form>
+        </div>
+
+        <div className="admin-context">
+          <strong>{selectedWorkspace?.name ?? "尚未选择 Workspace"}</strong>
+          <span>{settings ? `Policy ${settings.data_policy} · updated by ${settings.updated_by}` : "创建 Workspace 后配置 AI Provider、模型用途和数据策略。"}</span>
+        </div>
+
+        <div className="admin-grid">
+          <section className="admin-pane" aria-label="LLM Provider 配置">
+            <div className="pane-heading">
+              <div>
+                <span className="eyebrow">Provider</span>
+                <h3>OpenAI-compatible Provider</h3>
+              </div>
+              <KeyRound size={18} aria-hidden="true" />
+            </div>
+            <form className="stack-form" onSubmit={handleProviderCreate}>
+              <label>
+                名称
+                <input value={providerName} onChange={(event) => setProviderName(event.target.value)} required />
+              </label>
+              <label>
+                API Base URL
+                <input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} required />
+              </label>
+              <label>
+                API Key
+                <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} required />
+              </label>
+              <label>
+                默认 Header JSON
+                <input value={headersText} onChange={(event) => setHeadersText(event.target.value)} />
+              </label>
+              <div className="form-row compact">
+                <label>
+                  组织
+                  <input value={organization} onChange={(event) => setOrganization(event.target.value)} />
+                </label>
+                <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId}>
+                  创建 Provider
+                </button>
+              </div>
+            </form>
+            <div className="data-list">
+              {providers.map((provider) => (
+                <div className="data-row wide" key={provider.id}>
+                  <div>
+                    <strong>{provider.name}</strong>
+                    <span>{provider.api_base_url} · key {provider.api_key_masked} · org {provider.organization || "none"}</span>
+                  </div>
+                </div>
+              ))}
+              {providers.length === 0 ? <p className="empty-state">暂无 Provider</p> : null}
+            </div>
+          </section>
+
+          <section className="admin-pane" aria-label="Model Profile 配置">
+            <div className="pane-heading">
+              <div>
+                <span className="eyebrow">Model Profiles</span>
+                <h3>用途模型</h3>
+              </div>
+              <Settings2 size={18} aria-hidden="true" />
+            </div>
+            <form className="stack-form" onSubmit={handleProfileSave}>
+              <label>
+                Provider
+                <select value={profileProviderId} onChange={(event) => setProfileProviderId(event.target.value)} required>
+                  <option value="">未选择</option>
+                  {providers.map((provider) => (
+                    <option value={provider.id} key={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="form-row">
+                <label>
+                  用途
+                  <select value={profilePurpose} onChange={(event) => setProfilePurpose(event.target.value as AIPurpose)}>
+                    {(Object.keys(purposeLabel) as AIPurpose[]).map((purpose) => (
+                      <option value={purpose} key={purpose}>
+                        {purposeLabel[purpose]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  模型
+                  <input value={modelName} onChange={(event) => setModelName(event.target.value)} required />
+                </label>
+              </div>
+              <div className="form-row">
+                <label>
+                  思考等级
+                  <select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as "low" | "medium" | "high" | "xhigh")}>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                  </select>
+                </label>
+                <label>
+                  输入价格 / 1M
+                  <input value={inputTokenPrice} onChange={(event) => setInputTokenPrice(event.target.value)} />
+                </label>
+              </div>
+              <div className="form-row compact">
+                <label>
+                  输出价格 / 1M
+                  <input value={outputTokenPrice} onChange={(event) => setOutputTokenPrice(event.target.value)} />
+                </label>
+                <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId || providers.length === 0}>
+                  保存用途
+                </button>
+              </div>
+            </form>
+            <div className="data-list">
+              {profiles.map((profile) => (
+                <div className="data-row wide" key={profile.id}>
+                  <div>
+                    <strong>{purposeLabel[profile.purpose]} · {profile.model_name}</strong>
+                    <span>{profile.reasoning_effort} · cache {profile.cache_policy} · ${profile.input_token_price}/${profile.output_token_price}</span>
+                  </div>
+                </div>
+              ))}
+              {profiles.length === 0 ? <p className="empty-state">暂无 Model Profile</p> : null}
+            </div>
+          </section>
+        </div>
+
+        <section className="audit-pane" aria-label="AI 调用摘要">
+          <div className="pane-heading">
+            <div>
+              <span className="eyebrow">AI Task Gate</span>
+              <h3>策略检查和调用摘要</h3>
+            </div>
+            <BrainCircuit size={18} aria-hidden="true" />
+          </div>
+          <form className="stack-form" onSubmit={handleInvocationStart}>
+            <div className="form-row">
+              <label>
+                用途
+                <select value={invocationPurpose} onChange={(event) => setInvocationPurpose(event.target.value as AIPurpose)}>
+                  {(Object.keys(purposeLabel) as AIPurpose[]).map((purpose) => (
+                    <option value={purpose} key={purpose}>
+                      {purposeLabel[purpose]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                输入摘要
+                <input value={invocationSummary} onChange={(event) => setInvocationSummary(event.target.value)} required />
+              </label>
+            </div>
+            <div className="form-row compact">
+              <label className="checkbox-label">
+                <input type="checkbox" checked={includesSourceCode} onChange={(event) => setIncludesSourceCode(event.target.checked)} />
+                包含源码
+              </label>
+              <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId}>
+                启动 AI 任务
+              </button>
+              <button className="ghost-button" type="button" onClick={() => void handleCompleteLatest()} disabled={busy || !selectedWorkspaceId}>
+                记录摘要
+              </button>
+            </div>
+          </form>
+          <div className="audit-list">
+            {invocations.slice(0, 8).map((invocation) => (
+              <div className="audit-row" key={invocation.id}>
+                <span>{statusLabel[invocation.status]}</span>
+                <strong>{purposeLabel[invocation.purpose]} · {invocation.input_summary}</strong>
+                <small>
+                  {invocation.token_prompt + invocation.token_completion} tokens · ${invocation.estimated_cost}
+                  {invocation.failure_reason ? ` · ${invocation.failure_reason}` : ""}
+                </small>
+              </div>
+            ))}
+            {invocations.length === 0 ? <p className="empty-state">暂无 AI 调用摘要</p> : null}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function StatusTile({ label, status, detail }: { label: string; status: string; detail: string }) {
+  return (
+    <div className="status-tile">
+      <div>
+        <span>{label}</span>
+        <strong>{statusLabel[status] ?? status}</strong>
+      </div>
+      <small>{detail}</small>
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  return <span className={`status-pill ${status}`}>{statusLabel[status] ?? status}</span>;
+}
