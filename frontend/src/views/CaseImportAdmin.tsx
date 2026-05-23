@@ -216,10 +216,10 @@ export function CaseImportAdmin({ session }: { session: Session }) {
     setMessage(null);
     try {
       const result = await bulkImportTestCases(selectedWorkspaceId, selectedProjectId, selectedBatchId, actorEmail);
-      setMessage(`已入库正式用例：${result.imported_count} 条`);
+      setMessage(`已完成入库：${result.imported_count} 条已通过评审的用例`);
       await refreshImportProject(selectedWorkspaceId, selectedProjectId, selectedBatchId);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "批量入库失败");
+      setMessage(err instanceof Error ? err.message : "完成入库失败");
     } finally {
       setBusy(false);
     }
@@ -379,7 +379,7 @@ export function CaseImportAdmin({ session }: { session: Session }) {
                   提交评审
                 </button>
                 <button className="primary-button small" type="button" onClick={() => void handleBulkImport()} disabled={busy || !selectedBatchId || drafts.length === 0}>
-                  批量入库
+                  完成入库
                 </button>
               </div>
             </form>

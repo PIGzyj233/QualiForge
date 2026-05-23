@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.case_imports import TestCase, TestCaseStatus, test_case_to_response
-from app.case_reviews import TestCaseCreate
+from app.case_domain import CaseDraft, CaseDraftSource, TestCase, TestCaseLifecycle
+from app.case_reviews import TestCaseCreate, build_case_response
 from app.database import Base
 from app.diff_analysis import DiffAnalysis, DiffAnalysisStatus
 from app.test_plans import (
@@ -21,7 +21,7 @@ from app.test_plans import (
     get_or_create_release_plan,
     get_plan_or_404,
     plan_item_to_response,
-    test_case_snapshot,
+    formal_case_snapshot,
 )
 from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
 
@@ -181,26 +181,41 @@ def get_suggestion_or_404(db: Session, workspace_id: str, project_id: str, sugge
     return suggestion
 
 
+def case_revision_snapshot(db: Session, test_case: TestCase) -> dict[str, Any]:
+    if not test_case.current_revision_id:
+        return {}
+    from app.case_domain import CaseRevision
+
+    revision = db.get(CaseRevision, test_case.current_revision_id)
+    return revision.content_snapshot if revision else {}
+
+
 def related_approved_cases(db: Session, workspace_id: str, project_id: str, module_id: str | None, module_key: str) -> list[TestCase]:
     statement = select(TestCase).where(
         TestCase.workspace_id == workspace_id,
         TestCase.project_id == project_id,
-        TestCase.status == TestCaseStatus.approved.value,
+        TestCase.lifecycle_status == TestCaseLifecycle.active.value,
     )
     if module_id:
-        statement = statement.where(TestCase.module_id == module_id)
-    cases = list(db.scalars(statement.order_by(TestCase.updated_at.desc(), TestCase.title)).all())
+        statement = statement.where(TestCase.current_module_id == module_id)
+    cases = list(db.scalars(statement.order_by(TestCase.updated_at.desc(), TestCase.id.desc())).all())
     if cases or not module_key:
         return cases[:8]
     fallback = db.scalars(
         select(TestCase).where(
             TestCase.workspace_id == workspace_id,
             TestCase.project_id == project_id,
-            TestCase.status == TestCaseStatus.approved.value,
+            TestCase.lifecycle_status == TestCaseLifecycle.active.value,
         )
     ).all()
     lowered = module_key.lower()
-    return [case for case in fallback if lowered in " ".join([case.title, *case.tags]).lower()][:8]
+    matches = []
+    for case in fallback:
+        snapshot = case_revision_snapshot(db, case)
+        haystack = " ".join([str(snapshot.get("title") or ""), *(str(tag) for tag in snapshot.get("tags", []))]).lower()
+        if lowered in haystack:
+            matches.append(case)
+    return matches[:8]
 
 
 def structure_names(files: list[dict[str, Any]], structure_type: str) -> list[str]:
@@ -409,12 +424,28 @@ def create_candidate_from_ai_suggestion(
     if suggestion.candidate_case_id:
         test_case = db.get(TestCase, suggestion.candidate_case_id)
         if test_case is not None:
-            return {"test_case": test_case_to_response(test_case), "suggestion": suggestion_to_response(suggestion)}
+            return {"test_case": build_case_response(db, test_case), "suggestion": suggestion_to_response(suggestion)}
 
     payload = TestCaseCreate(**suggestion.candidate_payload)
+    source_ref = {
+        "suggestion_id": suggestion.id,
+        "diff_analysis_id": suggestion.diff_analysis_id,
+        "source_diff": suggestion.source_diff,
+    }
     test_case = TestCase(
         workspace_id=workspace_id,
         project_id=project_id,
+        lifecycle_status=TestCaseLifecycle.draft.value,
+        source_type=CaseDraftSource.ai_suggestion.value,
+        source_ref=source_ref,
+        created_by=actor_email,
+    )
+    db.add(test_case)
+    db.flush()
+    case_draft = CaseDraft(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        test_case_id=test_case.id,
         module_id=payload.module_id,
         title=payload.title,
         steps=payload.steps,
@@ -423,10 +454,12 @@ def create_candidate_from_ai_suggestion(
         risk=payload.risk,
         tags=payload.tags,
         custom_fields=payload.custom_fields,
-        status=TestCaseStatus.draft.value,
-        submitted_by=actor_email,
+        source_type=CaseDraftSource.ai_suggestion.value,
+        source_ref=source_ref,
+        created_by=actor_email,
+        updated_by=actor_email,
     )
-    db.add(test_case)
+    db.add(case_draft)
     db.flush()
     suggestion.candidate_case_id = test_case.id
     suggestion.status = AISuggestionStatus.accepted.value
@@ -438,13 +471,13 @@ def create_candidate_from_ai_suggestion(
         action="ai_candidate.created",
         entity_type="TestCase",
         entity_id=test_case.id,
-        summary=f"Created draft AI candidate {test_case.title}",
-        after={"suggestion_id": suggestion.id, "status": test_case.status},
+        summary=f"Created draft AI candidate {case_draft.title}",
+        after={"suggestion_id": suggestion.id, "draft_id": case_draft.id, "lifecycle_status": test_case.lifecycle_status},
     )
     db.commit()
     db.refresh(test_case)
     db.refresh(suggestion)
-    return {"test_case": test_case_to_response(test_case), "suggestion": suggestion_to_response(suggestion)}
+    return {"test_case": build_case_response(db, test_case), "suggestion": suggestion_to_response(suggestion)}
 
 
 @router.post("/ai-suggestions/{suggestion_id}/plan-items", response_model=AISuggestionPlanItemResponse, status_code=status.HTTP_201_CREATED)
@@ -476,16 +509,17 @@ def create_plan_items_from_ai_suggestion(
         test_case = db.get(TestCase, case_id)
         if test_case is None or test_case.workspace_id != workspace_id or test_case.project_id != project_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Test case not found: {case_id}")
-        if test_case.status != TestCaseStatus.approved.value:
+        if test_case.lifecycle_status != TestCaseLifecycle.active.value or not test_case.current_revision_id:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only approved formal cases can be selected for regression")
+        snapshot = formal_case_snapshot(db, test_case)
         items.append(
             add_plan_item(
                 db,
                 plan=plan,
                 source_type=PlanItemSource.formal_case,
                 source_id=test_case.id,
-                title=test_case.title,
-                snapshot=test_case_snapshot(test_case),
+                title=str(snapshot.get("title") or "Formal case"),
+                snapshot=snapshot,
                 rationale=f"{suggestion.title}: {suggestion.rationale}",
                 actor_email=actor_email,
             )

@@ -377,14 +377,25 @@ export type ProjectModuleRecord = {
   id: string;
   workspace_id: string;
   project_id: string;
+  parent_id: string | null;
   key: string;
   name: string;
+  slug: string;
+  code: string;
+  path: string;
+  path_label: string;
+  depth: number;
+  sort_order: number;
+  status: "active" | "archived";
   description: string;
   owner: string;
+  reference_count: number;
   mapping_rules: ModuleMappingRuleRecord[];
   created_at: string;
   updated_at: string;
 };
+
+export type ModuleTreeNode = ProjectModuleRecord & { children: ModuleTreeNode[] };
 
 export type ImportBatchRecord = {
   id: string;
@@ -413,6 +424,9 @@ export type ImportDraftRecord = {
   project_id: string;
   batch_id: string;
   module_id: string | null;
+  test_case_id: string | null;
+  case_draft_id: string | null;
+  review_cycle_id: string | null;
   title: string;
   steps: string[];
   expected_result: string;
@@ -432,21 +446,25 @@ export type TestCaseRecord = {
   id: string;
   workspace_id: string;
   project_id: string;
-  module_id: string | null;
-  import_batch_id: string | null;
-  title: string;
-  steps: string[];
-  expected_result: string;
-  priority: string;
-  risk: string;
-  tags: string[];
-  custom_fields: Record<string, string>;
-  status: "draft" | "pending_review" | "approved" | "rejected" | "archived";
-  submitted_by: string;
-  approved_by: string;
+  lifecycle_status: "draft" | "active" | "archived";
+  current_revision_id: string | null;
   current_revision_number: number;
+  current_module_id: string | null;
+  source_type: "manual" | "import" | "ai_suggestion" | "active_edit" | string;
+  source_ref: Record<string, unknown>;
+  created_by: string;
   created_at: string;
   updated_at: string;
+  title: string;
+  module_id: string | null;
+  module_path_label: string;
+  review_status: "pending_review" | "changes_requested" | "approved" | "rejected" | "cancelled" | null;
+  active_draft: CaseDraftRecord | null;
+  current_revision: CaseRevisionRecord | null;
+  open_cycle: ReviewCycleRecord | null;
+  revisions?: CaseRevisionRecord[];
+  review_cycles?: ReviewCycleRecord[];
+  review_events?: CaseReviewRecord[];
 };
 
 export type ImportResultRecord = {
@@ -459,22 +477,64 @@ export type ReviewSettingsRecord = {
   workspace_id: string;
   allow_self_review: boolean;
   require_review_on_case_update: boolean;
+  allow_direct_revision_for_active_case: boolean;
+  direct_revision_roles: string[];
   updated_by: string;
   created_at: string;
   updated_at: string;
 };
 
-export type CaseReviewAction = "submitted" | "approved" | "rejected" | "changes_requested" | "commented" | "edited";
+export type CaseReviewAction = "submitted" | "approved" | "rejected" | "changes_requested" | "changes_addressed" | "commented";
+
+export type CaseDraftRecord = {
+  id: string;
+  test_case_id: string;
+  workspace_id: string;
+  project_id: string;
+  base_revision_id: string | null;
+  module_id: string | null;
+  title: string;
+  steps: string[];
+  expected_result: string;
+  priority: string;
+  risk: string;
+  tags: string[];
+  custom_fields: Record<string, unknown>;
+  draft_status: "editing" | "in_review" | "consumed" | "cancelled";
+  source_type: "manual" | "import" | "ai_suggestion" | "active_edit" | string;
+  source_ref: Record<string, unknown>;
+  created_by: string;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReviewCycleRecord = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  test_case_id: string;
+  draft_id: string;
+  status: "pending_review" | "changes_requested" | "approved" | "rejected" | "cancelled";
+  submitted_by: string;
+  closed_by: string;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+};
 
 export type CaseReviewRecord = {
   id: string;
   workspace_id: string;
   project_id: string;
   test_case_id: string;
+  cycle_id: string | null;
+  draft_id: string | null;
   revision_id: string | null;
   actor_email: string;
   action: CaseReviewAction;
   comment: string;
+  diff_summary: Record<string, unknown> | null;
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   created_at: string;
@@ -486,6 +546,8 @@ export type CaseRevisionRecord = {
   project_id: string;
   test_case_id: string;
   revision_number: number;
+  module_id: string | null;
+  module_path_label: string;
   content_snapshot: Record<string, unknown>;
   change_summary: string;
   created_by: string;
@@ -500,7 +562,9 @@ export type TestCasePayload = {
   priority: string;
   risk: string;
   tags: string[];
-  custom_fields: Record<string, string>;
+  custom_fields: Record<string, unknown>;
+  source_type?: "manual" | "import" | "ai_suggestion" | "active_edit";
+  source_ref?: Record<string, unknown>;
 };
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -994,15 +1058,21 @@ export async function exportReleaseReportMarkdown(workspaceId: string, projectId
   return response.text();
 }
 
-export function listModules(workspaceId: string, projectId: string): Promise<ProjectModuleRecord[]> {
-  return requestJson<ProjectModuleRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/modules`);
+export function listModules(workspaceId: string, projectId: string, includeArchived = false): Promise<ProjectModuleRecord[]> {
+  const suffix = includeArchived ? "?include_archived_modules=true" : "";
+  return requestJson<ProjectModuleRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/modules${suffix}`);
+}
+
+export function listModuleTree(workspaceId: string, projectId: string, includeArchived = false): Promise<ModuleTreeNode[]> {
+  const suffix = includeArchived ? "?include_archived_modules=true" : "";
+  return requestJson<ModuleTreeNode[]>(`/workspaces/${workspaceId}/projects/${projectId}/modules/tree${suffix}`);
 }
 
 export function createModule(
   workspaceId: string,
   projectId: string,
   actorEmail: string,
-  payload: { key: string; name: string; description: string; owner: string }
+  payload: { key?: string; code?: string; name: string; slug?: string; parent_id?: string | null; description: string; owner: string; sort_order?: number }
 ): Promise<ProjectModuleRecord> {
   return requestJson<ProjectModuleRecord>(
     `/workspaces/${workspaceId}/projects/${projectId}/modules?actor_email=${encodeURIComponent(actorEmail)}`,
@@ -1018,7 +1088,7 @@ export function updateModule(
   projectId: string,
   moduleId: string,
   actorEmail: string,
-  payload: { name?: string; description?: string; owner?: string }
+  payload: { name?: string; slug?: string; code?: string; parent_id?: string | null; description?: string; owner?: string; sort_order?: number; status?: "active" | "archived" }
 ): Promise<ProjectModuleRecord> {
   return requestJson<ProjectModuleRecord>(
     `/workspaces/${workspaceId}/projects/${projectId}/modules/${moduleId}?actor_email=${encodeURIComponent(actorEmail)}`,
@@ -1180,12 +1250,33 @@ export function bulkImportTestCases(workspaceId: string, projectId: string, batc
   );
 }
 
-export function listTestCases(workspaceId: string, projectId: string, moduleId?: string, status?: TestCaseRecord["status"]): Promise<TestCaseRecord[]> {
+export function listTestCases(
+  workspaceId: string,
+  projectId: string,
+  moduleId?: string,
+  status?: TestCaseRecord["lifecycle_status"] | "approved" | "pending_review" | "changes_requested",
+  filters?: { includeDescendants?: boolean; sourceType?: string; priority?: string; tag?: string; search?: string }
+): Promise<TestCaseRecord[]> {
   const params = new URLSearchParams();
   if (moduleId) params.set("module_id", moduleId);
-  if (status) params.set("status", status);
+  if (filters?.includeDescendants === false) params.set("include_descendants", "false");
+  if (status === "approved") params.set("lifecycle_status", "active");
+  else if (status === "pending_review" || status === "changes_requested") params.set("review_status", status);
+  else if (status) params.set("lifecycle_status", status);
+  if (filters?.sourceType) params.set("source_type", filters.sourceType);
+  if (filters?.priority) params.set("priority", filters.priority);
+  if (filters?.tag) params.set("tag", filters.tag);
+  if (filters?.search) params.set("search", filters.search);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   return requestJson<TestCaseRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/test-cases${suffix}`);
+}
+
+export function getTestCase(workspaceId: string, projectId: string, caseId: string): Promise<TestCaseRecord> {
+  return requestJson<TestCaseRecord>(`/workspaces/${workspaceId}/projects/${projectId}/test-cases/${caseId}`);
+}
+
+export function listReviewQueue(workspaceId: string, projectId: string): Promise<TestCaseRecord[]> {
+  return requestJson<TestCaseRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/review-cycles?status=pending_review`);
 }
 
 export function getReviewSettings(workspaceId: string): Promise<ReviewSettingsRecord> {
@@ -1195,7 +1286,12 @@ export function getReviewSettings(workspaceId: string): Promise<ReviewSettingsRe
 export function updateReviewSettings(
   workspaceId: string,
   actorEmail: string,
-  payload: { allow_self_review: boolean; require_review_on_case_update: boolean }
+  payload: {
+    allow_self_review: boolean;
+    require_review_on_case_update: boolean;
+    allow_direct_revision_for_active_case?: boolean;
+    direct_revision_roles?: string[];
+  }
 ): Promise<ReviewSettingsRecord> {
   return requestJson<ReviewSettingsRecord>(`/workspaces/${workspaceId}/review-settings?actor_email=${encodeURIComponent(actorEmail)}`, {
     method: "PUT",
@@ -1238,6 +1334,82 @@ export function submitTestCaseReview(workspaceId: string, projectId: string, cas
   return requestJson<TestCaseRecord>(
     `/workspaces/${workspaceId}/projects/${projectId}/test-cases/${caseId}/submit-review?actor_email=${encodeURIComponent(actorEmail)}`,
     { method: "POST" }
+  );
+}
+
+export function createActiveEditDraft(workspaceId: string, projectId: string, caseId: string, actorEmail: string): Promise<CaseDraftRecord> {
+  return requestJson<CaseDraftRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/test-cases/${caseId}/drafts?actor_email=${encodeURIComponent(actorEmail)}`,
+    { method: "POST" }
+  );
+}
+
+export function updateCaseDraft(
+  workspaceId: string,
+  projectId: string,
+  draftId: string,
+  actorEmail: string,
+  payload: Partial<TestCasePayload>
+): Promise<CaseDraftRecord> {
+  return requestJson<CaseDraftRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/case-drafts/${draftId}?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function submitCaseDraftReview(workspaceId: string, projectId: string, draftId: string, actorEmail: string): Promise<ReviewCycleRecord> {
+  return requestJson<ReviewCycleRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/case-drafts/${draftId}/submit-review?actor_email=${encodeURIComponent(actorEmail)}`,
+    { method: "POST" }
+  );
+}
+
+export function requestReviewChanges(workspaceId: string, projectId: string, cycleId: string, actorEmail: string, comment: string): Promise<CaseReviewRecord> {
+  return requestJson<CaseReviewRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/review-cycles/${cycleId}/request-changes?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ comment })
+    }
+  );
+}
+
+export function addressReviewChanges(
+  workspaceId: string,
+  projectId: string,
+  cycleId: string,
+  actorEmail: string,
+  payload: { comment: string; diff_summary?: Record<string, unknown> }
+): Promise<CaseReviewRecord> {
+  return requestJson<CaseReviewRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/review-cycles/${cycleId}/address-changes?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function approveReviewCycle(workspaceId: string, projectId: string, cycleId: string, actorEmail: string, comment: string): Promise<CaseReviewRecord> {
+  return requestJson<CaseReviewRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/review-cycles/${cycleId}/approve?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ comment })
+    }
+  );
+}
+
+export function rejectReviewCycle(workspaceId: string, projectId: string, cycleId: string, actorEmail: string, comment: string): Promise<CaseReviewRecord> {
+  return requestJson<CaseReviewRecord>(
+    `/workspaces/${workspaceId}/projects/${projectId}/review-cycles/${cycleId}/reject?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ comment })
+    }
   );
 }
 

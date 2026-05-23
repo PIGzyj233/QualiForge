@@ -156,3 +156,63 @@ def test_module_mapping_rules_cover_supported_targets_sources_filters_and_audit(
     assert "mapping_rule.created" in actions
     assert "mapping_rule.updated" in actions
     assert "mapping_rule.deleted" in actions
+
+
+def test_module_tree_archive_reference_guard_and_descendant_case_filter() -> None:
+    client = make_client()
+    workspace = create_workspace(client, "Tree Lab")
+    project = create_project(client, workspace["id"])
+    root = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules?actor_email=owner@qualiforge.local",
+        json={"name": "操控", "code": "CTRL", "description": "Input control", "owner": "QA"},
+    ).json()
+    keyboard = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules?actor_email=owner@qualiforge.local",
+        json={"name": "键鼠", "code": "CTRL_KM", "parent_id": root["id"], "description": "Keyboard and mouse", "owner": "QA"},
+    ).json()
+    gamepad = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules?actor_email=owner@qualiforge.local",
+        json={"name": "手柄", "code": "CTRL_PAD", "parent_id": root["id"], "description": "Gamepad", "owner": "QA"},
+    ).json()
+
+    assert root["path"] == "cao-kong"
+    assert keyboard["path_label"] == "操控 / 键鼠"
+
+    tree = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules/tree").json()
+    assert tree[0]["id"] == root["id"]
+    assert {child["id"] for child in tree[0]["children"]} == {keyboard["id"], gamepad["id"]}
+
+    case = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases?actor_email=owner@qualiforge.local",
+        json={
+            "module_id": keyboard["id"],
+            "title": "Keyboard shortcut works",
+            "steps": ["Press shortcut"],
+            "expected_result": "Action runs",
+            "priority": "P2",
+            "risk": "medium",
+            "tags": ["keyboard"],
+            "custom_fields": {},
+        },
+    )
+    assert case.status_code == 201
+    filtered = client.get(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases?module_id={root['id']}"
+    ).json()
+    assert [item["id"] for item in filtered] == [case.json()["id"]]
+
+    referenced_delete = client.delete(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules/{keyboard['id']}?actor_email=owner@qualiforge.local"
+    )
+    assert referenced_delete.status_code == 409
+
+    archived = client.patch(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules/{root['id']}?actor_email=owner@qualiforge.local",
+        json={"status": "archived"},
+    )
+    assert archived.status_code == 200
+    assert client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules").json() == []
+    archived_modules = client.get(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules?include_archived_modules=true"
+    ).json()
+    assert {module["status"] for module in archived_modules} == {"archived"}

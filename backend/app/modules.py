@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
@@ -10,8 +11,14 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
+from app.case_domain import CaseDraft, CaseRevision, TestCase
 from app.database import Base
-from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
+from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc, require_workspace_owner
+
+
+class ModuleStatus(StrEnum):
+    active = "active"
+    archived = "archived"
 
 
 class MappingRuleType(StrEnum):
@@ -33,13 +40,23 @@ class MappingSource(StrEnum):
 
 class ProjectModule(Base):
     __tablename__ = "project_modules"
-    __table_args__ = (UniqueConstraint("project_id", "key", name="uq_module_key_per_project"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "parent_id", "slug", name="uq_module_slug_per_parent"),
+        UniqueConstraint("project_id", "path", name="uq_module_path_per_project"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    key: Mapped[str] = mapped_column(String(48), nullable=False)
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("project_modules.id", ondelete="SET NULL"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    slug: Mapped[str] = mapped_column(String(80), nullable=False)
+    code: Mapped[str] = mapped_column(String(48), default="", nullable=False)
+    path: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
+    path_label: Mapped[str] = mapped_column(String(500), nullable=False)
+    depth: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default=ModuleStatus.active.value, nullable=False, index=True)
     description: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     owner: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
@@ -66,16 +83,25 @@ class ModuleMappingRule(Base):
 
 
 class ModuleCreate(BaseModel):
-    key: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,47}$")
     name: str = Field(min_length=1, max_length=120)
+    slug: str | None = Field(default=None, max_length=80)
+    code: str = Field(default="", max_length=48)
+    key: str = Field(default="", max_length=48)
+    parent_id: str | None = None
     description: str = Field(default="", max_length=500)
     owner: str = Field(default="", max_length=120)
+    sort_order: int = 0
 
 
 class ModuleUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    slug: str | None = Field(default=None, min_length=1, max_length=80)
+    code: str | None = Field(default=None, max_length=48)
+    parent_id: str | None = None
     description: str | None = Field(default=None, max_length=500)
     owner: str | None = Field(default=None, max_length=120)
+    sort_order: int | None = None
+    status: ModuleStatus | None = None
 
 
 class MappingRuleCreate(BaseModel):
@@ -112,13 +138,26 @@ class ModuleResponse(BaseModel):
     id: str
     workspace_id: str
     project_id: str
-    key: str
+    parent_id: str | None
     name: str
+    slug: str
+    code: str
+    key: str
+    path: str
+    path_label: str
+    depth: int
+    sort_order: int
+    status: str
     description: str
     owner: str
+    reference_count: int
     mapping_rules: list[MappingRuleResponse]
     created_at: datetime
     updated_at: datetime
+
+
+class ModuleTreeNode(ModuleResponse):
+    children: list["ModuleTreeNode"] = Field(default_factory=list)
 
 
 def get_db(request: Request):
@@ -128,6 +167,53 @@ def get_db(request: Request):
 DbSession = Annotated[Session, Depends(get_db)]
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/projects/{project_id}", tags=["modules"])
+
+
+PINYIN_HINTS = {
+    "操": "cao",
+    "控": "kong",
+    "键": "jian",
+    "鼠": "shu",
+    "手": "shou",
+    "柄": "bing",
+    "支": "zhi",
+    "付": "fu",
+    "退": "tui",
+    "款": "kuan",
+    "登": "deng",
+    "录": "lu",
+    "注": "zhu",
+    "册": "ce",
+    "订": "ding",
+    "单": "dan",
+    "搜": "sou",
+    "索": "suo",
+    "报": "bao",
+    "告": "gao",
+    "用": "yong",
+    "例": "li",
+    "模": "mo",
+    "块": "kuai",
+}
+
+
+def normalize_slug(value: str) -> str:
+    pieces = []
+    for char in value.strip():
+        if char.isascii():
+            pieces.append(char.lower())
+        elif char in PINYIN_HINTS:
+            pieces.append(f"-{PINYIN_HINTS[char]}-")
+    slug = re.sub(r"[^a-z0-9-]+", "-", "".join(pieces))
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    return slug[:80]
+
+
+def ensure_slug(value: str, fallback_seed: str | None = None) -> str:
+    slug = normalize_slug(value)
+    if slug:
+        return slug
+    return f"module-{(fallback_seed or new_id())[:6].lower()}"
 
 
 def serialize_rule(rule: ModuleMappingRule) -> MappingRuleResponse:
@@ -146,25 +232,51 @@ def serialize_rule(rule: ModuleMappingRule) -> MappingRuleResponse:
     )
 
 
-def serialize_module(module: ProjectModule, rules: list[ModuleMappingRule]) -> ModuleResponse:
+def module_reference_count(db: Session, module_id: str) -> int:
+    counts = [
+        db.scalar(select(func.count()).select_from(TestCase).where(TestCase.current_module_id == module_id)) or 0,
+        db.scalar(select(func.count()).select_from(CaseDraft).where(CaseDraft.module_id == module_id)) or 0,
+        db.scalar(select(func.count()).select_from(CaseRevision).where(CaseRevision.module_id == module_id)) or 0,
+    ]
+    return int(sum(counts))
+
+
+def serialize_module(module: ProjectModule, rules: list[ModuleMappingRule], reference_count: int = 0) -> ModuleResponse:
+    code = module.code or ""
     return ModuleResponse(
         id=module.id,
         workspace_id=module.workspace_id,
         project_id=module.project_id,
-        key=module.key,
+        parent_id=module.parent_id,
         name=module.name,
+        slug=module.slug,
+        code=code,
+        key=code or module.slug.upper().replace("-", "_"),
+        path=module.path,
+        path_label=module.path_label,
+        depth=module.depth,
+        sort_order=module.sort_order,
+        status=module.status,
         description=module.description,
         owner=module.owner,
+        reference_count=reference_count,
         mapping_rules=[serialize_rule(rule) for rule in rules],
         created_at=module.created_at,
         updated_at=module.updated_at,
     )
 
 
-def module_snapshot(module: ProjectModule) -> dict[str, str]:
+def module_snapshot(module: ProjectModule) -> dict[str, str | int | None]:
     return {
-        "key": module.key,
+        "parent_id": module.parent_id,
         "name": module.name,
+        "slug": module.slug,
+        "code": module.code,
+        "path": module.path,
+        "path_label": module.path_label,
+        "depth": module.depth,
+        "sort_order": module.sort_order,
+        "status": module.status,
         "description": module.description,
         "owner": module.owner,
         "project_id": module.project_id,
@@ -225,16 +337,93 @@ def rules_for_module(db: Session, module_id: str) -> list[ModuleMappingRule]:
     )
 
 
+def child_modules(db: Session, module_id: str) -> list[ProjectModule]:
+    return list(db.scalars(select(ProjectModule).where(ProjectModule.parent_id == module_id).order_by(ProjectModule.sort_order, ProjectModule.name)).all())
+
+
+def descendant_modules(db: Session, module: ProjectModule, include_self: bool = True) -> list[ProjectModule]:
+    modules = [module] if include_self else []
+    for child in child_modules(db, module.id):
+        modules.extend(descendant_modules(db, child, include_self=True))
+    return modules
+
+
+def descendant_module_ids(db: Session, module: ProjectModule, include_self: bool = True) -> list[str]:
+    return [item.id for item in descendant_modules(db, module, include_self)]
+
+
+def assert_unique_slug(db: Session, module: ProjectModule | None, workspace_id: str, project_id: str, parent_id: str | None, slug: str) -> None:
+    statement = select(ProjectModule).where(
+        ProjectModule.workspace_id == workspace_id,
+        ProjectModule.project_id == project_id,
+        ProjectModule.slug == slug,
+    )
+    if parent_id is None:
+        statement = statement.where(ProjectModule.parent_id.is_(None))
+    else:
+        statement = statement.where(ProjectModule.parent_id == parent_id)
+    existing = db.scalar(statement)
+    if existing is not None and (module is None or existing.id != module.id):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Module slug already exists under this parent")
+
+
+def recalc_module_paths(db: Session, module: ProjectModule) -> None:
+    parent = db.get(ProjectModule, module.parent_id) if module.parent_id else None
+    if parent is not None:
+        module.path = f"{parent.path}/{module.slug}"
+        module.path_label = f"{parent.path_label} / {module.name}"
+        module.depth = parent.depth + 1
+    else:
+        module.path = module.slug
+        module.path_label = module.name
+        module.depth = 0
+    module.updated_at = now_utc()
+    for child in child_modules(db, module.id):
+        recalc_module_paths(db, child)
+
+
+def build_tree(modules: list[ProjectModule], by_id: dict[str, ModuleTreeNode]) -> list[ModuleTreeNode]:
+    roots: list[ModuleTreeNode] = []
+    for module in modules:
+        node = by_id[module.id]
+        if module.parent_id and module.parent_id in by_id:
+            by_id[module.parent_id].children.append(node)
+        else:
+            roots.append(node)
+    return roots
+
+
 @router.get("/modules", response_model=list[ModuleResponse])
-def list_modules(workspace_id: str, project_id: str, db: DbSession) -> list[ModuleResponse]:
+def list_modules(
+    workspace_id: str,
+    project_id: str,
+    db: DbSession,
+    include_archived_modules: bool = Query(default=False),
+) -> list[ModuleResponse]:
     get_workspace_or_404(db, workspace_id)
     get_project_or_404(db, workspace_id, project_id)
-    modules = db.scalars(
+    statement = select(ProjectModule).where(ProjectModule.workspace_id == workspace_id, ProjectModule.project_id == project_id)
+    if not include_archived_modules:
+        statement = statement.where(ProjectModule.status == ModuleStatus.active.value)
+    modules = db.scalars(statement.order_by(ProjectModule.path)).all()
+    return [serialize_module(module, rules_for_module(db, module.id), module_reference_count(db, module.id)) for module in modules]
+
+
+@router.get("/modules/tree", response_model=list[ModuleTreeNode])
+def list_module_tree(
+    workspace_id: str,
+    project_id: str,
+    db: DbSession,
+    include_archived_modules: bool = Query(default=False),
+) -> list[ModuleTreeNode]:
+    modules = list_modules(workspace_id, project_id, db, include_archived_modules)
+    nodes = {module.id: ModuleTreeNode(**module.model_dump(), children=[]) for module in modules}
+    ordered = db.scalars(
         select(ProjectModule)
-        .where(ProjectModule.workspace_id == workspace_id, ProjectModule.project_id == project_id)
-        .order_by(ProjectModule.key)
+        .where(ProjectModule.id.in_(nodes.keys()))
+        .order_by(ProjectModule.depth, ProjectModule.sort_order, ProjectModule.name)
     ).all()
-    return [serialize_module(module, rules_for_module(db, module.id)) for module in modules]
+    return build_tree(list(ordered), nodes)
 
 
 @router.get("/mapping-rules", response_model=list[MappingRuleResponse])
@@ -267,20 +456,32 @@ def list_mapping_rules(
 def create_module(workspace_id: str, project_id: str, payload: ModuleCreate, db: DbSession, actor_email: ActorEmail) -> ModuleResponse:
     get_workspace_or_404(db, workspace_id)
     get_project_or_404(db, workspace_id, project_id)
+    require_workspace_owner(db, workspace_id, actor_email)
+    parent = get_module_or_404(db, workspace_id, project_id, payload.parent_id) if payload.parent_id else None
+    slug = ensure_slug(payload.slug or payload.name)
+    assert_unique_slug(db, None, workspace_id, project_id, parent.id if parent else None, slug)
     module = ProjectModule(
         workspace_id=workspace_id,
         project_id=project_id,
-        key=payload.key,
+        parent_id=parent.id if parent else None,
         name=payload.name,
+        slug=slug,
+        code=payload.code or payload.key,
+        path=slug,
+        path_label=payload.name,
+        depth=0,
+        sort_order=payload.sort_order,
         description=payload.description,
         owner=payload.owner,
     )
     db.add(module)
+    db.flush()
+    recalc_module_paths(db, module)
     try:
         db.flush()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Module key already exists") from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Module path already exists") from exc
 
     audit(
         db,
@@ -289,12 +490,12 @@ def create_module(workspace_id: str, project_id: str, payload: ModuleCreate, db:
         action="module.created",
         entity_type="ProjectModule",
         entity_id=module.id,
-        summary=f"Created module {module.key}",
+        summary=f"Created module {module.path_label}",
         after=module_snapshot(module),
     )
     db.commit()
     db.refresh(module)
-    return serialize_module(module, [])
+    return serialize_module(module, [], 0)
 
 
 @router.patch("/modules/{module_id}", response_model=ModuleResponse)
@@ -306,13 +507,47 @@ def update_module(
     db: DbSession,
     actor_email: ActorEmail,
 ) -> ModuleResponse:
+    require_workspace_owner(db, workspace_id, actor_email)
     module = get_module_or_404(db, workspace_id, project_id, module_id)
     before = module_snapshot(module)
     update_data = payload.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(module, field, value)
-    module.updated_at = now_utc()
-    db.flush()
+
+    if "parent_id" in update_data:
+        next_parent_id = update_data["parent_id"]
+        if next_parent_id == module.id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Module cannot be its own parent")
+        if next_parent_id:
+            next_parent = get_module_or_404(db, workspace_id, project_id, next_parent_id)
+            if next_parent.id in descendant_module_ids(db, module, include_self=False):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Module cannot move under its descendant")
+            module.parent_id = next_parent.id
+        else:
+            module.parent_id = None
+    if payload.slug is not None:
+        module.slug = ensure_slug(payload.slug)
+    if payload.name is not None:
+        module.name = payload.name
+    if payload.code is not None:
+        module.code = payload.code
+    if payload.description is not None:
+        module.description = payload.description
+    if payload.owner is not None:
+        module.owner = payload.owner
+    if payload.sort_order is not None:
+        module.sort_order = payload.sort_order
+    if payload.status is not None:
+        targets = descendant_modules(db, module, include_self=True) if payload.status == ModuleStatus.archived else [module]
+        for target in targets:
+            target.status = payload.status.value
+            target.updated_at = now_utc()
+
+    assert_unique_slug(db, module, workspace_id, project_id, module.parent_id, module.slug)
+    recalc_module_paths(db, module)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Module path already exists") from exc
     after = module_snapshot(module)
     audit(
         db,
@@ -321,20 +556,25 @@ def update_module(
         action="module.updated",
         entity_type="ProjectModule",
         entity_id=module.id,
-        summary=f"Updated module {module.key}",
+        summary=f"Updated module {module.path_label}",
         before=before,
         after=after,
     )
     db.commit()
     db.refresh(module)
-    return serialize_module(module, rules_for_module(db, module.id))
+    return serialize_module(module, rules_for_module(db, module.id), module_reference_count(db, module.id))
 
 
 @router.delete("/modules/{module_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_module(workspace_id: str, project_id: str, module_id: str, db: DbSession, actor_email: ActorEmail) -> Response:
+    require_workspace_owner(db, workspace_id, actor_email)
     module = get_module_or_404(db, workspace_id, project_id, module_id)
-    rule_count = db.scalar(select(func.count()).select_from(ModuleMappingRule).where(ModuleMappingRule.module_id == module_id))
-    before = {**module_snapshot(module), "mapping_rule_count": int(rule_count or 0)}
+    if child_modules(db, module.id):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Module has children; archive or move children first")
+    references = module_reference_count(db, module.id)
+    if references:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Referenced modules can only be archived")
+    before = {**module_snapshot(module), "mapping_rule_count": len(rules_for_module(db, module_id)), "reference_count": references}
     for rule in rules_for_module(db, module_id):
         db.delete(rule)
     db.delete(module)
@@ -345,7 +585,7 @@ def delete_module(workspace_id: str, project_id: str, module_id: str, db: DbSess
         action="module.deleted",
         entity_type="ProjectModule",
         entity_id=module_id,
-        summary=f"Deleted module {before['key']}",
+        summary=f"Deleted module {before['path_label']}",
         before=before,
     )
     db.commit()
@@ -386,7 +626,7 @@ def create_mapping_rule(
         action="mapping_rule.created",
         entity_type="ModuleMappingRule",
         entity_id=rule.id,
-        summary=f"Added {rule.rule_type} mapping to {module.key}",
+        summary=f"Added {rule.rule_type} mapping to {module.path_label}",
         after=rule_snapshot(rule),
     )
     db.commit()

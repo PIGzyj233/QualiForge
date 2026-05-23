@@ -46,7 +46,8 @@ def create_approved_case(client: TestClient, workspace_id: str, project_id: str,
     assert reviewed.status_code == 201
     fetched = client.get(f"/api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{test_case['id']}")
     assert fetched.status_code == 200
-    assert fetched.json()["status"] == "approved"
+    assert fetched.json()["lifecycle_status"] == "active"
+    assert fetched.json()["current_revision"]["content_snapshot"]["title"] == "Approved checkout payment regression"
     return fetched.json()
 
 
@@ -112,8 +113,8 @@ def test_ai_suggestions_link_diff_mapping_cases_feedback_and_plan_items(tmp_path
     )
     assert candidate_case.status_code == 201
     created_case = candidate_case.json()["test_case"]
-    assert created_case["status"] == "draft"
-    assert created_case["custom_fields"]["source"] == "ai_suggestion"
+    assert created_case["lifecycle_status"] == "draft"
+    assert created_case["active_draft"]["custom_fields"]["source"] == "ai_suggestion"
 
     temp_plan_item = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/ai-suggestions/{candidate['id']}/plan-items?actor_email={OWNER}",
@@ -125,7 +126,7 @@ def test_ai_suggestions_link_diff_mapping_cases_feedback_and_plan_items(tmp_path
     assert temp_item["source_id"] == candidate["id"]
     assert temp_item["snapshot"]["custom_fields"]["diff_analysis_id"] == analysis["id"]
 
-    approved_cases = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases?status=approved").json()
+    approved_cases = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases?lifecycle_status=active").json()
     assert [item["id"] for item in approved_cases] == [formal_case["id"]]
 
 

@@ -17,6 +17,17 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.database import Base, Database
 from app.gitlab import Job, JobStatus, job_to_response
+from app.case_domain import (
+    CaseDraft,
+    CaseDraftSource,
+    CaseDraftStatus,
+    CaseReviewCycle,
+    CaseReviewEvent,
+    ReviewCycleStatus,
+    ReviewEventAction,
+    TestCase,
+    TestCaseLifecycle,
+)
 from app.modules import ModuleMappingRule, ProjectModule, get_module_or_404
 from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc, require_workspace_owner
 
@@ -33,14 +44,6 @@ class ImportDraftStatus(StrEnum):
     draft = "draft"
     review_submitted = "review_submitted"
     imported = "imported"
-
-
-class TestCaseStatus(StrEnum):
-    draft = "draft"
-    pending_review = "pending_review"
-    approved = "approved"
-    rejected = "rejected"
-    archived = "archived"
 
 
 class ImportBatch(Base):
@@ -74,6 +77,9 @@ class ImportCaseDraft(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     batch_id: Mapped[str] = mapped_column(ForeignKey("import_batches.id", ondelete="CASCADE"), nullable=False, index=True)
     module_id: Mapped[str | None] = mapped_column(ForeignKey("project_modules.id", ondelete="SET NULL"), nullable=True, index=True)
+    test_case_id: Mapped[str | None] = mapped_column(ForeignKey("test_cases.id", ondelete="SET NULL"), nullable=True, index=True)
+    case_draft_id: Mapped[str | None] = mapped_column(ForeignKey("case_drafts.id", ondelete="SET NULL"), nullable=True, index=True)
+    review_cycle_id: Mapped[str | None] = mapped_column(ForeignKey("case_review_cycles.id", ondelete="SET NULL"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     steps: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     expected_result: Mapped[str] = mapped_column(String(2000), default="", nullable=False)
@@ -85,29 +91,6 @@ class ImportCaseDraft(Base):
     raw_row: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     ai_confidence: Mapped[int] = mapped_column(Integer, default=75, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default=ImportDraftStatus.draft.value, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
-
-
-class TestCase(Base):
-    __tablename__ = "test_cases"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    module_id: Mapped[str | None] = mapped_column(ForeignKey("project_modules.id", ondelete="SET NULL"), nullable=True, index=True)
-    import_batch_id: Mapped[str | None] = mapped_column(ForeignKey("import_batches.id", ondelete="SET NULL"), nullable=True, index=True)
-    title: Mapped[str] = mapped_column(String(300), nullable=False)
-    steps: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
-    expected_result: Mapped[str] = mapped_column(String(2000), default="", nullable=False)
-    priority: Mapped[str] = mapped_column(String(32), default="P2", nullable=False)
-    risk: Mapped[str] = mapped_column(String(80), default="medium", nullable=False)
-    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
-    custom_fields: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default=TestCaseStatus.draft.value, nullable=False, index=True)
-    submitted_by: Mapped[str] = mapped_column(String(254), default="", nullable=False)
-    approved_by: Mapped[str] = mapped_column(String(254), default="", nullable=False)
-    current_revision_number: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
 
@@ -139,6 +122,9 @@ class DraftResponse(BaseModel):
     project_id: str
     batch_id: str
     module_id: str | None
+    test_case_id: str | None
+    case_draft_id: str | None
+    review_cycle_id: str | None
     title: str
     steps: list[str]
     expected_result: str
@@ -172,27 +158,6 @@ class BulkDraftUpdate(DraftUpdate):
 class ImportResultResponse(BaseModel):
     batch: ImportBatchResponse
     imported_count: int
-
-
-class TestCaseResponse(BaseModel):
-    id: str
-    workspace_id: str
-    project_id: str
-    module_id: str | None
-    import_batch_id: str | None
-    title: str
-    steps: list[str]
-    expected_result: str
-    priority: str
-    risk: str
-    tags: list[str]
-    custom_fields: dict
-    status: str
-    submitted_by: str
-    approved_by: str
-    current_revision_number: int
-    created_at: datetime
-    updated_at: datetime
 
 
 def get_db(request: Request):
@@ -351,7 +316,7 @@ def load_modules_and_rules(db: Session, workspace_id: str, project_id: str) -> t
     modules = db.scalars(
         select(ProjectModule)
         .where(ProjectModule.workspace_id == workspace_id, ProjectModule.project_id == project_id)
-        .order_by(ProjectModule.key)
+        .order_by(ProjectModule.path)
     ).all()
     rules = db.scalars(
         select(ModuleMappingRule)
@@ -364,7 +329,10 @@ def load_modules_and_rules(db: Session, workspace_id: str, project_id: str) -> t
 def infer_module_id(row: dict, modules: list[ProjectModule], rules: list[ModuleMappingRule]) -> str | None:
     module_hint = str(row.get("module") or "").strip().lower()
     for module in modules:
-        if module_hint and module_hint in {module.key.lower(), module.name.lower()}:
+        aliases = {module.name.lower(), module.slug.lower(), module.path.lower(), module.path_label.lower()}
+        if module.code:
+            aliases.add(module.code.lower())
+        if module_hint and module_hint in aliases:
             return module.id
 
     searchable = " ".join(str(value) for value in row.values()).lower()
@@ -433,6 +401,9 @@ def draft_to_response(draft: ImportCaseDraft) -> DraftResponse:
         project_id=draft.project_id,
         batch_id=draft.batch_id,
         module_id=draft.module_id,
+        test_case_id=draft.test_case_id,
+        case_draft_id=draft.case_draft_id,
+        review_cycle_id=draft.review_cycle_id,
         title=draft.title,
         steps=draft.steps,
         expected_result=draft.expected_result,
@@ -447,30 +418,6 @@ def draft_to_response(draft: ImportCaseDraft) -> DraftResponse:
         created_at=draft.created_at,
         updated_at=draft.updated_at,
     )
-
-
-def test_case_to_response(test_case: TestCase) -> TestCaseResponse:
-    return TestCaseResponse(
-        id=test_case.id,
-        workspace_id=test_case.workspace_id,
-        project_id=test_case.project_id,
-        module_id=test_case.module_id,
-        import_batch_id=test_case.import_batch_id,
-        title=test_case.title,
-        steps=test_case.steps,
-        expected_result=test_case.expected_result,
-        priority=test_case.priority,
-        risk=test_case.risk,
-        tags=test_case.tags,
-        custom_fields=test_case.custom_fields,
-        status=test_case.status,
-        submitted_by=test_case.submitted_by,
-        approved_by=test_case.approved_by,
-        current_revision_number=test_case.current_revision_number,
-        created_at=test_case.created_at,
-        updated_at=test_case.updated_at,
-    )
-
 
 def get_batch_or_404(db: Session, workspace_id: str, project_id: str, batch_id: str) -> ImportBatch:
     batch = db.scalar(
@@ -661,6 +608,96 @@ def apply_draft_update(draft: ImportCaseDraft, payload: DraftUpdate) -> dict:
     return update_data
 
 
+def create_review_case_from_import_draft(db: Session, batch: ImportBatch, draft: ImportCaseDraft, actor_email: str) -> None:
+    if draft.review_cycle_id:
+        return
+    if not draft.module_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Imported drafts must be assigned to a module before review")
+    source_ref = {"batch_id": batch.id, "row_index": draft.source_row_index, "raw_row": draft.raw_row}
+    test_case = TestCase(
+        workspace_id=batch.workspace_id,
+        project_id=batch.project_id,
+        lifecycle_status=TestCaseLifecycle.draft.value,
+        source_type=CaseDraftSource.import_.value,
+        source_ref=source_ref,
+        created_by=actor_email,
+    )
+    db.add(test_case)
+    db.flush()
+    case_draft = CaseDraft(
+        workspace_id=batch.workspace_id,
+        project_id=batch.project_id,
+        test_case_id=test_case.id,
+        module_id=draft.module_id,
+        title=draft.title,
+        steps=draft.steps,
+        expected_result=draft.expected_result,
+        priority=draft.priority,
+        risk=draft.risk,
+        tags=draft.tags,
+        custom_fields=draft.custom_fields,
+        draft_status=CaseDraftStatus.in_review.value,
+        source_type=CaseDraftSource.import_.value,
+        source_ref=source_ref,
+        created_by=actor_email,
+        updated_by=actor_email,
+    )
+    db.add(case_draft)
+    db.flush()
+    cycle = CaseReviewCycle(
+        workspace_id=batch.workspace_id,
+        project_id=batch.project_id,
+        test_case_id=test_case.id,
+        draft_id=case_draft.id,
+        status=ReviewCycleStatus.pending_review.value,
+        submitted_by=actor_email,
+    )
+    db.add(cycle)
+    db.flush()
+    event = CaseReviewEvent(
+        workspace_id=batch.workspace_id,
+        project_id=batch.project_id,
+        test_case_id=test_case.id,
+        cycle_id=cycle.id,
+        draft_id=case_draft.id,
+        actor_email=actor_email,
+        action=ReviewEventAction.submitted.value,
+        comment="Submitted imported draft for review",
+        after={
+            "batch_id": batch.id,
+            "source_row_index": draft.source_row_index,
+            "title": draft.title,
+            "module_id": draft.module_id,
+        },
+    )
+    db.add(event)
+    draft.test_case_id = test_case.id
+    draft.case_draft_id = case_draft.id
+    draft.review_cycle_id = cycle.id
+    draft.status = ImportDraftStatus.review_submitted.value
+    draft.updated_at = now_utc()
+
+
+def ensure_import_draft_is_approved(db: Session, batch: ImportBatch, draft: ImportCaseDraft) -> None:
+    if not draft.test_case_id or not draft.case_draft_id or not draft.review_cycle_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Submit imported drafts for review before finalizing import")
+    test_case = db.get(TestCase, draft.test_case_id)
+    cycle = db.get(CaseReviewCycle, draft.review_cycle_id)
+    if (
+        test_case is None
+        or cycle is None
+        or test_case.workspace_id != batch.workspace_id
+        or test_case.project_id != batch.project_id
+        or cycle.workspace_id != batch.workspace_id
+        or cycle.project_id != batch.project_id
+        or cycle.test_case_id != test_case.id
+        or cycle.draft_id != draft.case_draft_id
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Imported draft review state is incomplete")
+    if cycle.status != ReviewCycleStatus.approved.value or test_case.lifecycle_status != TestCaseLifecycle.active.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Imported drafts must be approved before finalizing import")
+
+
 @router.patch("/imports/{batch_id}/drafts/{draft_id}", response_model=DraftResponse)
 def update_import_draft(
     workspace_id: str,
@@ -742,10 +779,13 @@ def bulk_update_import_drafts(
 @router.post("/imports/{batch_id}/submit-review", response_model=ImportBatchResponse)
 def submit_import_review(workspace_id: str, project_id: str, batch_id: str, db: DbSession, actor_email: ActorEmail) -> ImportBatchResponse:
     batch = get_batch_or_404(db, workspace_id, project_id, batch_id)
+    if batch.status == ImportBatchStatus.imported.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Imported batches cannot be resubmitted for review")
     drafts = db.scalars(select(ImportCaseDraft).where(ImportCaseDraft.batch_id == batch.id)).all()
+    if not drafts:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Import batch has no drafts to submit for review")
     for draft in drafts:
-        draft.status = ImportDraftStatus.review_submitted.value
-        draft.updated_at = now_utc()
+        create_review_case_from_import_draft(db, batch, draft, actor_email)
     batch.status = ImportBatchStatus.review_submitted.value
     batch.submitted_at = now_utc()
     batch.updated_at = now_utc()
@@ -769,37 +809,23 @@ def bulk_import_test_cases(workspace_id: str, project_id: str, batch_id: str, db
     require_workspace_owner(db, workspace_id, actor_email)
     batch = get_batch_or_404(db, workspace_id, project_id, batch_id)
     if batch.status == ImportBatchStatus.imported.value:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Import batch already imported")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Import batch has already been finalized")
     drafts = db.scalars(
         select(ImportCaseDraft)
         .where(ImportCaseDraft.workspace_id == workspace_id, ImportCaseDraft.project_id == project_id, ImportCaseDraft.batch_id == batch_id)
         .order_by(ImportCaseDraft.source_row_index, ImportCaseDraft.id)
     ).all()
+    if not drafts:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Import batch has no drafts to finalize")
     for draft in drafts:
-        db.add(
-            TestCase(
-                workspace_id=workspace_id,
-                project_id=project_id,
-                module_id=draft.module_id,
-                import_batch_id=batch.id,
-                title=draft.title,
-                steps=draft.steps,
-                expected_result=draft.expected_result,
-                priority=draft.priority,
-                risk=draft.risk,
-                tags=draft.tags,
-                custom_fields=draft.custom_fields,
-                status=TestCaseStatus.approved.value,
-                submitted_by=actor_email,
-                approved_by=actor_email,
-                current_revision_number=1,
-            )
-        )
+        ensure_import_draft_is_approved(db, batch, draft)
+    finalized_at = now_utc()
+    for draft in drafts:
         draft.status = ImportDraftStatus.imported.value
-        draft.updated_at = now_utc()
+        draft.updated_at = finalized_at
     batch.status = ImportBatchStatus.imported.value
-    batch.imported_at = now_utc()
-    batch.updated_at = now_utc()
+    batch.imported_at = finalized_at
+    batch.updated_at = finalized_at
     audit(
         db,
         workspace_id=workspace_id,
@@ -807,31 +833,9 @@ def bulk_import_test_cases(workspace_id: str, project_id: str, batch_id: str, db
         action="import_batch.imported",
         entity_type="ImportBatch",
         entity_id=batch.id,
-        summary=f"Imported {len(drafts)} drafts into test case library",
-        after={"imported_count": len(drafts)},
+        summary=f"Finalized {len(drafts)} approved imported drafts into the test case library",
+        after={"draft_count": len(drafts)},
     )
     db.commit()
     db.refresh(batch)
     return ImportResultResponse(batch=batch_to_response(batch), imported_count=len(drafts))
-
-
-@router.get("/test-cases", response_model=list[TestCaseResponse])
-def list_test_cases(
-    workspace_id: str,
-    project_id: str,
-    db: DbSession,
-    module_id: str | None = Query(default=None),
-    case_status: TestCaseStatus | None = Query(default=None, alias="status"),
-) -> list[TestCaseResponse]:
-    get_workspace_or_404(db, workspace_id)
-    get_project_or_404(db, workspace_id, project_id)
-    statement = (
-        select(TestCase)
-        .where(TestCase.workspace_id == workspace_id, TestCase.project_id == project_id)
-        .order_by(TestCase.created_at.desc(), TestCase.id.desc())
-    )
-    if module_id:
-        statement = statement.where(TestCase.module_id == module_id)
-    if case_status:
-        statement = statement.where(TestCase.status == case_status.value)
-    return [test_case_to_response(test_case) for test_case in db.scalars(statement).all()]

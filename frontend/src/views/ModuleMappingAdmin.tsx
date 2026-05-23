@@ -30,6 +30,9 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
   const [modules, setModules] = useState<ProjectModuleRecord[]>([]);
   const [mappingRules, setMappingRules] = useState<ModuleMappingRuleRecord[]>([]);
   const [moduleKey, setModuleKey] = useState("PAYMENT");
+  const [moduleSlug, setModuleSlug] = useState("");
+  const [moduleParentId, setModuleParentId] = useState("");
+  const [moduleStatus, setModuleStatus] = useState<"active" | "archived">("active");
   const [moduleName, setModuleName] = useState("支付与退款");
   const [moduleDescription, setModuleDescription] = useState("Checkout payment and refund behavior");
   const [moduleOwner, setModuleOwner] = useState("Checkout QA");
@@ -134,13 +137,19 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
       if (editingModuleId) {
         const module = await updateModule(selectedWorkspaceId, selectedProjectId, editingModuleId, actorEmail, {
           name: moduleName,
+          slug: moduleSlug || undefined,
+          code: moduleKey,
+          parent_id: moduleParentId || null,
+          status: moduleStatus,
           description: moduleDescription,
           owner: moduleOwner
         });
         setMessage(`已更新模块：${module.key}`);
       } else {
         const module = await createModule(selectedWorkspaceId, selectedProjectId, actorEmail, {
-          key: moduleKey,
+          code: moduleKey,
+          slug: moduleSlug || undefined,
+          parent_id: moduleParentId || null,
           name: moduleName,
           description: moduleDescription,
           owner: moduleOwner
@@ -224,6 +233,9 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
   function editModule(module: ProjectModuleRecord) {
     setEditingModuleId(module.id);
     setModuleKey(module.key);
+    setModuleSlug(module.slug);
+    setModuleParentId(module.parent_id ?? "");
+    setModuleStatus(module.status);
     setModuleName(module.name);
     setModuleDescription(module.description);
     setModuleOwner(module.owner);
@@ -242,6 +254,9 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
   function clearModuleForm() {
     setEditingModuleId(null);
     setModuleKey("");
+    setModuleSlug("");
+    setModuleParentId("");
+    setModuleStatus("active");
     setModuleName("");
     setModuleDescription("");
     setModuleOwner("");
@@ -264,8 +279,8 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
     <section className="section-block module-admin">
       <div className="section-heading">
         <div>
-          <span className="eyebrow">Module Mapping</span>
-          <h2>模块和映射规则</h2>
+          <span className="eyebrow">Module Directory</span>
+          <h2>模块目录与映射</h2>
         </div>
         <Network size={20} aria-hidden="true" />
       </div>
@@ -315,7 +330,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
             <div className="pane-heading">
               <div>
                 <span className="eyebrow">Modules</span>
-                <h3>模块/功能域</h3>
+                <h3>模块目录</h3>
               </div>
               <FolderKanban size={18} aria-hidden="true" />
             </div>
@@ -326,13 +341,29 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
                   <input
                     value={moduleKey}
                     onChange={(event) => setModuleKey(event.target.value.toUpperCase())}
-                    disabled={Boolean(editingModuleId)}
-                    required
+                    placeholder="可选编号"
                   />
                 </label>
                 <label>
                   名称
                   <input value={moduleName} onChange={(event) => setModuleName(event.target.value)} required />
+                </label>
+              </div>
+              <div className="form-row">
+                <label>
+                  Slug
+                  <input value={moduleSlug} onChange={(event) => setModuleSlug(event.target.value)} placeholder="留空自动生成" />
+                </label>
+                <label>
+                  父模块
+                  <select value={moduleParentId} onChange={(event) => setModuleParentId(event.target.value)}>
+                    <option value="">根模块</option>
+                    {modules.filter((module) => module.id !== editingModuleId).map((module) => (
+                      <option value={module.id} key={module.id}>
+                        {module.path_label}
+                      </option>
+                    ))}
+                  </select>
                 </label>
               </div>
               <label>
@@ -343,6 +374,13 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
                 <label>
                   Owner
                   <input value={moduleOwner} onChange={(event) => setModuleOwner(event.target.value)} />
+                </label>
+                <label>
+                  状态
+                  <select value={moduleStatus} onChange={(event) => setModuleStatus(event.target.value as "active" | "archived")}>
+                    <option value="active">Active</option>
+                    <option value="archived">Archived</option>
+                  </select>
                 </label>
                 <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId || !selectedProjectId}>
                   {editingModuleId ? "保存模块" : "创建模块"}
@@ -358,8 +396,9 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
               {modules.map((module) => (
                 <div className="data-row module-row" key={module.id}>
                   <div>
-                    <strong>{module.key} · {module.name}</strong>
-                    <span>{module.description || "无描述"} · owner {module.owner || "none"} · {module.mapping_rules.length} rules</span>
+                    <strong>{module.path_label}</strong>
+                    <span>{module.key} · {module.path} · {module.status} · {module.reference_count} refs · {module.mapping_rules.length} rules</span>
+                    <small>{module.description || "无描述"} · owner {module.owner || "none"}</small>
                   </div>
                   <button className="icon-button subtle" type="button" onClick={() => editModule(module)} title="编辑模块">
                     <PencilLine size={16} aria-hidden="true" />
@@ -393,7 +432,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
                   <option value="">未选择</option>
                   {modules.map((module) => (
                     <option value={module.id} key={module.id}>
-                      {module.key} · {module.name}
+                      {module.path_label}
                     </option>
                   ))}
                 </select>

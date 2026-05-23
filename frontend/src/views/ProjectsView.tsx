@@ -10,7 +10,7 @@ const tabs = [
   { key: "projects", label: "项目设置" },
   { key: "members", label: "团队成员" },
   { key: "git", label: "代码沙箱" },
-  { key: "modules", label: "模块映射" },
+  { key: "modules", label: "模块目录与映射" },
   { key: "diff", label: "Diff 分析" },
   { key: "audit", label: "审计日志" }
 ] as const;

@@ -40,10 +40,26 @@ def create_project(client: TestClient, workspace_id: str) -> dict:
     return response.json()
 
 
-def create_case(client: TestClient, workspace_id: str, project_id: str, actor: str = "author@qualiforge.local") -> dict:
+def create_module(client: TestClient, workspace_id: str, project_id: str, name: str = "支付") -> dict:
+    response = client.post(
+        f"/api/workspaces/{workspace_id}/projects/{project_id}/modules?actor_email=owner@qualiforge.local",
+        json={"name": name, "code": "PAYMENT", "description": "Payment domain", "owner": "QA"},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def create_case(
+    client: TestClient,
+    workspace_id: str,
+    project_id: str,
+    module_id: str,
+    actor: str = "author@qualiforge.local",
+) -> dict:
     response = client.post(
         f"/api/workspaces/{workspace_id}/projects/{project_id}/test-cases?actor_email={actor}",
         json={
+            "module_id": module_id,
             "title": "Checkout payment succeeds",
             "steps": ["Open checkout", "Pay order"],
             "expected_result": "Order is paid",
@@ -72,28 +88,29 @@ def review_case(
     case_id: str,
     action: str,
     actor: str = "owner@qualiforge.local",
-    **extra,
+    comment: str = "review comment",
 ) -> dict:
-    payload = {"action": action, "comment": extra.pop("comment", f"{action} comment"), **extra}
     response = client.post(
         f"/api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}/reviews?actor_email={actor}",
-        json=payload,
+        json={"action": action, "comment": comment},
     )
     assert response.status_code == 201, response.text
     return response.json()
 
 
-def test_case_review_flow_blocks_self_review_and_creates_approval_revision() -> None:
+def test_manual_create_submit_approve_creates_revision_and_blocks_self_review() -> None:
     client = make_client()
     workspace = create_workspace(client)
     add_member(client, workspace["id"])
     project = create_project(client, workspace["id"])
-    test_case = create_case(client, workspace["id"], project["id"])
+    module = create_module(client, workspace["id"], project["id"])
+    test_case = create_case(client, workspace["id"], project["id"], module["id"])
 
-    assert test_case["status"] == "draft"
+    assert test_case["lifecycle_status"] == "draft"
+    assert test_case["active_draft"]["source_type"] == "manual"
     submitted = submit_case(client, workspace["id"], project["id"], test_case["id"])
-    assert submitted["status"] == "pending_review"
-    assert submitted["submitted_by"] == "author@qualiforge.local"
+    assert submitted["review_status"] == "pending_review"
+    assert submitted["open_cycle"]["submitted_by"] == "author@qualiforge.local"
 
     forbidden = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{test_case['id']}/reviews?actor_email=author@qualiforge.local",
@@ -101,112 +118,103 @@ def test_case_review_flow_blocks_self_review_and_creates_approval_revision() -> 
     )
     assert forbidden.status_code == 403
 
-    approved_review = review_case(client, workspace["id"], project["id"], test_case["id"], "approved", comment="Looks good")
-    assert approved_review["action"] == "approved"
-    assert approved_review["revision_id"] is not None
+    approved = review_case(client, workspace["id"], project["id"], test_case["id"], "approved", comment="Looks good")
+    assert approved["action"] == "approved"
+    assert approved["revision_id"] is not None
 
     approved_case = client.get(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{test_case['id']}"
     ).json()
-    assert approved_case["status"] == "approved"
-    assert approved_case["approved_by"] == "owner@qualiforge.local"
+    assert approved_case["lifecycle_status"] == "active"
     assert approved_case["current_revision_number"] == 1
-
-    revisions = client.get(
-        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{test_case['id']}/revisions"
-    ).json()
-    assert len(revisions) == 1
-    assert revisions[0]["revision_number"] == 1
-    assert revisions[0]["content_snapshot"]["title"] == "Checkout payment succeeds"
+    assert approved_case["active_draft"] is None
+    assert approved_case["current_revision"]["content_snapshot"]["title"] == "Checkout payment succeeds"
 
 
-def test_reviews_support_comment_edit_request_changes_and_reject() -> None:
+def test_changes_requested_requires_comment_and_addressing_returns_to_queue_then_rejects() -> None:
     client = make_client()
     workspace = create_workspace(client)
     add_member(client, workspace["id"])
     project = create_project(client, workspace["id"])
-    test_case = create_case(client, workspace["id"], project["id"])
-    submit_case(client, workspace["id"], project["id"], test_case["id"])
+    module = create_module(client, workspace["id"], project["id"])
+    test_case = create_case(client, workspace["id"], project["id"], module["id"])
+    submitted = submit_case(client, workspace["id"], project["id"], test_case["id"])
+    cycle_id = submitted["open_cycle"]["id"]
 
-    comment = review_case(client, workspace["id"], project["id"], test_case["id"], "commented", comment="Need clearer expected result")
-    assert comment["action"] == "commented"
-
-    edited = review_case(
-        client,
-        workspace["id"],
-        project["id"],
-        test_case["id"],
-        "edited",
-        comment="Clarified expected result",
-        edits={"expected_result": "Payment status is paid and receipt is visible"},
+    empty_comment = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/review-cycles/{cycle_id}/request-changes?actor_email=owner@qualiforge.local",
+        json={"comment": ""},
     )
-    assert edited["action"] == "edited"
-    updated_case = client.get(
-        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{test_case['id']}"
-    ).json()
-    assert updated_case["expected_result"] == "Payment status is paid and receipt is visible"
+    assert empty_comment.status_code == 422
 
-    changes = review_case(client, workspace["id"], project["id"], test_case["id"], "changes_requested")
-    assert changes["action"] == "changes_requested"
-    assert client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{test_case['id']}").json()["status"] == "draft"
+    changes = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/review-cycles/{cycle_id}/request-changes?actor_email=owner@qualiforge.local",
+        json={"comment": "Expected result needs receipt check"},
+    )
+    assert changes.status_code == 201
+    assert changes.json()["action"] == "changes_requested"
+    assert client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/review-cycles").json() == []
 
-    submit_case(client, workspace["id"], project["id"], test_case["id"])
+    detail = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{test_case['id']}").json()
+    draft_id = detail["active_draft"]["id"]
+    updated = client.patch(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/case-drafts/{draft_id}?actor_email=author@qualiforge.local",
+        json={"expected_result": "Order is paid and receipt is visible"},
+    )
+    assert updated.status_code == 200
+
+    addressed = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/review-cycles/{cycle_id}/address-changes?actor_email=author@qualiforge.local",
+        json={"comment": "Added receipt expectation", "diff_summary": {"expected_result": "updated"}},
+    )
+    assert addressed.status_code == 201
+    assert addressed.json()["action"] == "changes_addressed"
+    queue = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/review-cycles").json()
+    assert [item["id"] for item in queue] == [test_case["id"]]
+
     rejected = review_case(client, workspace["id"], project["id"], test_case["id"], "rejected", comment="Duplicate")
     assert rejected["action"] == "rejected"
-    assert client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{test_case['id']}").json()["status"] == "rejected"
+    rejected_case = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{test_case['id']}").json()
+    assert rejected_case["lifecycle_status"] == "draft"
+    assert rejected_case["active_draft"] is None
 
-    reviews = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{test_case['id']}/reviews").json()
-    assert {"commented", "edited", "changes_requested", "rejected"} <= {review["action"] for review in reviews}
 
-
-def test_workspace_owner_can_allow_self_review_and_configure_update_review_policy() -> None:
+def test_active_edit_draft_does_not_overwrite_current_revision_until_approved() -> None:
     client = make_client()
     workspace = create_workspace(client)
     project = create_project(client, workspace["id"])
-    owner_case = create_case(client, workspace["id"], project["id"], actor="owner@qualiforge.local")
-    submit_case(client, workspace["id"], project["id"], owner_case["id"], actor="owner@qualiforge.local")
-
-    default_self_review = client.post(
-        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{owner_case['id']}/reviews?actor_email=owner@qualiforge.local",
-        json={"action": "approved", "comment": "self approve"},
-    )
-    assert default_self_review.status_code == 403
-
-    settings = client.put(
+    module = create_module(client, workspace["id"], project["id"])
+    client.put(
         f"/api/workspaces/{workspace['id']}/review-settings?actor_email=owner@qualiforge.local",
         json={"allow_self_review": True, "require_review_on_case_update": True},
     )
-    assert settings.status_code == 200
-    assert settings.json()["allow_self_review"] is True
-
+    owner_case = create_case(client, workspace["id"], project["id"], module["id"], actor="owner@qualiforge.local")
+    submit_case(client, workspace["id"], project["id"], owner_case["id"], actor="owner@qualiforge.local")
     review_case(client, workspace["id"], project["id"], owner_case["id"], "approved", actor="owner@qualiforge.local")
-    approved_case = client.get(
-        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{owner_case['id']}"
-    ).json()
-    assert approved_case["status"] == "approved"
 
-    updated = client.patch(
-        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{owner_case['id']}?actor_email=owner@qualiforge.local",
+    edit_draft = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{owner_case['id']}/drafts?actor_email=owner@qualiforge.local"
+    )
+    assert edit_draft.status_code == 201
+    draft_id = edit_draft.json()["id"]
+    patched = client.patch(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/case-drafts/{draft_id}?actor_email=owner@qualiforge.local",
         json={"title": "Checkout payment succeeds after 3DS"},
     )
-    assert updated.status_code == 200
-    assert updated.json()["status"] == "pending_review"
-    assert updated.json()["current_revision_number"] == 2
+    assert patched.status_code == 200
 
-    review_case(client, workspace["id"], project["id"], owner_case["id"], "approved", actor="owner@qualiforge.local")
-    client.put(
-        f"/api/workspaces/{workspace['id']}/review-settings?actor_email=owner@qualiforge.local",
-        json={"allow_self_review": True, "require_review_on_case_update": False},
-    )
-    no_review_update = client.patch(
-        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{owner_case['id']}?actor_email=owner@qualiforge.local",
-        json={"risk": "medium"},
-    )
-    assert no_review_update.status_code == 200
-    assert no_review_update.json()["status"] == "approved"
-    assert no_review_update.json()["current_revision_number"] == 4
+    before_approval = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{owner_case['id']}").json()
+    assert before_approval["title"] == "Checkout payment succeeds after 3DS"
+    assert before_approval["current_revision"]["content_snapshot"]["title"] == "Checkout payment succeeds"
+    assert before_approval["current_revision_number"] == 1
+
+    submit_case(client, workspace["id"], project["id"], owner_case["id"], actor="owner@qualiforge.local")
+    review_case(client, workspace["id"], project["id"], owner_case["id"], "approved", actor="owner@qualiforge.local", comment="v2")
+    after_approval = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{owner_case['id']}").json()
+    assert after_approval["current_revision_number"] == 2
+    assert after_approval["current_revision"]["content_snapshot"]["title"] == "Checkout payment succeeds after 3DS"
 
     revisions = client.get(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{owner_case['id']}/revisions"
     ).json()
-    assert [revision["revision_number"] for revision in revisions] == [4, 3, 2, 1]
+    assert [revision["revision_number"] for revision in revisions] == [2, 1]

@@ -148,23 +148,60 @@ def test_preview_bulk_update_review_submission_and_owner_bulk_import(tmp_path: P
     )
     assert forbidden.status_code == 403
 
+    blocked_import = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/imports/{batch['id']}/bulk-import?actor_email=owner@qualiforge.local"
+    )
+    assert blocked_import.status_code == 409
+    assert "approved" in blocked_import.json()["detail"]
+
+    test_cases = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases").json()
+    assert len(test_cases) == 1
+    assert test_cases[0]["module_id"] == module["id"]
+    assert test_cases[0]["review_status"] == "pending_review"
+    assert test_cases[0]["active_draft"]["priority"] == "P0"
+    assert test_cases[0]["active_draft"]["tags"] == ["checkout", "release"]
+    cycle_id = test_cases[0]["open_cycle"]["id"]
+
+    settings = client.put(
+        f"/api/workspaces/{workspace['id']}/review-settings?actor_email=owner@qualiforge.local",
+        json={"allow_self_review": True, "require_review_on_case_update": True},
+    )
+    assert settings.status_code == 200
+
+    approved = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/review-cycles/{cycle_id}/approve?actor_email=owner@qualiforge.local",
+        json={"comment": "Approved imported baseline"},
+    )
+    assert approved.status_code == 201
+
     imported = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/imports/{batch['id']}/bulk-import?actor_email=owner@qualiforge.local"
     )
     assert imported.status_code == 200
     assert imported.json()["imported_count"] == 1
     assert imported.json()["batch"]["status"] == "imported"
+    assert imported.json()["batch"]["imported_at"] is not None
 
-    test_cases = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases").json()
-    assert len(test_cases) == 1
-    assert test_cases[0]["module_id"] == module["id"]
-    assert test_cases[0]["priority"] == "P0"
-    assert test_cases[0]["tags"] == ["checkout", "release"]
+    finalized_drafts = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/imports/{batch['id']}/drafts").json()
+    assert finalized_drafts[0]["status"] == "imported"
+
+    active_cases = client.get(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases?lifecycle_status=active"
+    ).json()
+    assert len(active_cases) == 1
+    assert active_cases[0]["review_status"] is None
+    assert active_cases[0]["current_revision"]["content_snapshot"]["priority"] == "P0"
+    assert active_cases[0]["current_revision"]["content_snapshot"]["tags"] == ["checkout", "release"]
 
     repeated = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/imports/{batch['id']}/bulk-import?actor_email=owner@qualiforge.local"
     )
     assert repeated.status_code == 409
+
+    resubmitted = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/imports/{batch['id']}/submit-review?actor_email=owner@qualiforge.local"
+    )
+    assert resubmitted.status_code == 409
 
     audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
     actions = [entry["action"] for entry in audit_logs]

@@ -120,7 +120,7 @@ def test_only_approved_formal_cases_can_be_added_to_plan(tmp_path: Path) -> None
     )
 
     assert response.status_code == 409
-    assert "approved" in response.json()["detail"]
+    assert "active formal cases" in response.json()["detail"]
 
 
 def test_plan_item_execution_result_evidence_and_filters(tmp_path: Path) -> None:

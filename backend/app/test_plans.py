@@ -10,9 +10,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, ForeignKey, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.case_imports import TestCase, TestCaseStatus, safe_filename
+from app.case_domain import CaseRevision, TestCase, TestCaseLifecycle
+from app.case_imports import safe_filename
 from app.database import Base
 from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
+
+__test__ = False
 
 
 class TestPlanType(StrEnum):
@@ -159,19 +162,19 @@ DbSession = Annotated[Session, Depends(get_db)]
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/projects/{project_id}", tags=["test-plans"])
 
 
-def test_case_snapshot(test_case: TestCase) -> dict[str, Any]:
+def formal_case_snapshot(db: Session, test_case: TestCase) -> dict[str, Any]:
+    if test_case.lifecycle_status != TestCaseLifecycle.active.value or not test_case.current_revision_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only active formal cases can be added to a plan")
+    revision = db.get(CaseRevision, test_case.current_revision_id)
+    if revision is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Active formal case has no current revision")
     return {
+        **revision.content_snapshot,
         "id": test_case.id,
-        "module_id": test_case.module_id,
-        "title": test_case.title,
-        "steps": test_case.steps,
-        "expected_result": test_case.expected_result,
-        "priority": test_case.priority,
-        "risk": test_case.risk,
-        "tags": test_case.tags,
-        "custom_fields": test_case.custom_fields,
-        "status": test_case.status,
-        "revision": test_case.current_revision_number,
+        "revision_id": revision.id,
+        "revision": revision.revision_number,
+        "module_path_label": revision.module_path_label,
+        "lifecycle_status": test_case.lifecycle_status,
     }
 
 
@@ -402,10 +405,10 @@ def create_plan_item(
         test_case = db.get(TestCase, payload.source_id)
         if test_case is None or test_case.workspace_id != workspace_id or test_case.project_id != project_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Test case not found")
-        if test_case.status != TestCaseStatus.approved.value:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only approved formal cases can be added to a plan")
-        snapshot = test_case_snapshot(test_case)
-        title = title or test_case.title
+        if test_case.lifecycle_status != TestCaseLifecycle.active.value or not test_case.current_revision_id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only active formal cases can be added to a plan")
+        snapshot = formal_case_snapshot(db, test_case)
+        title = title or str(snapshot.get("title") or "Formal case")
     item = add_plan_item(
         db,
         plan=plan,

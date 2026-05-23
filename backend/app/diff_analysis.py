@@ -306,7 +306,7 @@ def load_modules_and_rules(db: Session, workspace_id: str, project_id: str) -> t
     modules = db.scalars(
         select(ProjectModule)
         .where(ProjectModule.workspace_id == workspace_id, ProjectModule.project_id == project_id)
-        .order_by(ProjectModule.key)
+        .order_by(ProjectModule.path)
     ).all()
     rules = db.scalars(
         select(ModuleMappingRule)
@@ -496,7 +496,7 @@ def run_analysis(
                     "additions": stat["additions"],
                     "deletions": stat["deletions"],
                     "module_id": module.id if module else None,
-                    "module_key": module.key if module else None,
+                    "module_key": (module.code or module.slug.upper().replace("-", "_")) if module else None,
                     "module_name": module.name if module else None,
                     "is_test_file": is_test_path(path),
                     "is_migration": is_migration_path(path),

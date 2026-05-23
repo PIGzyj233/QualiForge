@@ -13,16 +13,22 @@ import { StatusTile } from "../components/StatusTile";
 import { usePagination } from "../hooks/usePagination";
 import { navItems, NavKey } from "../lib/navigation";
 import { LibraryView } from "./LibraryView";
+import { AISuggestionAdmin } from "./AISuggestionAdmin";
+import { CaseImportAdmin } from "./CaseImportAdmin";
 import { ProjectsView } from "./ProjectsView";
 import { ReportsView } from "./ReportsView";
 import { ReviewsView } from "./ReviewsView";
 import { SettingsView } from "./SettingsView";
+import { TestPlanAdmin } from "./TestPlanAdmin";
 
 const navTitles: Record<NavKey, string> = {
   workbench: "工作台",
   projects: "项目管理",
-  library: "用例中心",
-  reviews: "评审治理",
+  library: "用例库",
+  reviews: "评审队列",
+  plans: "测试计划",
+  imports: "导入中心",
+  ai: "智能推荐",
   reports: "发布报告",
   settings: "全局设置"
 };
@@ -213,6 +219,9 @@ export function Workbench({ session, onSignOut }: { session: Session; onSignOut:
         {activeNav === "projects" ? <ProjectsView session={session} /> : null}
         {activeNav === "library" ? <LibraryView session={session} /> : null}
         {activeNav === "reviews" ? <ReviewsView session={session} /> : null}
+        {activeNav === "plans" ? <TestPlanAdmin session={session} /> : null}
+        {activeNav === "imports" ? <CaseImportAdmin session={session} /> : null}
+        {activeNav === "ai" ? <AISuggestionAdmin session={session} /> : null}
         {activeNav === "reports" ? <ReportsView session={session} /> : null}
         {activeNav === "settings" ? <SettingsView session={session} /> : null}
       </main>

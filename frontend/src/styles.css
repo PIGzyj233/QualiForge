@@ -934,6 +934,240 @@ button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.case-library-layout,
+.review-queue-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(280px, 0.9fr) minmax(360px, 1.2fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.review-queue-layout {
+  grid-template-columns: minmax(300px, 0.8fr) minmax(360px, 1.2fr);
+}
+
+.case-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.case-filter-bar input,
+.case-filter-bar select,
+.case-filter-bar button {
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  color: var(--ink);
+}
+
+.module-tree,
+.case-list-panel,
+.case-detail-panel {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.module-tree {
+  align-content: start;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.module-tree ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tree-node {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tree-node span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-node small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tree-node:hover,
+.tree-node.active {
+  border-color: rgb(15 118 110 / 0.22);
+  background: var(--teal-soft);
+  color: var(--teal);
+}
+
+.compact-create {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.case-list {
+  max-height: 680px;
+  overflow: auto;
+}
+
+.case-row {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  min-height: 78px;
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--ink);
+  text-align: left;
+}
+
+.case-row:hover,
+.case-row.active {
+  background: #f8fafc;
+}
+
+.case-row.active {
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+
+.case-row strong,
+.case-row span,
+.case-row small {
+  overflow-wrap: anywhere;
+}
+
+.case-row span,
+.case-row small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.case-detail-panel {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.case-detail-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.case-detail-head h3,
+.case-content h3 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.case-detail-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.case-badges,
+.review-action-strip,
+.case-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.compact-tabs {
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.compact-tabs .sub-tab {
+  border: 1px solid var(--line);
+}
+
+.case-content {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+}
+
+.case-content p,
+.case-content small,
+.case-content pre {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.case-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.case-meta-grid span {
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-muted);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.case-draft-editor {
+  border-bottom: 0;
+}
+
+.case-action-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .ai-action-row {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -1111,7 +1345,11 @@ button {
   .admin-toolbar,
   .admin-grid,
   .report-grid,
-  .execution-summary {
+  .execution-summary,
+  .case-library-layout,
+  .review-queue-layout,
+  .case-filter-bar,
+  .comparison-grid {
     grid-template-columns: 1fr;
   }
 }
