@@ -35,11 +35,17 @@ The current implementation covers the first MVP platform slice:
 Backend:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -r backend\requirements.txt -r backend\dev-requirements.txt
-.\.venv\Scripts\python -m pytest backend\tests
-.\.venv\Scripts\python -m uvicorn app.main:app --app-dir backend --reload
+Set-Location backend
+uv sync
+uv run pytest tests
+uv run uvicorn app.main:app --reload
 ```
+
+Compose uses `postgres:18-alpine` and mounts the database volume at
+`/var/lib/postgresql`, matching the Postgres 18+ Docker image layout. If an old
+local volume was initialized with `/var/lib/postgresql/data`, Postgres 18 will
+create a fresh 18.x data directory inside the existing named volume; migrate the
+old data with `pg_upgrade` if you need to preserve it.
 
 Useful API paths:
 
