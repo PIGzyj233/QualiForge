@@ -16,10 +16,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai_config import (
+    AIDataPolicyName,
     AIInvocationLog,
     AIInvocationStatus,
     AIPurpose,
     get_or_create_ai_settings,
+    is_internal_api_base_url,
 )
 from app.agents import (
     AgentMessage,
@@ -36,9 +38,14 @@ from app.agents import (
     CoverageEntryCreate,
     CoverageIndexEntry,
     EvidenceRef,
+    assert_run_can_execute,
     add_coverage_entries,
     coverage_snapshot,
     evidence_refs_to_json,
+    mark_run_failed,
+    mark_run_running,
+    mark_run_succeeded,
+    mark_run_waiting,
 )
 from app.ai_suggestions import AISuggestion, AISuggestionType
 from app.case_domain import CaseDraft, CaseRevision, TestCase, TestCaseLifecycle
@@ -56,6 +63,10 @@ from app.workspaces import audit, now_utc
 
 class AgentGraphConflict(Exception):
     """Raised when a run cannot execute because of user-correctable state."""
+
+
+class AgentPolicyViolation(Exception):
+    """Raised when workspace AI data policy rejects agent execution."""
 
 
 class AgentBudgetExceeded(RuntimeError):
@@ -959,10 +970,7 @@ class AgentGraphExecutor:
             f"Generated {candidate_count} staged case candidate(s) and {reuse_count} reuse/extend note(s) "
             f"from repository {state['repository_id']} at {state['resolved_ref'][:12]}."
         )
-        run.status = AgentRunStatus.succeeded.value
-        run.current_phase = "summarize"
-        run.failure_reason = ""
-        run.completed_at = now_utc()
+        mark_run_succeeded(run)
         self.db.commit()
         return {"summary": summary}
 
@@ -1049,7 +1057,7 @@ class AgentGraphExecutor:
             model_name=event.model_name,
             status=event.status,
             input_summary=f"LangGraph supervisor case generation for agent run {run.id}",
-            input_data_types=["goal", "coverage_index", "code_tool_observations", "source_code_excerpt"],
+            input_data_types=AGENT_MODEL_INPUT_DATA_TYPES,
             includes_source_code=True,
             token_prompt=prompt_tokens,
             token_completion=completion_tokens,
@@ -1356,6 +1364,87 @@ def git_status_clean_check(worktree: Path) -> str:
     return result.stdout.strip()
 
 
+AGENT_MODEL_INPUT_DATA_TYPES = [
+    "goal",
+    "coverage_index",
+    "code_tool_observations",
+    "source_code",
+    "source_code_excerpt",
+]
+
+
+def agent_ai_policy_rejection_reason(*, policy: str, settings: Settings, includes_source_code: bool) -> str:
+    if policy == AIDataPolicyName.ai_disabled.value:
+        return "AI tasks are disabled for this workspace"
+    if policy == AIDataPolicyName.no_source_code.value and includes_source_code:
+        return "Workspace policy forbids sending source code to AI providers"
+    if policy == AIDataPolicyName.internal_only.value and not is_internal_api_base_url(settings.model_gateway_api_base_url):
+        return "Workspace policy allows only internal model gateway endpoints"
+    return ""
+
+
+def enforce_agent_ai_policy(
+    db: Session,
+    *,
+    settings: Settings,
+    run: AgentRun,
+    actor_email: str,
+) -> None:
+    workspace_ai_settings = get_or_create_ai_settings(db, run.workspace_id, actor_email)
+    reason = agent_ai_policy_rejection_reason(
+        policy=workspace_ai_settings.data_policy,
+        settings=settings,
+        includes_source_code=True,
+    )
+    if not reason:
+        return
+
+    invocation = AIInvocationLog(
+        workspace_id=run.workspace_id,
+        provider_id=None,
+        model_profile_id=None,
+        agent_run_id=run.id,
+        tool_call_id=None,
+        actor_email=actor_email,
+        purpose=AIPurpose.case_generation.value,
+        data_policy=workspace_ai_settings.data_policy,
+        provider_name=settings.model_gateway_provider,
+        model_alias=settings.model_gateway_default_model,
+        model_name=settings.model_gateway_default_model,
+        status=AIInvocationStatus.rejected.value,
+        input_summary=f"LangGraph supervisor case generation for agent run {run.id}",
+        input_data_types=AGENT_MODEL_INPUT_DATA_TYPES,
+        includes_source_code=True,
+        failure_reason=reason,
+        completed_at=now_utc(),
+    )
+    db.add(invocation)
+    db.flush()
+    audit(
+        db,
+        workspace_id=run.workspace_id,
+        actor_email=actor_email,
+        action="ai_invocation.rejected",
+        entity_type="AIInvocationLog",
+        entity_id=invocation.id,
+        summary=reason,
+        after={
+            "agent_run_id": run.id,
+            "purpose": invocation.purpose,
+            "data_policy": invocation.data_policy,
+            "status": invocation.status,
+            "input_summary": invocation.input_summary,
+            "input_data_types": invocation.input_data_types,
+            "includes_source_code": invocation.includes_source_code,
+            "provider_name": invocation.provider_name,
+            "model_alias": invocation.model_alias,
+            "failure_reason": invocation.failure_reason,
+        },
+    )
+    db.commit()
+    raise AgentPolicyViolation(reason)
+
+
 def execute_agent_graph(
     *,
     db: Session,
@@ -1367,6 +1456,7 @@ def execute_agent_graph(
     candidate_limit: int,
     actor_email: str,
     model_gateway_transport: Transport | None = None,
+    explicit_resume: bool = False,
 ) -> AgentRunExecutionResult:
     run = db.get(AgentRun, run_id)
     repository = db.get(GitRepository, repository_id)
@@ -1396,21 +1486,24 @@ def execute_agent_graph(
                 summary="Agent run already succeeded for this repository/ref; returning existing staged outputs.",
             )
         raise AgentGraphConflict("Agent run already succeeded for a different repository/ref")
-    if run.status == AgentRunStatus.running.value:
-        raise AgentGraphConflict("Agent run is already running")
-    if run.status == AgentRunStatus.cancelled.value:
-        raise AgentGraphConflict("Cancelled agent runs cannot be executed")
+    try:
+        assert_run_can_execute(run, explicit_resume=explicit_resume)
+    except ValueError as exc:
+        raise AgentGraphConflict(str(exc)) from exc
     if repository.status != RepositoryStatus.synced.value or not Path(repository.mirror_path).exists():
         raise AgentGraphConflict("Repository must be synced before agent execute")
 
+    snapshot = dict(run.budget_snapshot or {})
+    snapshot["last_execute_request"] = {
+        "repository_id": repository_id,
+        "ref": requested_ref,
+        "candidate_limit": candidate_limit,
+    }
+    run.budget_snapshot = snapshot
     if run.project_id is None:
         run.project_id = repository.project_id
-    run.status = AgentRunStatus.running.value
-    run.current_phase = "starting"
-    run.started_at = run.started_at or now_utc()
-    run.completed_at = None
-    run.failure_reason = ""
-    run.langgraph_thread_id = run.langgraph_thread_id or f"lg-{run.id}"
+    enforce_agent_ai_policy(db, settings=settings, run=run, actor_email=actor_email)
+    mark_run_running(run, explicit_resume=explicit_resume)
     db.commit()
 
     try:
@@ -1435,20 +1528,14 @@ def execute_agent_graph(
         db.rollback()
         run = db.get(AgentRun, run_id)
         if run is not None:
-            run.status = AgentRunStatus.waiting_for_user.value
-            run.current_phase = "budget_waiting"
-            run.failure_reason = str(exc)[:700]
-            run.completed_at = None
+            mark_run_waiting(run, str(exc), phase="budget_waiting")
             db.commit()
         summary = f"Agent run is waiting for budget input: {str(exc)[:300]}"
     except Exception as exc:
         db.rollback()
         run = db.get(AgentRun, run_id)
         if run is not None:
-            run.status = AgentRunStatus.failed.value
-            run.current_phase = "failed"
-            run.failure_reason = str(exc)[:700]
-            run.completed_at = now_utc()
+            mark_run_failed(run, str(exc))
             db.commit()
         summary = f"Agent run failed: {str(exc)[:300]}"
     finally:

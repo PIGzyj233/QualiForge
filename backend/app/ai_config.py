@@ -354,8 +354,10 @@ def get_profile_for_purpose(db: Session, workspace_id: str, purpose: AIPurpose) 
     return db.scalar(select(ModelProfile).where(ModelProfile.workspace_id == workspace_id, ModelProfile.purpose == purpose.value))
 
 
-def is_internal_provider(provider: LLMProvider) -> bool:
-    hostname = urlparse(provider.api_base_url).hostname or ""
+def is_internal_api_base_url(api_base_url: str) -> bool:
+    hostname = urlparse(api_base_url).hostname or ""
+    if hostname == "litellm":
+        return True
     if hostname in {"localhost", "127.0.0.1", "::1"}:
         return True
     if hostname.endswith(".local") or hostname.endswith(".internal"):
@@ -364,6 +366,10 @@ def is_internal_provider(provider: LLMProvider) -> bool:
         return ip_address(hostname).is_private
     except ValueError:
         return False
+
+
+def is_internal_provider(provider: LLMProvider) -> bool:
+    return is_internal_api_base_url(provider.api_base_url)
 
 
 def rejection_reason(

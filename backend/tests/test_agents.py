@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.agents import AgentRun, AgentRunStatus
 from app.config import Settings
 from app.main import create_app
 from app.model_gateway import RetryableModelGatewayError
@@ -18,17 +19,23 @@ from app.model_gateway import RetryableModelGatewayError
 OWNER = "owner@qualiforge.local"
 
 
-def make_client(tmp_path: Path | None = None, model_gateway_transport: Callable | None = None) -> TestClient:
-    settings = Settings(
-        _env_file=None,
-        database_url="sqlite+pysqlite:///:memory:",
-        redis_url="redis://localhost:6379/15",
-        git_sandbox_root=str(tmp_path / "sandbox") if tmp_path else ".qualiforge/test-git-sandbox",
-        git_sync_timeout_seconds=30,
-        git_repo_size_limit_mb=128,
-        git_diff_file_limit=250,
-        model_gateway_api_key="dev-litellm-key",
-    )
+def make_client(
+    tmp_path: Path | None = None,
+    model_gateway_transport: Callable | None = None,
+    settings_overrides: dict[str, Any] | None = None,
+) -> TestClient:
+    settings_values = {
+        "_env_file": None,
+        "database_url": "sqlite+pysqlite:///:memory:",
+        "redis_url": "redis://localhost:6379/15",
+        "git_sandbox_root": str(tmp_path / "sandbox") if tmp_path else ".qualiforge/test-git-sandbox",
+        "git_sync_timeout_seconds": 30,
+        "git_repo_size_limit_mb": 128,
+        "git_diff_file_limit": 250,
+        "model_gateway_api_key": "dev-litellm-key",
+    }
+    settings_values.update(settings_overrides or {})
+    settings = Settings(**settings_values)
     app = create_app(settings)
     if model_gateway_transport is not None:
         app.state.model_gateway_transport = model_gateway_transport
@@ -553,6 +560,298 @@ def test_agent_execute_waits_when_model_budget_exceeded(tmp_path: Path) -> None:
     assert "model budget exceeded" in payload["run"]["failure_reason"]
     assert payload["staged_outputs"] == []
     assert model_calls == []
+
+
+def test_agent_execute_rejects_when_ai_disabled(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    policy_response = client.put(
+        f"/api/workspaces/{workspace['id']}/ai-settings?actor_email={OWNER}",
+        json={"data_policy": "AIDisabled"},
+    )
+    assert policy_response.status_code == 200
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+
+    assert response.status_code == 403
+    assert "disabled" in response.json()["detail"]
+    assert model_calls == []
+    invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
+    assert invocations[0]["status"] == "rejected"
+    assert invocations[0]["data_policy"] == "AIDisabled"
+    assert invocations[0]["agent_run_id"] == run["id"]
+
+
+def test_agent_execute_rejects_source_code_when_no_source_code_policy(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    client.put(
+        f"/api/workspaces/{workspace['id']}/ai-settings?actor_email={OWNER}",
+        json={"data_policy": "NoSourceCode"},
+    )
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+
+    assert response.status_code == 403
+    assert "source code" in response.json()["detail"]
+    assert model_calls == []
+    invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
+    assert invocations[0]["input_data_types"] == [
+        "goal",
+        "coverage_index",
+        "code_tool_observations",
+        "source_code",
+        "source_code_excerpt",
+    ]
+    assert invocations[0]["includes_source_code"] is True
+
+
+def test_agent_execute_allows_internal_litellm_under_internal_only(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    client.put(
+        f"/api/workspaces/{workspace['id']}/ai-settings?actor_email={OWNER}",
+        json={"data_policy": "InternalOnly"},
+    )
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["run"]["status"] == "succeeded"
+    assert model_calls[0]["url"] == "http://litellm:4000/v1/chat/completions"
+    invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
+    assert invocations[0]["data_policy"] == "InternalOnly"
+
+
+def test_agent_execute_rejects_external_gateway_under_internal_only(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(
+        tmp_path,
+        successful_model_transport(model_calls),
+        settings_overrides={"model_gateway_api_base_url": "https://api.openai.com/v1"},
+    )
+    workspace, project = create_workspace_project(client)
+    client.put(
+        f"/api/workspaces/{workspace['id']}/ai-settings?actor_email={OWNER}",
+        json={"data_policy": "InternalOnly"},
+    )
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+
+    assert response.status_code == 403
+    assert "internal model gateway" in response.json()["detail"]
+    assert model_calls == []
+
+
+def test_agent_invocation_log_records_policy_without_prompt_or_secret(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+
+    assert response.status_code == 200, response.json()
+    invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
+    invocation = invocations[0]
+    assert invocation["data_policy"] == "ExternalAllowed"
+    assert "source_code" in invocation["input_data_types"]
+    assert invocation["includes_source_code"] is True
+    serialized_invocation = json.dumps(invocation)
+    assert "dev-litellm-key" not in serialized_invocation
+    assert "refund_order" not in serialized_invocation
+    assert run["goal"] not in serialized_invocation
+
+
+def test_succeeded_run_different_ref_conflicts(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+    url = f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}"
+
+    first = client.post(url, json={"repository_id": repository["id"], "ref": "master"})
+    second = client.post(url, json={"repository_id": repository["id"], "ref": "HEAD"})
+
+    assert first.status_code == 200, first.json()
+    assert second.status_code == 409
+    assert "different repository/ref" in second.json()["detail"]
+    assert len(model_calls) == 1
+
+
+def test_running_run_cannot_execute_again(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+    with client.app.state.database.session_factory() as db:
+        stored = db.get(AgentRun, run["id"])
+        assert stored is not None
+        stored.status = AgentRunStatus.running.value
+        db.commit()
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+
+    assert response.status_code == 409
+    assert "already running" in response.json()["detail"]
+
+
+def test_agent_resume_from_model_budget_waiting_succeeds_and_audits_override(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(
+        client,
+        workspace["id"],
+        project["id"],
+        budget_snapshot={"max_tool_calls": 20, "max_model_calls": 0},
+    )
+
+    waiting = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+    resumed = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/resume?actor_email={OWNER}",
+        json={
+            "budget_snapshot": {"max_tool_calls": 40, "max_model_calls": 5, "max_case_candidates_per_run": 3},
+            "resume_reason": "Allow model generation after reviewing budget",
+        },
+    )
+
+    assert waiting.status_code == 200, waiting.json()
+    assert waiting.json()["run"]["status"] == "waiting_for_user"
+    assert resumed.status_code == 200, resumed.json()
+    payload = resumed.json()
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["staged_outputs"][0]["status"] == "staged"
+    assert len(model_calls) == 1
+    assert payload["run"]["budget_snapshot"]["max_model_calls"] == 5
+    assert payload["run"]["budget_snapshot"]["usage"]["model_calls"] == 1
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    actions = [entry["action"] for entry in audit_logs]
+    assert "agent_run.budget_overridden" in actions
+
+
+def test_agent_cancel_waiting_run_and_cancelled_run_cannot_execute_or_resume(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(
+        client,
+        workspace["id"],
+        project["id"],
+        budget_snapshot={"max_tool_calls": 20, "max_model_calls": 0},
+    )
+    waiting = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+    cancelled = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/cancel?actor_email={OWNER}",
+        json={"cancel_reason": "Stop budget expansion"},
+    )
+    execute_again = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+    resume = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/resume?actor_email={OWNER}",
+        json={"budget_snapshot": {"max_model_calls": 5}, "resume_reason": "Try after cancel"},
+    )
+
+    assert waiting.status_code == 200, waiting.json()
+    assert cancelled.status_code == 200, cancelled.json()
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["cancelled_at"] is not None
+    assert execute_again.status_code == 409
+    assert "Cancelled" in execute_again.json()["detail"]
+    assert resume.status_code == 409
+    assert "Cancelled" in resume.json()["detail"]
+    assert model_calls == []
+
+
+def test_agent_execution_detail_includes_tool_calls_invocations_outputs_and_budget(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+
+    executed = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+    detail = client.get(f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execution-detail")
+
+    assert executed.status_code == 200, executed.json()
+    assert detail.status_code == 200, detail.json()
+    payload = detail.json()
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["staged_outputs"][0]["output_type"] == "case_candidate"
+    assert {item["tool_name"] for item in payload["tool_calls"]} >= {"coverage_lookup", "code_search"}
+    assert payload["ai_invocations"][0]["status"] == "succeeded"
+    assert payload["repository_sandboxes"][0]["status"] == "cleaned"
+    assert payload["budget"]["usage"]["model_calls"] == 1
+    assert payload["budget"]["limits"]["max_model_calls"] == 20
+    assert payload["pending_approvals"] == []
+    serialized = json.dumps(payload)
+    assert "dev-litellm-key" not in serialized
+    assert "refund_order" not in serialized
+    assert "required_json_schema" not in serialized
 
 
 def test_agent_execute_schema_failure_leaves_no_staged_outputs(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
+from app.ai_config import AIInvocationLog, AIInvocationResponse, invocation_to_response
 from app.database import Base
 from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
 
@@ -285,6 +286,15 @@ class AgentRunExecuteRequest(BaseModel):
     candidate_limit: int = Field(default=3, ge=1, le=5)
 
 
+class AgentRunResumeRequest(BaseModel):
+    budget_snapshot: dict[str, Any] = Field(default_factory=dict)
+    resume_reason: str = Field(default="", max_length=700)
+
+
+class AgentRunCancelRequest(BaseModel):
+    cancel_reason: str = Field(default="", max_length=700)
+
+
 class AgentMessageCreate(BaseModel):
     role: AgentMessageRole = AgentMessageRole.user
     content: str = Field(min_length=1, max_length=8000)
@@ -449,6 +459,22 @@ class AgentRunExecuteResponse(BaseModel):
     staged_outputs: list[AgentStagedOutputResponse] = Field(default_factory=list)
     tool_calls: list[AgentToolCallResponse] = Field(default_factory=list)
     sandboxes: list[AgentRepositorySandboxResponse] = Field(default_factory=list)
+
+
+class AgentRunBudgetResponse(BaseModel):
+    snapshot: dict[str, Any]
+    usage: dict[str, Any]
+    limits: dict[str, Any]
+
+
+class AgentExecutionDetailResponse(BaseModel):
+    run: AgentRunResponse
+    staged_outputs: list[AgentStagedOutputResponse] = Field(default_factory=list)
+    tool_calls: list[AgentToolCallResponse] = Field(default_factory=list)
+    ai_invocations: list[AIInvocationResponse] = Field(default_factory=list)
+    repository_sandboxes: list[AgentRepositorySandboxResponse] = Field(default_factory=list)
+    budget: AgentRunBudgetResponse
+    pending_approvals: list[AgentApprovalResponse] = Field(default_factory=list)
 
 
 def get_db(request: Request):
@@ -676,6 +702,107 @@ def assert_project_scope(db: Session, workspace_id: str, project_id: str | None)
         get_project_or_404(db, workspace_id, project_id)
 
 
+AGENT_RUN_ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    AgentRunStatus.queued.value: {AgentRunStatus.running.value, AgentRunStatus.cancelled.value},
+    AgentRunStatus.running.value: {
+        AgentRunStatus.succeeded.value,
+        AgentRunStatus.failed.value,
+        AgentRunStatus.waiting_for_user.value,
+        AgentRunStatus.cancelled.value,
+    },
+    AgentRunStatus.waiting_for_user.value: {AgentRunStatus.running.value, AgentRunStatus.cancelled.value},
+    AgentRunStatus.failed.value: {AgentRunStatus.running.value},
+    AgentRunStatus.succeeded.value: set(),
+    AgentRunStatus.cancelled.value: set(),
+}
+
+
+class AgentRunStateError(ValueError):
+    """Raised when an AgentRun status transition is not allowed."""
+
+
+def _assert_transition(
+    run: AgentRun,
+    next_status: AgentRunStatus,
+    *,
+    explicit_resume: bool = False,
+    explicit_retry: bool = False,
+) -> None:
+    current_status = run.status
+    target_status = next_status.value
+    if target_status not in AGENT_RUN_ALLOWED_TRANSITIONS.get(current_status, set()):
+        raise AgentRunStateError(f"Agent run cannot transition from {current_status} to {target_status}")
+    if (
+        current_status == AgentRunStatus.failed.value
+        and target_status == AgentRunStatus.running.value
+        and not (explicit_resume or explicit_retry)
+    ):
+        raise AgentRunStateError("Failed agent runs require an explicit retry or resume")
+
+
+def assert_run_can_execute(run: AgentRun, *, explicit_resume: bool = False, explicit_retry: bool = False) -> None:
+    if run.status == AgentRunStatus.succeeded.value:
+        raise AgentRunStateError("Agent run already succeeded")
+    if run.status == AgentRunStatus.running.value:
+        raise AgentRunStateError("Agent run is already running")
+    if run.status == AgentRunStatus.cancelled.value:
+        raise AgentRunStateError("Cancelled agent runs cannot be executed")
+    _assert_transition(run, AgentRunStatus.running, explicit_resume=explicit_resume, explicit_retry=explicit_retry)
+
+
+def mark_run_running(run: AgentRun, *, explicit_resume: bool = False, explicit_retry: bool = False) -> None:
+    _assert_transition(run, AgentRunStatus.running, explicit_resume=explicit_resume, explicit_retry=explicit_retry)
+    run.status = AgentRunStatus.running.value
+    run.current_phase = "starting"
+    run.started_at = run.started_at or now_utc()
+    run.completed_at = None
+    run.cancelled_at = None
+    run.failure_reason = ""
+    run.langgraph_thread_id = run.langgraph_thread_id or f"lg-{run.id}"
+
+
+def mark_run_waiting(run: AgentRun, reason: str, *, phase: str = "waiting_for_user") -> None:
+    _assert_transition(run, AgentRunStatus.waiting_for_user)
+    run.status = AgentRunStatus.waiting_for_user.value
+    run.current_phase = phase
+    run.failure_reason = reason[:700]
+    run.completed_at = None
+
+
+def mark_run_succeeded(run: AgentRun, *, phase: str = "summarize") -> None:
+    _assert_transition(run, AgentRunStatus.succeeded)
+    run.status = AgentRunStatus.succeeded.value
+    run.current_phase = phase
+    run.failure_reason = ""
+    run.completed_at = now_utc()
+
+
+def mark_run_failed(run: AgentRun, reason: str, *, phase: str = "failed") -> None:
+    _assert_transition(run, AgentRunStatus.failed)
+    run.status = AgentRunStatus.failed.value
+    run.current_phase = phase
+    run.failure_reason = reason[:700]
+    run.completed_at = now_utc()
+
+
+def mark_run_cancelled(run: AgentRun, reason: str = "") -> None:
+    _assert_transition(run, AgentRunStatus.cancelled)
+    run.status = AgentRunStatus.cancelled.value
+    run.current_phase = "cancelled"
+    run.failure_reason = reason[:700]
+    run.completed_at = now_utc()
+    run.cancelled_at = now_utc()
+
+
+def budget_response_for_run(run: AgentRun) -> AgentRunBudgetResponse:
+    snapshot = dict(run.budget_snapshot or {})
+    return AgentRunBudgetResponse(
+        snapshot=snapshot,
+        usage=dict(snapshot.get("usage") or {}),
+        limits=dict(snapshot.get("limits") or {}),
+    )
+
+
 def add_coverage_entries(
     db: Session,
     *,
@@ -854,6 +981,21 @@ def list_agent_runs(workspace_id: str, conversation_id: str, db: DbSession) -> l
     return [run_to_response(run) for run in runs]
 
 
+@router.get("/agent/runs/{run_id}", response_model=AgentRunResponse)
+def get_agent_run(workspace_id: str, run_id: str, db: DbSession) -> AgentRunResponse:
+    return run_to_response(get_run_or_404(db, workspace_id, run_id))
+
+
+def _agent_run_execution_response(db: Session, result) -> AgentRunExecuteResponse:
+    return AgentRunExecuteResponse(
+        run=run_to_response(result.run),
+        summary=result.summary,
+        staged_outputs=[staged_output_to_response(db, output) for output in result.staged_outputs],
+        tool_calls=[tool_call_to_response(tool_call) for tool_call in result.tool_calls],
+        sandboxes=[sandbox_to_response(sandbox) for sandbox in result.sandboxes],
+    )
+
+
 @router.post("/agent/runs/{run_id}/execute", response_model=AgentRunExecuteResponse)
 def execute_agent_run(
     workspace_id: str,
@@ -867,7 +1009,7 @@ def execute_agent_run(
     if run.mode != AgentRunMode.execute.value:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent execute requires an execute mode run")
 
-    from app.agent_graph import AgentGraphConflict, execute_agent_graph
+    from app.agent_graph import AgentGraphConflict, AgentPolicyViolation, execute_agent_graph
 
     try:
         result = execute_agent_graph(
@@ -881,15 +1023,176 @@ def execute_agent_run(
             actor_email=actor_email,
             model_gateway_transport=getattr(request.app.state, "model_gateway_transport", None),
         )
+    except AgentPolicyViolation as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except AgentGraphConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
-    return AgentRunExecuteResponse(
-        run=run_to_response(result.run),
-        summary=result.summary,
-        staged_outputs=[staged_output_to_response(db, output) for output in result.staged_outputs],
-        tool_calls=[tool_call_to_response(tool_call) for tool_call in result.tool_calls],
-        sandboxes=[sandbox_to_response(sandbox) for sandbox in result.sandboxes],
+    return _agent_run_execution_response(db, result)
+
+
+def _merge_budget_override(run: AgentRun, override: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    before = dict(run.budget_snapshot or {})
+    after = dict(before)
+    usage = before.get("usage")
+    last_execute_request = before.get("last_execute_request")
+    for key, value in override.items():
+        if key in {"usage", "last_execute_request"}:
+            continue
+        after[key] = value
+    if usage is not None:
+        after["usage"] = usage
+    if last_execute_request is not None:
+        after["last_execute_request"] = last_execute_request
+    run.budget_snapshot = after
+    return before, after
+
+
+def _resume_execution_context(db: Session, run: AgentRun) -> tuple[str, str, int]:
+    snapshot = dict(run.budget_snapshot or {})
+    last_execute_request = dict(snapshot.get("last_execute_request") or {})
+    repository_id = str(last_execute_request.get("repository_id") or "")
+    ref = str(last_execute_request.get("ref") or "")
+    try:
+        candidate_limit = int(last_execute_request.get("candidate_limit") or 3)
+    except (TypeError, ValueError):
+        candidate_limit = 3
+
+    if not repository_id:
+        sandbox = db.scalar(
+            select(AgentRepositorySandbox)
+            .where(AgentRepositorySandbox.agent_run_id == run.id)
+            .order_by(AgentRepositorySandbox.created_at.desc(), AgentRepositorySandbox.id.desc())
+        )
+        if sandbox is not None:
+            repository_id = sandbox.repository_id
+            ref = sandbox.ref
+    if not repository_id:
+        raise AgentRunStateError("Agent run has no previous execution context to resume")
+    return repository_id, ref, min(max(candidate_limit, 1), 5)
+
+
+@router.post("/agent/runs/{run_id}/resume", response_model=AgentRunExecuteResponse)
+def resume_agent_run(
+    workspace_id: str,
+    run_id: str,
+    payload: AgentRunResumeRequest,
+    db: DbSession,
+    request: Request,
+    actor_email: ActorEmail,
+) -> AgentRunExecuteResponse:
+    run = get_run_or_404(db, workspace_id, run_id)
+    if run.mode != AgentRunMode.execute.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent resume requires an execute mode run")
+    if run.status == AgentRunStatus.cancelled.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cancelled agent runs cannot be resumed")
+    if run.status not in {AgentRunStatus.waiting_for_user.value, AgentRunStatus.failed.value}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only waiting or failed agent runs can be resumed")
+
+    try:
+        repository_id, ref, candidate_limit = _resume_execution_context(db, run)
+    except AgentRunStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    before, after = _merge_budget_override(run, payload.budget_snapshot)
+    audit(
+        db,
+        workspace_id=workspace_id,
+        actor_email=actor_email,
+        action="agent_run.budget_overridden",
+        entity_type="AgentRun",
+        entity_id=run.id,
+        summary=payload.resume_reason or "Resumed agent run with budget override",
+        before={"budget_snapshot": before},
+        after={"budget_snapshot": after, "resume_reason": payload.resume_reason},
+    )
+    db.commit()
+
+    from app.agent_graph import AgentGraphConflict, AgentPolicyViolation, execute_agent_graph
+
+    try:
+        result = execute_agent_graph(
+            db=db,
+            settings=request.app.state.settings,
+            workspace_id=workspace_id,
+            run_id=run_id,
+            repository_id=repository_id,
+            ref=ref,
+            candidate_limit=candidate_limit,
+            actor_email=actor_email,
+            model_gateway_transport=getattr(request.app.state, "model_gateway_transport", None),
+            explicit_resume=True,
+        )
+    except AgentPolicyViolation as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except AgentGraphConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    return _agent_run_execution_response(db, result)
+
+
+@router.post("/agent/runs/{run_id}/cancel", response_model=AgentRunResponse)
+def cancel_agent_run(
+    workspace_id: str,
+    run_id: str,
+    payload: AgentRunCancelRequest,
+    db: DbSession,
+    actor_email: ActorEmail,
+) -> AgentRunResponse:
+    run = get_run_or_404(db, workspace_id, run_id)
+    try:
+        mark_run_cancelled(run, payload.cancel_reason or "Agent run cancelled by user")
+    except AgentRunStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    audit(
+        db,
+        workspace_id=workspace_id,
+        actor_email=actor_email,
+        action="agent_run.cancelled",
+        entity_type="AgentRun",
+        entity_id=run.id,
+        summary=payload.cancel_reason or "Cancelled agent run",
+        after={"status": run.status, "cancel_reason": payload.cancel_reason},
+    )
+    db.commit()
+    db.refresh(run)
+    return run_to_response(run)
+
+
+@router.get("/agent/runs/{run_id}/execution-detail", response_model=AgentExecutionDetailResponse)
+def get_agent_execution_detail(workspace_id: str, run_id: str, db: DbSession) -> AgentExecutionDetailResponse:
+    run = get_run_or_404(db, workspace_id, run_id)
+    staged_outputs = db.scalars(
+        select(AgentStagedOutput)
+        .where(AgentStagedOutput.agent_run_id == run.id, AgentStagedOutput.workspace_id == workspace_id)
+        .order_by(AgentStagedOutput.created_at, AgentStagedOutput.id)
+    ).all()
+    tool_calls = db.scalars(
+        select(AgentToolCall).where(AgentToolCall.agent_run_id == run.id).order_by(AgentToolCall.created_at, AgentToolCall.id)
+    ).all()
+    invocations = db.scalars(
+        select(AIInvocationLog)
+        .where(AIInvocationLog.agent_run_id == run.id, AIInvocationLog.workspace_id == workspace_id)
+        .order_by(AIInvocationLog.created_at, AIInvocationLog.id)
+    ).all()
+    sandboxes = db.scalars(
+        select(AgentRepositorySandbox)
+        .where(AgentRepositorySandbox.agent_run_id == run.id, AgentRepositorySandbox.workspace_id == workspace_id)
+        .order_by(AgentRepositorySandbox.created_at, AgentRepositorySandbox.id)
+    ).all()
+    pending_approvals = db.scalars(
+        select(AgentApproval)
+        .where(AgentApproval.agent_run_id == run.id, AgentApproval.status == AgentApprovalStatus.pending.value)
+        .order_by(AgentApproval.created_at, AgentApproval.id)
+    ).all()
+    return AgentExecutionDetailResponse(
+        run=run_to_response(run),
+        staged_outputs=[staged_output_to_response(db, output) for output in staged_outputs],
+        tool_calls=[tool_call_to_response(tool_call) for tool_call in tool_calls],
+        ai_invocations=[invocation_to_response(invocation) for invocation in invocations],
+        repository_sandboxes=[sandbox_to_response(sandbox) for sandbox in sandboxes],
+        budget=budget_response_for_run(run),
+        pending_approvals=[approval_to_response(approval) for approval in pending_approvals],
     )
 
 
