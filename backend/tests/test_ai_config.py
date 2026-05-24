@@ -1,6 +1,10 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, inspect, text
 
 from app.config import Settings
+from app.database import Database
 from app.main import create_app
 
 
@@ -180,3 +184,86 @@ def test_internal_only_rejects_external_provider() -> None:
     assert response.status_code == 403
     assert response.json()["detail"] == "Workspace policy allows only internal model endpoints"
 
+
+def test_database_init_upgrades_legacy_ai_invocation_log_schema(tmp_path: Path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'legacy.db'}"
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE ai_invocation_logs (
+                    id VARCHAR(32) PRIMARY KEY,
+                    workspace_id VARCHAR(32) NOT NULL,
+                    provider_id VARCHAR(32),
+                    model_profile_id VARCHAR(32),
+                    actor_email VARCHAR(254) NOT NULL,
+                    purpose VARCHAR(40) NOT NULL,
+                    data_policy VARCHAR(32) NOT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'queued',
+                    input_summary VARCHAR(500) NOT NULL,
+                    input_data_types JSON NOT NULL DEFAULT '[]',
+                    includes_source_code BOOLEAN NOT NULL DEFAULT 0,
+                    token_prompt INTEGER NOT NULL DEFAULT 0,
+                    token_completion INTEGER NOT NULL DEFAULT 0,
+                    estimated_cost NUMERIC(12, 6) NOT NULL DEFAULT 0,
+                    cache_hit BOOLEAN NOT NULL DEFAULT 0,
+                    latency_ms INTEGER NOT NULL DEFAULT 0,
+                    failure_reason VARCHAR(500) NOT NULL DEFAULT '',
+                    created_at DATETIME NOT NULL,
+                    completed_at DATETIME
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO ai_invocation_logs (
+                    id, workspace_id, actor_email, purpose, data_policy, status,
+                    input_summary, input_data_types, includes_source_code, created_at
+                )
+                VALUES (
+                    'legacy-invocation', 'workspace-1', 'owner@qualiforge.local',
+                    'case_generation', 'InternalOnly', 'succeeded',
+                    'legacy row', '[]', 0, '2026-05-24 00:00:00'
+                )
+                """
+            )
+        )
+
+    database = Database(database_url)
+    database.init()
+
+    inspector = inspect(database.engine)
+    columns = {column["name"] for column in inspector.get_columns("ai_invocation_logs")}
+    assert {
+        "agent_run_id",
+        "tool_call_id",
+        "provider_name",
+        "model_alias",
+        "model_name",
+        "attempts",
+        "usage",
+        "raw_invocation_id",
+    } <= columns
+    indexes = {index["name"] for index in inspector.get_indexes("ai_invocation_logs")}
+    assert "ix_ai_invocation_logs_agent_run_id" in indexes
+    assert "ix_ai_invocation_logs_model_alias" in indexes
+
+    with database.engine.connect() as connection:
+        row = connection.execute(
+            text(
+                """
+                SELECT provider_name, model_alias, model_name, attempts, usage, raw_invocation_id
+                FROM ai_invocation_logs
+                WHERE id = 'legacy-invocation'
+                """
+            )
+        ).mappings().one()
+    assert row["provider_name"] == ""
+    assert row["model_alias"] == ""
+    assert row["model_name"] == ""
+    assert row["attempts"] == 0
+    assert row["usage"] == "{}"
+    assert row["raw_invocation_id"] == ""

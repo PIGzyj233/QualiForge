@@ -29,6 +29,22 @@ Transport = Callable[[str, dict[str, str], dict[str, Any], float], dict[str, Any
 
 
 @dataclass(frozen=True)
+class ModelGatewayAuditEvent:
+    provider: str
+    model_alias: str
+    model_name: str
+    status: str
+    usage: dict[str, Any] = field(default_factory=dict)
+    latency_ms: int = 0
+    attempts: int = 0
+    raw_id: str = ""
+    failure_reason: str = ""
+
+
+InvocationLogger = Callable[[ModelGatewayAuditEvent], None]
+
+
+@dataclass(frozen=True)
 class ModelGatewayResponse:
     provider: str
     model: str
@@ -116,10 +132,22 @@ class OpenAICompatibleModelGateway:
         model: str | None = None,
         temperature: float = 0,
         max_tokens: int = 256,
+        invocation_logger: InvocationLogger | None = None,
     ) -> ModelGatewayResponse:
-        if not self.api_key:
-            raise NonRetryableModelGatewayError("Model gateway API key is not configured")
         selected_model = model or self.default_model
+        started = time.monotonic()
+        if not self.api_key:
+            exc = NonRetryableModelGatewayError("Model gateway API key is not configured")
+            self._emit_invocation(
+                invocation_logger,
+                model_alias=selected_model,
+                model_name=selected_model,
+                status="failed",
+                latency_ms=int((time.monotonic() - started) * 1000),
+                attempts=0,
+                failure_reason=str(exc),
+            )
+            raise exc
         payload = {
             "model": selected_model,
             "messages": messages,
@@ -131,7 +159,6 @@ class OpenAICompatibleModelGateway:
             "Content-Type": "application/json",
         }
         url = f"{self.api_base_url}/chat/completions"
-        started = time.monotonic()
         last_error: ModelGatewayError | None = None
         for attempt in range(1, self.max_attempts + 1):
             try:
@@ -139,7 +166,7 @@ class OpenAICompatibleModelGateway:
                 choice = (raw.get("choices") or [{}])[0]
                 message = choice.get("message") or {}
                 content = str(message.get("content") or "")
-                return ModelGatewayResponse(
+                response = ModelGatewayResponse(
                     provider=self.provider,
                     model=str(raw.get("model") or selected_model),
                     content=content,
@@ -148,14 +175,73 @@ class OpenAICompatibleModelGateway:
                     attempts=attempt,
                     raw_id=str(raw.get("id") or ""),
                 )
+                self._emit_invocation(
+                    invocation_logger,
+                    model_alias=selected_model,
+                    model_name=response.model,
+                    status="succeeded",
+                    usage=response.usage,
+                    latency_ms=response.latency_ms,
+                    attempts=response.attempts,
+                    raw_id=response.raw_id,
+                )
+                return response
             except RetryableModelGatewayError as exc:
                 last_error = exc
                 if attempt == self.max_attempts:
                     break
                 time.sleep(min(0.2 * attempt, 1.0))
-            except NonRetryableModelGatewayError:
+            except NonRetryableModelGatewayError as exc:
+                self._emit_invocation(
+                    invocation_logger,
+                    model_alias=selected_model,
+                    model_name=selected_model,
+                    status="failed",
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                    attempts=attempt,
+                    failure_reason=str(exc)[:500],
+                )
                 raise
-        raise RetryableModelGatewayError(f"Model gateway failed after {self.max_attempts} attempts: {last_error}")
+        exc = RetryableModelGatewayError(f"Model gateway failed after {self.max_attempts} attempts: {last_error}")
+        self._emit_invocation(
+            invocation_logger,
+            model_alias=selected_model,
+            model_name=selected_model,
+            status="failed",
+            latency_ms=int((time.monotonic() - started) * 1000),
+            attempts=self.max_attempts,
+            failure_reason=str(exc)[:500],
+        )
+        raise exc
+
+    def _emit_invocation(
+        self,
+        invocation_logger: InvocationLogger | None,
+        *,
+        model_alias: str,
+        model_name: str,
+        status: str,
+        usage: dict[str, Any] | None = None,
+        latency_ms: int,
+        attempts: int,
+        raw_id: str = "",
+        failure_reason: str = "",
+    ) -> None:
+        if invocation_logger is None:
+            return
+        invocation_logger(
+            ModelGatewayAuditEvent(
+                provider=self.provider,
+                model_alias=model_alias,
+                model_name=model_name,
+                status=status,
+                usage=usage or {},
+                latency_ms=latency_ms,
+                attempts=attempts,
+                raw_id=raw_id,
+                failure_reason=failure_reason,
+            )
+        )
 
 
 def build_model_gateway(settings: Settings, *, transport: Transport = urllib_transport) -> OpenAICompatibleModelGateway:

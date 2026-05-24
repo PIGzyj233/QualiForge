@@ -126,9 +126,14 @@ export type AIInvocationRecord = {
   workspace_id: string;
   provider_id: string | null;
   model_profile_id: string | null;
+  agent_run_id: string | null;
+  tool_call_id: string | null;
   actor_email: string;
   purpose: AIPurpose;
   data_policy: AIDataPolicy;
+  provider_name: string;
+  model_alias: string;
+  model_name: string;
   status: "queued" | "rejected" | "succeeded" | "failed";
   input_summary: string;
   input_data_types: string[];
@@ -138,6 +143,9 @@ export type AIInvocationRecord = {
   estimated_cost: string;
   cache_hit: boolean;
   latency_ms: number;
+  attempts: number;
+  usage: Record<string, unknown>;
+  raw_invocation_id: string;
   failure_reason: string;
   created_at: string;
   completed_at: string | null;

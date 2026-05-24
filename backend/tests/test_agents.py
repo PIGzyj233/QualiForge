@@ -114,7 +114,14 @@ def sync_repository(client: TestClient, workspace_id: str, project_id: str, repo
     return synced
 
 
-def create_agent_run(client: TestClient, workspace_id: str, project_id: str, *, mode: str = "execute") -> dict:
+def create_agent_run(
+    client: TestClient,
+    workspace_id: str,
+    project_id: str,
+    *,
+    mode: str = "execute",
+    budget_snapshot: dict[str, Any] | None = None,
+) -> dict:
     conversation = client.post(
         f"/api/workspaces/{workspace_id}/agent/conversations?actor_email={OWNER}",
         json={"title": "Generate refund cases", "project_id": project_id},
@@ -124,7 +131,7 @@ def create_agent_run(client: TestClient, workspace_id: str, project_id: str, *, 
         json={
             "goal": "Generate refund audit candidate cases with observability",
             "mode": mode,
-            "budget_snapshot": {"max_tool_calls": 20},
+            "budget_snapshot": budget_snapshot or {"max_tool_calls": 20},
         },
     )
     assert run_response.status_code == 201
@@ -139,7 +146,20 @@ def case_candidate_content() -> str:
                     "title": "Validate refund audit trail",
                     "steps": ["Create a paid order", "Trigger a refund", "Inspect audit history and refund logs"],
                     "expected_result": "Refund completes and refund.created audit evidence includes refund_id and order_id.",
-                    "observability": {"audit_events": ["refund.created"], "log_keywords": ["refund_id", "order_id"], "gaps": []},
+                    "risk": "medium",
+                    "priority": "P1",
+                    "module_key": "CHECKOUT",
+                    "unmapped_reason": "",
+                    "observability": {
+                        "signals": [],
+                        "audit_events": ["refund.created"],
+                        "log_keywords": ["refund_id", "order_id"],
+                        "metrics": [],
+                        "trace_points": [],
+                        "job_states": [],
+                        "entity_ids": [],
+                        "gaps": [],
+                    },
                     "evidence_refs": [
                         {
                             "kind": "code_file",
@@ -388,15 +408,23 @@ def test_agent_execute_creates_worktree_and_tool_audit(tmp_path: Path) -> None:
     assert response.status_code == 200, response.json()
     payload = response.json()
     assert payload["run"]["status"] == "succeeded"
-    assert payload["sandboxes"][0]["status"] == "ready"
+    assert payload["sandboxes"][0]["status"] == "cleaned"
     assert "agent-worktrees" in payload["sandboxes"][0]["worktree_path"]
-    assert Path(payload["sandboxes"][0]["worktree_path"]).exists()
+    assert not Path(payload["sandboxes"][0]["worktree_path"]).exists()
     tool_names = [item["tool_name"] for item in payload["tool_calls"]]
+    assert "coverage_lookup" in tool_names
     assert "code_search" in tool_names
     assert "code_read_range" in tool_names
     assert model_calls[0]["url"] == "http://litellm:4000/v1/chat/completions"
     assert model_calls[0]["payload"]["model"] == "qf-supervisor-strong"
     assert "dev-litellm-key" not in str(payload)
+
+    invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
+    assert invocations[0]["agent_run_id"] == run["id"]
+    assert invocations[0]["provider_name"] == "litellm"
+    assert invocations[0]["model_alias"] == "qf-supervisor-strong"
+    assert invocations[0]["attempts"] == 1
+    assert invocations[0]["usage"] == {"prompt_tokens": 120, "completion_tokens": 80}
 
 
 def test_agent_execute_generates_staged_case_candidate(tmp_path: Path) -> None:
@@ -418,7 +446,11 @@ def test_agent_execute_generates_staged_case_candidate(tmp_path: Path) -> None:
     assert staged["output_type"] == "case_candidate"
     assert staged["status"] == "staged"
     assert staged["payload"]["observability"]["audit_events"] == ["refund.created"]
+    assert staged["payload"]["risk"] == "medium"
+    assert staged["payload"]["priority"] == "P1"
+    assert staged["payload"]["module_key"] == "CHECKOUT"
     assert staged["duplicate_result"]["classification"] == "coverage_gap"
+    assert staged["duplicate_result"]["source"] == "deterministic_lookup"
     assert staged["evidence_refs"][0]["kind"] == "code_file"
     assert staged["coverage_entries"][0]["coverage_state"] == "staged"
     assert staged["coverage_entries"][0]["module_key"] == "CHECKOUT"
@@ -427,6 +459,134 @@ def test_agent_execute_generates_staged_case_candidate(tmp_path: Path) -> None:
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/coverage-index?coverage_state=staged&module_key=CHECKOUT"
     ).json()
     assert [entry["behavior_summary"] for entry in coverage] == ["Refund emits attributable audit and log signals."]
+
+
+def test_agent_execute_is_idempotent_for_same_run_ref(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+    url = f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}"
+
+    first = client.post(url, json={"repository_id": repository["id"], "ref": "master"})
+    second = client.post(url, json={"repository_id": repository["id"], "ref": "master"})
+
+    assert first.status_code == 200, first.json()
+    assert second.status_code == 200, second.json()
+    assert second.json()["run"]["status"] == "succeeded"
+    assert "already succeeded" in second.json()["summary"]
+    assert len(model_calls) == 1
+    assert len(second.json()["staged_outputs"]) == 1
+    coverage = client.get(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/coverage-index?coverage_state=staged&module_key=CHECKOUT"
+    ).json()
+    assert len(coverage) == 1
+
+
+def test_agent_execute_writes_reuse_note_for_existing_coverage(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    seed_run = create_agent_run(client, workspace["id"], project["id"])
+    seed = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{seed_run['id']}/staged-outputs?actor_email={OWNER}",
+        json={
+            "output_type": "case_candidate",
+            "title": "Existing refund audit coverage",
+            "payload": {
+                "steps": ["Create a paid order", "Trigger refund"],
+                "expected_result": "Refund emits attributable audit and log signals.",
+                "module_key": "CHECKOUT",
+            },
+            "coverage_entries": [
+                {
+                    "module_key": "CHECKOUT",
+                    "behavior_summary": "Refund emits attributable audit and log signals.",
+                    "signals": [{"signal_type": "audit_event", "value": "refund.created", "source": "seed"}],
+                }
+            ],
+        },
+    )
+    assert seed.status_code == 201
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+
+    assert response.status_code == 200, response.json()
+    outputs = response.json()["staged_outputs"]
+    assert [item["output_type"] for item in outputs] == ["agent_note"]
+    assert outputs[0]["duplicate_result"]["classification"] == "high_confidence_duplicate"
+    assert outputs[0]["payload"]["recommendation"] == "reuse_existing_coverage"
+
+
+def test_agent_execute_waits_when_model_budget_exceeded(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, successful_model_transport(model_calls))
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(
+        client,
+        workspace["id"],
+        project["id"],
+        budget_snapshot={"max_tool_calls": 20, "max_model_calls": 0},
+    )
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+
+    assert response.status_code == 200, response.json()
+    payload = response.json()
+    assert payload["run"]["status"] == "waiting_for_user"
+    assert "model budget exceeded" in payload["run"]["failure_reason"]
+    assert payload["staged_outputs"] == []
+    assert model_calls == []
+
+
+def test_agent_execute_schema_failure_leaves_no_staged_outputs(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+
+    def invalid_transport(url: str, headers: dict[str, str], payload: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        model_calls.append({"url": url, "headers": headers, "payload": payload, "timeout": timeout_seconds})
+        return {
+            "id": "chatcmpl-invalid-agent-test",
+            "model": payload["model"],
+            "choices": [{"message": {"content": json.dumps({"case_candidates": [{"title": "Too thin"}]})}}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 5},
+        }
+
+    client = make_client(tmp_path, invalid_transport)
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    run = create_agent_run(client, workspace["id"], project["id"])
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "ref": "master"},
+    )
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["run"]["status"] == "failed"
+    assert response.json()["staged_outputs"] == []
+    coverage = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/coverage-index").json()
+    assert coverage == []
+    invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
+    assert invocations[0]["status"] == "succeeded"
+    assert invocations[0]["agent_run_id"] == run["id"]
 
 
 def test_agent_execute_rejects_preview_mode_write(tmp_path: Path) -> None:
@@ -474,6 +634,9 @@ def test_model_gateway_via_litellm_mock(tmp_path: Path) -> None:
     assert response.json()["run"]["status"] == "succeeded"
     assert len(model_calls) == 3
     assert {call["payload"]["model"] for call in model_calls} == {"qf-supervisor-strong"}
+    invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
+    assert invocations[0]["attempts"] == 3
+    assert invocations[0]["status"] == "succeeded"
 
 
 def test_agent_tool_calls_and_approvals_are_audited() -> None:

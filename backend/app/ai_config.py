@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from ipaddress import ip_address
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -93,9 +93,14 @@ class AIInvocationLog(Base):
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     provider_id: Mapped[str | None] = mapped_column(ForeignKey("llm_providers.id", ondelete="SET NULL"), nullable=True, index=True)
     model_profile_id: Mapped[str | None] = mapped_column(ForeignKey("model_profiles.id", ondelete="SET NULL"), nullable=True, index=True)
+    agent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     actor_email: Mapped[str] = mapped_column(String(254), nullable=False)
     purpose: Mapped[str] = mapped_column(String(40), nullable=False)
     data_policy: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_name: Mapped[str] = mapped_column(String(120), default="", nullable=False, index=True)
+    model_alias: Mapped[str] = mapped_column(String(160), default="", nullable=False, index=True)
+    model_name: Mapped[str] = mapped_column(String(160), default="", nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default=AIInvocationStatus.queued.value, nullable=False, index=True)
     input_summary: Mapped[str] = mapped_column(String(500), nullable=False)
     input_data_types: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -105,6 +110,9 @@ class AIInvocationLog(Base):
     estimated_cost: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"), nullable=False)
     cache_hit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    raw_invocation_id: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     failure_reason: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -205,9 +213,14 @@ class AIInvocationResponse(BaseModel):
     workspace_id: str
     provider_id: str | None
     model_profile_id: str | None
+    agent_run_id: str | None
+    tool_call_id: str | None
     actor_email: str
     purpose: str
     data_policy: str
+    provider_name: str
+    model_alias: str
+    model_name: str
     status: str
     input_summary: str
     input_data_types: list[str]
@@ -217,6 +230,9 @@ class AIInvocationResponse(BaseModel):
     estimated_cost: Decimal
     cache_hit: bool
     latency_ms: int
+    attempts: int
+    usage: dict[str, Any]
+    raw_invocation_id: str
     failure_reason: str
     created_at: datetime
     completed_at: datetime | None
@@ -291,9 +307,14 @@ def invocation_to_response(invocation: AIInvocationLog) -> AIInvocationResponse:
         workspace_id=invocation.workspace_id,
         provider_id=invocation.provider_id,
         model_profile_id=invocation.model_profile_id,
+        agent_run_id=invocation.agent_run_id,
+        tool_call_id=invocation.tool_call_id,
         actor_email=invocation.actor_email,
         purpose=invocation.purpose,
         data_policy=invocation.data_policy,
+        provider_name=invocation.provider_name,
+        model_alias=invocation.model_alias,
+        model_name=invocation.model_name,
         status=invocation.status,
         input_summary=invocation.input_summary,
         input_data_types=invocation.input_data_types,
@@ -303,6 +324,9 @@ def invocation_to_response(invocation: AIInvocationLog) -> AIInvocationResponse:
         estimated_cost=invocation.estimated_cost,
         cache_hit=invocation.cache_hit,
         latency_ms=invocation.latency_ms,
+        attempts=invocation.attempts,
+        usage=invocation.usage,
+        raw_invocation_id=invocation.raw_invocation_id,
         failure_reason=invocation.failure_reason,
         created_at=invocation.created_at,
         completed_at=invocation.completed_at,
@@ -597,4 +621,3 @@ def list_ai_invocations(workspace_id: str, db: DbSession, limit: int = Query(def
         .limit(limit)
     ).all()
     return [invocation_to_response(invocation) for invocation in invocations]
-
