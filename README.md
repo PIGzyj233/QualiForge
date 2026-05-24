@@ -9,13 +9,27 @@ Copy-Item .env.example .env
 docker compose up --build
 ```
 
-The default Compose stack starts the Temporal-backed agent path without pulling
-the optional LiteLLM model-gateway image. To exercise real model calls through
-the bundled LiteLLM gateway, start the stack with:
+Real model calls are optional in local development. The default model-call
+configuration targets DeepSeek's OpenAI-compatible chat completions endpoint:
 
 ```powershell
-docker compose --profile model-gateway up --build
+QUALIFORGE_MODEL_GATEWAY_PROVIDER=deepseek
+QUALIFORGE_MODEL_GATEWAY_API_BASE_URL=https://api.deepseek.com
+QUALIFORGE_MODEL_GATEWAY_API_KEY=your-api-key
+QUALIFORGE_MODEL_GATEWAY_DEFAULT_MODEL=deepseek-v4-pro
+QUALIFORGE_MODEL_GATEWAY_REASONING_EFFORT=high
 ```
+
+For local DeepSeek testing, existing `DEEPSEEK_API_KEY` and `DEEPSEEK_BASE_URL`
+values in `.env` are also accepted when the `QUALIFORGE_MODEL_GATEWAY_*`
+variables are not set.
+
+That endpoint can be a direct provider API, a local model service, or a
+deployment-owned relay such as NewAPI or another OpenAI-compatible gateway.
+QualiForge does not bundle, configure, or document relay/provider routing; it
+only sends model calls and records invocation metadata. The gateway layer also
+has a streaming method for compatible endpoints; the current agent workflow uses
+non-streaming completion responses for structured candidate generation.
 
 Then open:
 
@@ -24,8 +38,8 @@ Then open:
 - Detailed health: http://localhost:8000/api/health/detailed
 
 Temporal-backed agent execution is enabled by default in Docker Compose. After
-the stack is healthy, the durable workflow path can be smoke-tested without the
-model-gateway profile with:
+the stack is healthy, the durable workflow path can be smoke-tested without a
+real model endpoint with:
 
 ```powershell
 python scripts/smoke_temporal_compose.py

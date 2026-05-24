@@ -1,8 +1,0 @@
-model_list:
-  - model_name: qf-supervisor-strong
-    litellm_params:
-      model: deepseek/deepseek-v4-flash
-      api_key: os.environ/DEEPSEEK_API_KEY
-
-general_settings:
-  master_key: os.environ/LITELLM_MASTER_KEY

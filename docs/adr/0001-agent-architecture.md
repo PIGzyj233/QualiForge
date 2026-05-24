@@ -21,7 +21,7 @@ Use a layered agent architecture:
 
 - Temporal is the outer durable execution layer.
 - LangGraph is the agent and subagent state-machine layer.
-- LiteLLM Proxy is the model gateway.
+- Model calls go through a QualiForge `ModelGateway` abstraction backed by a configured OpenAI-compatible endpoint.
 - QualiForge owns the business audit log, model invocation log, memory version history, coverage index, and staged outputs.
 
 ### Temporal
@@ -72,13 +72,13 @@ Subagents can read, analyze, and propose structured results. They cannot directl
 
 Normal subagents run as LangGraph subgraphs. Heavyweight sub-tasks, such as large repository scans or large batch imports, may run as Temporal child workflows.
 
-### LiteLLM Proxy
+### Model Gateway
 
-The backend and agents call a QualiForge `ModelGateway` interface. The v1 implementation points to LiteLLM Proxy through an OpenAI-compatible API.
+The backend and agents call a QualiForge `ModelGateway` interface. The v1 implementation uses an OpenAI-compatible chat completions API.
 
-Agents must not call upstream model providers directly.
+Agents must not embed provider-specific SDKs or routing logic.
 
-LiteLLM Proxy handles model aliasing, routing, fallback, rate limits, and cost governance. QualiForge still owns `AIInvocationLog` as the product audit source for model calls.
+Provider routing, relay services, rate limits, and cost governance are deployment concerns outside this repository. QualiForge owns `AIInvocationLog` as the product audit source for model calls.
 
 Model selection is configurable by purpose, agent role, and subagent type. The supervisor can use a stronger model, while deterministic subagents can use cheaper models. Model calls retry up to three times according to the configured retry policy.
 
@@ -245,7 +245,7 @@ This design gives QualiForge a durable, tool-using, auditable agent that can beh
 The cost is added infrastructure and implementation complexity:
 
 - Temporal must be deployed and operated.
-- LiteLLM Proxy must be deployed and configured.
+- A compatible model endpoint must be configured before real model calls can run.
 - LangGraph checkpoints, tool registry, memory files, staging, and coverage indexing must be designed carefully.
 - The UI must support review workflows instead of treating agent output as plain chat text.
 
@@ -256,10 +256,9 @@ The design intentionally separates durable execution, agent reasoning, model gat
 Implement in phases:
 
 1. Add agent domain models: conversation, run, messages, staged outputs, evidence refs, tool calls, approvals, and coverage index.
-2. Add LiteLLM Proxy and the `ModelGateway` abstraction with invocation logging.
+2. Add the `ModelGateway` abstraction with invocation logging.
 3. Add the typed code-reading and import-reading tool registry.
 4. Add the minimal LangGraph supervisor for direct answer mode and case generation.
 5. Add Temporal workflows, signals, cancellation, retries, and long-running run execution.
 6. Add dynamic subagents, memory curator, observability gap detection, and parallel execution.
 7. Add the agent workbench UI and memory management UI.
-

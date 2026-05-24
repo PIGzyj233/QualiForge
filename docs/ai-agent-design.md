@@ -41,8 +41,7 @@ Frontend Agent Workbench
         -> Tool Registry
         -> Subagents
         -> ModelGateway
-          -> LiteLLM Proxy
-            -> Upstream model providers
+          -> Configured OpenAI-compatible model endpoint
     -> PostgreSQL business data, audit, indexes
     -> Markdown memory files with version history
 ```
@@ -760,7 +759,7 @@ Examples:
 - `report_summary + subagent + report_draft`
 - `direct_answer + supervisor`
 
-The supervisor should usually use the strongest configured model. Deterministic or narrow subagents may use cheaper models. LiteLLM aliases hide provider-specific names, so deployments can choose DeepSeek v4 series or other providers without changing agent code.
+The supervisor should usually use the strongest configured model. Deterministic or narrow subagents may use cheaper models. QualiForge passes the configured model name to an OpenAI-compatible endpoint and does not manage provider routing inside the repository.
 
 ## Observability and Audit
 
@@ -770,7 +769,7 @@ QualiForge owns product audit:
 - what mode was used
 - which tools ran
 - which subagents ran
-- which model aliases were used
+- which model names were used
 - which staged outputs were produced
 - which outputs were accepted or rejected
 - which approvals were requested and decided
@@ -783,7 +782,7 @@ OpenTelemetry should trace:
 - LangGraph node
 - tool call
 - subagent call
-- LiteLLM request
+- model endpoint request
 
 Prometheus metrics should cover:
 
@@ -814,7 +813,7 @@ Langfuse can be added for LLM debugging and evaluation, but it is not the busine
 
 ### Phase 2: Model Gateway
 
-- LiteLLM Proxy in deployment
+- OpenAI-compatible model endpoint configuration
 - `ModelGateway` abstraction
 - invocation logging
 - retry policy
@@ -861,4 +860,3 @@ Langfuse can be added for LLM debugging and evaluation, but it is not the busine
 - evidence drawer
 - coverage view
 - memory management with versioning and rollback
-

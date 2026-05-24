@@ -34,7 +34,11 @@ def make_client(
         "git_repo_size_limit_mb": 128,
         "git_diff_file_limit": 250,
         "agent_memory_root": str(tmp_path / "agent-memory") if tmp_path else ".qualiforge/test-agent-memory",
-        "model_gateway_api_key": "dev-litellm-key",
+        "model_gateway_provider": "deepseek",
+        "model_gateway_api_base_url": "http://model-endpoint:4000/v1",
+        "model_gateway_api_key": "test-model-key",
+        "model_gateway_default_model": "deepseek-v4-pro",
+        "model_gateway_reasoning_effort": "high",
     }
     settings_values.update(settings_overrides or {})
     settings = Settings(**settings_values)
@@ -425,14 +429,15 @@ def test_agent_execute_creates_worktree_and_tool_audit(tmp_path: Path) -> None:
     assert "coverage_lookup" in tool_names
     assert "code_search" in tool_names
     assert "code_read_range" in tool_names
-    assert model_calls[0]["url"] == "http://litellm:4000/v1/chat/completions"
-    assert model_calls[0]["payload"]["model"] == "qf-supervisor-strong"
-    assert "dev-litellm-key" not in str(payload)
+    assert model_calls[0]["url"] == "http://model-endpoint:4000/v1/chat/completions"
+    assert model_calls[0]["payload"]["model"] == "deepseek-v4-pro"
+    assert model_calls[0]["payload"]["reasoning_effort"] == "high"
+    assert "test-model-key" not in str(payload)
 
     invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
     assert invocations[0]["agent_run_id"] == run["id"]
-    assert invocations[0]["provider_name"] == "litellm"
-    assert invocations[0]["model_alias"] == "qf-supervisor-strong"
+    assert invocations[0]["provider_name"] == "deepseek"
+    assert invocations[0]["model_alias"] == "deepseek-v4-pro"
     assert invocations[0]["attempts"] == 1
     assert invocations[0]["usage"] == {"prompt_tokens": 120, "completion_tokens": 80}
 
@@ -542,8 +547,8 @@ def test_agent_prometheus_metrics_cover_operational_paths(tmp_path: Path) -> Non
     assert approved.status_code == 200, approved.json()
     assert "qualiforge_agent_run_queue_time_seconds_count" in metrics
     assert "qualiforge_agent_tool_duration_seconds_count" in metrics
-    assert 'qualiforge_agent_model_tokens_total{model="qf-supervisor-strong",token_type="prompt"}' in metrics
-    assert 'qualiforge_agent_model_latency_seconds_count{model="qf-supervisor-strong",status="succeeded"}' in metrics
+    assert 'qualiforge_agent_model_tokens_total{model="deepseek-v4-pro",token_type="prompt"}' in metrics
+    assert 'qualiforge_agent_model_latency_seconds_count{model="deepseek-v4-pro",status="succeeded"}' in metrics
     assert 'qualiforge_agent_staged_output_decisions_total{output_type="case_candidate",status="accepted"}' in metrics
     assert 'qualiforge_agent_approval_wait_seconds_count{approval_type="destructive_action",status="approved"}' in metrics
 
@@ -935,7 +940,7 @@ def test_agent_execute_rejects_source_code_when_no_source_code_policy(tmp_path: 
     assert invocations[0]["includes_source_code"] is True
 
 
-def test_agent_execute_allows_internal_litellm_under_internal_only(tmp_path: Path) -> None:
+def test_agent_execute_allows_internal_model_endpoint_under_internal_only(tmp_path: Path) -> None:
     model_calls: list[dict[str, Any]] = []
     client = make_client(tmp_path, successful_model_transport(model_calls))
     workspace, project = create_workspace_project(client)
@@ -955,7 +960,7 @@ def test_agent_execute_allows_internal_litellm_under_internal_only(tmp_path: Pat
 
     assert response.status_code == 200, response.json()
     assert response.json()["run"]["status"] == "succeeded"
-    assert model_calls[0]["url"] == "http://litellm:4000/v1/chat/completions"
+    assert model_calls[0]["url"] == "http://model-endpoint:4000/v1/chat/completions"
     invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
     assert invocations[0]["data_policy"] == "InternalOnly"
 
@@ -1008,7 +1013,7 @@ def test_agent_invocation_log_records_policy_without_prompt_or_secret(tmp_path: 
     assert "source_code" in invocation["input_data_types"]
     assert invocation["includes_source_code"] is True
     serialized_invocation = json.dumps(invocation)
-    assert "dev-litellm-key" not in serialized_invocation
+    assert "test-model-key" not in serialized_invocation
     assert "refund_order" not in serialized_invocation
     assert run["goal"] not in serialized_invocation
 
@@ -1639,7 +1644,7 @@ def test_agent_execution_detail_includes_tool_calls_invocations_outputs_and_budg
     assert payload["budget"]["limits"]["max_model_calls"] == 20
     assert payload["pending_approvals"] == []
     serialized = json.dumps(payload)
-    assert "dev-litellm-key" not in serialized
+    assert "test-model-key" not in serialized
     assert "refund_order" not in serialized
     assert "required_json_schema" not in serialized
 
@@ -1702,7 +1707,7 @@ def test_successful_agent_run_writes_searchable_daily_memory(tmp_path: Path) -> 
     assert search.status_code == 200, search.json()
     assert search.json()[0]["memory_file"]["id"] == files.json()[0]["id"]
     serialized_memory = json.dumps(search.json())
-    assert "dev-litellm-key" not in serialized_memory
+    assert "test-model-key" not in serialized_memory
     assert "required_json_schema" not in serialized_memory
     assert "agent_memory.appended" in [entry["action"] for entry in audit_logs]
 
@@ -1789,7 +1794,7 @@ def test_agent_memory_curator_search_versions_rollback_and_secret_rejection(tmp_
         json={
             "scope": "project",
             "project_id": project["id"],
-            "content": "api key dev-litellm-key should never be stored",
+            "content": "api key test-model-key should never be stored",
         },
     )
     audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
@@ -1859,13 +1864,13 @@ def test_agent_execute_rejects_preview_mode_write(tmp_path: Path) -> None:
     assert "execute mode" in response.json()["detail"]
 
 
-def test_model_gateway_via_litellm_mock(tmp_path: Path) -> None:
+def test_model_gateway_retries_openai_compatible_mock(tmp_path: Path) -> None:
     model_calls: list[dict[str, Any]] = []
 
     def flaky_transport(url: str, headers: dict[str, str], payload: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
         model_calls.append({"url": url, "headers": headers, "payload": payload, "timeout": timeout_seconds})
         if len(model_calls) < 3:
-            raise RetryableModelGatewayError("temporary litellm failure")
+            raise RetryableModelGatewayError("temporary model gateway failure")
         return {
             "id": "chatcmpl-agent-test",
             "model": payload["model"],
@@ -1887,7 +1892,7 @@ def test_model_gateway_via_litellm_mock(tmp_path: Path) -> None:
     assert response.status_code == 200, response.json()
     assert response.json()["run"]["status"] == "succeeded"
     assert len(model_calls) == 3
-    assert {call["payload"]["model"] for call in model_calls} == {"qf-supervisor-strong"}
+    assert {call["payload"]["model"] for call in model_calls} == {"deepseek-v4-pro"}
     invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
     assert invocations[0]["attempts"] == 3
     assert invocations[0]["status"] == "succeeded"

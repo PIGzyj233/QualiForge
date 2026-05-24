@@ -365,7 +365,7 @@ def get_profile_for_purpose(db: Session, workspace_id: str, purpose: AIPurpose) 
 
 def is_internal_api_base_url(api_base_url: str) -> bool:
     hostname = urlparse(api_base_url).hostname or ""
-    if hostname == "litellm":
+    if hostname and "." not in hostname:
         return True
     if hostname in {"localhost", "127.0.0.1", "::1"}:
         return True
