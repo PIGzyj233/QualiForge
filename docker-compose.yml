@@ -25,6 +25,25 @@ services:
       timeout: 5s
       retries: 5
 
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-dev-litellm-key}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    expose:
+      - "4000"
+    volumes:
+      - ./litellm.config.yaml:/app/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=2).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   backend:
     build:
       context: ./backend
@@ -39,6 +58,12 @@ services:
       QUALIFORGE_GIT_REPO_SIZE_LIMIT_MB: ${QUALIFORGE_GIT_REPO_SIZE_LIMIT_MB:-1024}
       QUALIFORGE_GIT_DIFF_FILE_LIMIT: ${QUALIFORGE_GIT_DIFF_FILE_LIMIT:-500}
       QUALIFORGE_IMPORT_STORAGE_ROOT: ${QUALIFORGE_IMPORT_STORAGE_ROOT:-/data/imports}
+      QUALIFORGE_MODEL_GATEWAY_PROVIDER: ${QUALIFORGE_MODEL_GATEWAY_PROVIDER:-litellm}
+      QUALIFORGE_MODEL_GATEWAY_API_BASE_URL: ${QUALIFORGE_MODEL_GATEWAY_API_BASE_URL:-http://litellm:4000/v1}
+      QUALIFORGE_MODEL_GATEWAY_API_KEY: ${QUALIFORGE_MODEL_GATEWAY_API_KEY:-dev-litellm-key}
+      QUALIFORGE_MODEL_GATEWAY_DEFAULT_MODEL: ${QUALIFORGE_MODEL_GATEWAY_DEFAULT_MODEL:-qf-supervisor-strong}
+      QUALIFORGE_MODEL_GATEWAY_TIMEOUT_SECONDS: ${QUALIFORGE_MODEL_GATEWAY_TIMEOUT_SECONDS:-30}
+      QUALIFORGE_MODEL_GATEWAY_MAX_ATTEMPTS: ${QUALIFORGE_MODEL_GATEWAY_MAX_ATTEMPTS:-3}
     ports:
       - "8000:8000"
     volumes:
@@ -48,6 +73,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      litellm:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).read()"]
@@ -70,6 +97,12 @@ services:
       QUALIFORGE_GIT_REPO_SIZE_LIMIT_MB: ${QUALIFORGE_GIT_REPO_SIZE_LIMIT_MB:-1024}
       QUALIFORGE_GIT_DIFF_FILE_LIMIT: ${QUALIFORGE_GIT_DIFF_FILE_LIMIT:-500}
       QUALIFORGE_IMPORT_STORAGE_ROOT: ${QUALIFORGE_IMPORT_STORAGE_ROOT:-/data/imports}
+      QUALIFORGE_MODEL_GATEWAY_PROVIDER: ${QUALIFORGE_MODEL_GATEWAY_PROVIDER:-litellm}
+      QUALIFORGE_MODEL_GATEWAY_API_BASE_URL: ${QUALIFORGE_MODEL_GATEWAY_API_BASE_URL:-http://litellm:4000/v1}
+      QUALIFORGE_MODEL_GATEWAY_API_KEY: ${QUALIFORGE_MODEL_GATEWAY_API_KEY:-dev-litellm-key}
+      QUALIFORGE_MODEL_GATEWAY_DEFAULT_MODEL: ${QUALIFORGE_MODEL_GATEWAY_DEFAULT_MODEL:-qf-supervisor-strong}
+      QUALIFORGE_MODEL_GATEWAY_TIMEOUT_SECONDS: ${QUALIFORGE_MODEL_GATEWAY_TIMEOUT_SECONDS:-30}
+      QUALIFORGE_MODEL_GATEWAY_MAX_ATTEMPTS: ${QUALIFORGE_MODEL_GATEWAY_MAX_ATTEMPTS:-3}
     volumes:
       - git_sandbox_data:/data/git-sandbox
       - import_data:/data/imports
@@ -77,6 +110,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      litellm:
         condition: service_healthy
 
   web:

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from app.agents import router as agents_router
 from app.ai_config import router as ai_config_router
 from app.ai_suggestions import router as ai_suggestions_router
 from app.case_imports import router as case_imports_router
@@ -213,6 +214,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(test_plans_router)
     app.include_router(ai_suggestions_router)
     app.include_router(release_reports_router)
+    app.include_router(agents_router)
 
     return app
 
