@@ -1,0 +1,209 @@
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.git.models import (
+    GitRepository,
+    GitLabCredentialResponse,
+    Job,
+    JobResponse,
+    JobStatus,
+    RepositoryResponse,
+    RepositoryStatus,
+    WorkspaceGitLabCredential,
+)
+from app.platform.config import Settings
+from app.platform.database import Database
+from app.workspace.routes import now_utc
+
+
+def mask_token(token: str) -> str:
+    if len(token) <= 8:
+        return "****"
+    return f"{token[:4]}...{token[-4:]}"
+
+
+def credential_to_response(credential: WorkspaceGitLabCredential) -> GitLabCredentialResponse:
+    return GitLabCredentialResponse(
+        id=credential.id,
+        workspace_id=credential.workspace_id,
+        gitlab_base_url=credential.gitlab_base_url,
+        token_masked=mask_token(credential.token_secret),
+        has_token=bool(credential.token_secret),
+        updated_by=credential.updated_by,
+        created_at=credential.created_at,
+        updated_at=credential.updated_at,
+    )
+
+
+def repository_to_response(repository: GitRepository) -> RepositoryResponse:
+    return RepositoryResponse(
+        id=repository.id,
+        workspace_id=repository.workspace_id,
+        project_id=repository.project_id,
+        name=repository.name,
+        remote_url=repository.remote_url,
+        default_branch=repository.default_branch,
+        mirror_path=repository.mirror_path,
+        status=repository.status,
+        last_synced_at=repository.last_synced_at,
+        repo_size_limit_mb=repository.repo_size_limit_mb,
+        diff_file_limit=repository.diff_file_limit,
+        sync_timeout_seconds=repository.sync_timeout_seconds,
+        created_at=repository.created_at,
+        updated_at=repository.updated_at,
+    )
+
+
+def job_to_response(job: Job) -> JobResponse:
+    return JobResponse(
+        id=job.id,
+        workspace_id=job.workspace_id,
+        project_id=job.project_id,
+        repository_id=job.repository_id,
+        job_type=job.job_type,
+        status=job.status,
+        created_by=job.created_by,
+        input_summary=job.input_summary,
+        output_summary=job.output_summary,
+        error_summary=job.error_summary,
+        key_logs=job.key_logs,
+        timeout_seconds=job.timeout_seconds,
+        repo_size_limit_mb=job.repo_size_limit_mb,
+        diff_file_limit=job.diff_file_limit,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+    )
+
+
+def sandbox_path(settings: Settings, workspace_id: str, project_id: str, repository_id: str) -> Path:
+    root = Path(settings.git_sandbox_root).expanduser()
+    return root / workspace_id[:12] / project_id[:12] / f"{repository_id[:12]}.git"
+
+
+def ensure_safe_sandbox_path(root: Path, target: Path) -> Path:
+    root_resolved = root.expanduser().resolve(strict=False)
+    target_resolved = target.expanduser().resolve(strict=False)
+    if root_resolved != target_resolved and root_resolved not in target_resolved.parents:
+        raise ValueError("Sandbox path escapes configured root")
+
+    current = root_resolved
+    relative_parts = target_resolved.relative_to(root_resolved).parts
+    for part in relative_parts[:-1]:
+        current = current / part
+        if current.exists() and current.is_symlink():
+            raise ValueError("Sandbox path contains a symlink")
+    if target_resolved.exists() and target_resolved.is_symlink():
+        raise ValueError("Repository mirror path is a symlink")
+    return target_resolved
+
+
+def directory_size_mb(path: Path) -> float:
+    total = 0
+    for item in path.rglob("*"):
+        if item.is_file() and not item.is_symlink():
+            total += item.stat().st_size
+    return total / 1024 / 1024
+
+
+def get_repository_or_404(db: Session, workspace_id: str, repository_id: str) -> GitRepository:
+    repository = db.scalar(
+        select(GitRepository).where(
+            GitRepository.id == repository_id,
+            GitRepository.workspace_id == workspace_id,
+        )
+    )
+    if repository is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+    return repository
+
+
+def get_gitlab_credential(db: Session, workspace_id: str) -> WorkspaceGitLabCredential | None:
+    return db.scalar(select(WorkspaceGitLabCredential).where(WorkspaceGitLabCredential.workspace_id == workspace_id))
+
+
+def git_command_for_log(command: list[str]) -> str:
+    return " ".join("<redacted-git-header>" if "PRIVATE-TOKEN:" in part else part for part in command)
+
+
+def run_git(command: list[str], timeout_seconds: int, key_logs: list[str]) -> subprocess.CompletedProcess[str]:
+    key_logs.append(f"$ {git_command_for_log(command)}")
+    return subprocess.run(
+        command,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        text=True,
+        timeout=timeout_seconds,
+    )
+
+
+def run_repository_sync(database: Database, settings: Settings, job_id: str) -> None:
+    with database.session_factory() as db:
+        job = db.get(Job, job_id)
+        if job is None:
+            return
+        repository = db.get(GitRepository, job.repository_id)
+        if repository is None:
+            job.status = JobStatus.failed.value
+            job.error_summary = "Repository no longer exists"
+            job.finished_at = now_utc()
+            db.commit()
+            return
+
+        job.status = JobStatus.running.value
+        job.started_at = now_utc()
+        job.key_logs = [f"Sandbox root: {settings.git_sandbox_root}", "Git sync started"]
+        db.commit()
+
+        try:
+            root = Path(settings.git_sandbox_root).expanduser()
+            mirror_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
+            mirror_path.parent.mkdir(parents=True, exist_ok=True)
+
+            credential = get_gitlab_credential(db, repository.workspace_id)
+            auth_args = []
+            if credential is not None and repository.remote_url.startswith(("http://", "https://")):
+                auth_args = ["-c", f"http.extraHeader=PRIVATE-TOKEN: {credential.token_secret}"]
+
+            if mirror_path.exists():
+                command = ["git", *auth_args, "-C", str(mirror_path), "remote", "update", "--prune"]
+            else:
+                command = ["git", *auth_args, "clone", "--mirror", "--", repository.remote_url, str(mirror_path)]
+            result = run_git(command, repository.sync_timeout_seconds, job.key_logs)
+            if result.stdout.strip():
+                job.key_logs = [*job.key_logs, result.stdout.strip()[:1000]]
+            if result.returncode != 0:
+                stderr = result.stderr.strip()[:500] or f"git exited with {result.returncode}"
+                raise RuntimeError(stderr)
+
+            size_mb = directory_size_mb(mirror_path)
+            job.key_logs = [*job.key_logs, f"Mirror size: {size_mb:.2f} MB"]
+            if size_mb > repository.repo_size_limit_mb:
+                raise RuntimeError(f"Repository mirror exceeds {repository.repo_size_limit_mb} MB limit")
+
+            repository.status = RepositoryStatus.synced.value
+            repository.last_synced_at = now_utc()
+            repository.updated_at = now_utc()
+            job.status = JobStatus.succeeded.value
+            job.output_summary = f"Repository mirror synced to {mirror_path}"
+        except subprocess.TimeoutExpired:
+            repository.status = RepositoryStatus.sync_failed.value
+            job.status = JobStatus.failed.value
+            job.error_summary = f"Git sync timed out after {repository.sync_timeout_seconds} seconds"
+        except Exception as exc:
+            repository.status = RepositoryStatus.sync_failed.value
+            job.status = JobStatus.failed.value
+            job.error_summary = str(exc)[:500]
+        finally:
+            job.finished_at = now_utc()
+            db.commit()
+
+

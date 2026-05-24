@@ -9,8 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents import AgentMemoryFile, AgentMemoryVersion, AgentRun, AgentStagedOutput, AgentStagedOutputType
-from app.config import Settings
-from app.workspaces import audit, now_utc
+from app.platform.config import Settings
+from app.workspace.routes import audit, now_utc
 
 
 def _safe_segment(value: str) -> str:

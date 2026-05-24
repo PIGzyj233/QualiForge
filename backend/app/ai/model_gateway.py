@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.config import Settings
+from app.platform.config import Settings
 
 
 class ModelGatewayError(Exception):

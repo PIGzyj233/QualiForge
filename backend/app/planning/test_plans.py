@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, ForeignKey, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.case_domain import CaseRevision, TestCase, TestCaseLifecycle
-from app.case_imports import safe_filename
-from app.database import Base
-from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
+from app.cases.domain import CaseRevision, TestCase, TestCaseLifecycle
+from app.cases.imports import safe_filename
+from app.platform.database import Base
+from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
 
 __test__ = False
 

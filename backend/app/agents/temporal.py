@@ -9,10 +9,10 @@ from temporalio.client import Client
 from temporalio.exceptions import TemporalError, WorkflowAlreadyStartedError
 
 from app.agents import AgentRun
-from app.config import Settings
-from app.telemetry import agent_span
-from app.workspaces import audit
-from app.agent_workflows import AgentRunWorkflow
+from app.platform.config import Settings
+from app.platform.telemetry import agent_span
+from app.workspace.routes import audit
+from app.agents.workflows import AgentRunWorkflow
 
 
 class AgentTemporalUnavailable(RuntimeError):

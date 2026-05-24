@@ -7,21 +7,21 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from app.agents import router as agents_router
-from app.ai_config import router as ai_config_router
-from app.ai_suggestions import router as ai_suggestions_router
-from app.case_imports import router as case_imports_router
-from app.case_reviews import router as case_reviews_router
-from app.config import Settings, get_settings
-from app.database import Database
-from app.diff_analysis import router as diff_analysis_router
-from app.gitlab import router as gitlab_router
-from app.health import check_redis
-from app.modules import router as modules_router
-from app.release_reports import router as release_reports_router
-from app.test_plans import router as test_plans_router
-from app.telemetry import agent_span, configure_telemetry, prometheus_response
-from app.workspaces import router as workspace_router
+from app.agents.routes import router as agents_router
+from app.ai.config import router as ai_config_router
+from app.cases.ai_suggestions import router as ai_suggestions_router
+from app.cases.diff_analysis import router as diff_analysis_router
+from app.cases.imports import router as case_imports_router
+from app.cases.modules import router as modules_router
+from app.cases.reviews import router as case_reviews_router
+from app.git.gitlab import router as gitlab_router
+from app.planning.release_reports import router as release_reports_router
+from app.planning.test_plans import router as test_plans_router
+from app.platform.config import Settings, get_settings
+from app.platform.database import Database
+from app.platform.health import check_redis
+from app.platform.telemetry import agent_span, configure_telemetry, prometheus_response
+from app.workspace.routes import router as workspace_router
 
 
 class LoginRequest(BaseModel):

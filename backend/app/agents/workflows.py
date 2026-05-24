@@ -8,7 +8,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from app.agent_activities import (
+    from app.agents.activities import (
         execute_agent_child_task_activity,
         execute_agent_graph_activity,
         mark_agent_run_cancelled_activity,

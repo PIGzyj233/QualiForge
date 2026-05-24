@@ -8,8 +8,8 @@ from pydantic import BaseModel
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database import Base
-from app.workspaces import new_id, now_utc
+from app.platform.database import Base
+from app.workspace.routes import new_id, now_utc
 
 
 class TestCaseLifecycle(StrEnum):

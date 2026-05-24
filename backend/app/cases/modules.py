@@ -11,9 +11,9 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.case_domain import CaseDraft, CaseRevision, TestCase
-from app.database import Base
-from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc, require_workspace_owner
+from app.cases.domain import CaseDraft, CaseRevision, TestCase
+from app.platform.database import Base
+from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc, require_workspace_owner
 
 
 class ModuleStatus(StrEnum):

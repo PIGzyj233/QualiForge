@@ -10,7 +10,7 @@ from sqlalchemy import JSON, DateTime, ForeignKey, String, UniqueConstraint, sel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
-from app.database import Base
+from app.platform.database import Base
 
 
 MemberRole = Literal["WorkspaceOwner", "WorkspaceMember"]

@@ -9,11 +9,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.case_domain import CaseDraft, CaseDraftSource, TestCase, TestCaseLifecycle
-from app.case_reviews import TestCaseCreate, build_case_response
-from app.database import Base
-from app.diff_analysis import DiffAnalysis, DiffAnalysisStatus
-from app.test_plans import (
+from app.cases.domain import CaseDraft, CaseDraftSource, TestCase, TestCaseLifecycle
+from app.cases.review_models import TestCaseCreate
+from app.cases.review_workflow import build_case_response
+from app.platform.database import Base
+from app.cases.diff_models import DiffAnalysis, DiffAnalysisStatus
+from app.planning.test_plans import (
     PlanItem,
     PlanItemSource,
     TestPlan,
@@ -23,7 +24,7 @@ from app.test_plans import (
     plan_item_to_response,
     formal_case_snapshot,
 )
-from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
+from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
 
 
 class AISuggestionType(StrEnum):
@@ -184,7 +185,7 @@ def get_suggestion_or_404(db: Session, workspace_id: str, project_id: str, sugge
 def case_revision_snapshot(db: Session, test_case: TestCase) -> dict[str, Any]:
     if not test_case.current_revision_id:
         return {}
-    from app.case_domain import CaseRevision
+    from app.cases.domain import CaseRevision
 
     revision = db.get(CaseRevision, test_case.current_revision_id)
     return revision.content_snapshot if revision else {}

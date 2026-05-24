@@ -1,651 +1,114 @@
 from __future__ import annotations
 
-from datetime import datetime
-from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from pydantic import BaseModel, Field
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, select
-from sqlalchemy.orm import Mapped, Session, mapped_column
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.ai_config import AIInvocationLog, AIInvocationResponse, invocation_to_response
-from app.database import Base
-from app.telemetry import (
+from app.ai.config import AIInvocationLog, invocation_to_response
+from app.agents.budget import (
+    AGENT_BUDGET_NUMERIC_KEYS,
+    _budget_policy_for_scope,
+    _sanitize_budget_values,
+    _settings_budget_caps,
+    budget_response_for_run,
+    build_agent_run_budget_snapshot,
+)
+from app.agents.coverage import add_coverage_entries
+from app.agents.models import (
+    AgentApproval,
+    AgentApprovalStatus,
+    AgentBudgetPolicy,
+    AgentConversation,
+    AgentConversationStatus,
+    AgentMemoryFile,
+    AgentMemoryVersion,
+    AgentMessage,
+    AgentMessageRole,
+    AgentRepositorySandbox,
+    AgentRun,
+    AgentRunMode,
+    AgentRunStatus,
+    AgentStagedOutput,
+    AgentStagedOutputStatus,
+    AgentSubagentRun,
+    AgentToolCall,
+    AgentToolCallStatus,
+    CoverageIndexEntry,
+)
+from app.agents.repository import (
+    assert_project_scope,
+    get_approval_or_404,
+    get_conversation_or_404,
+    get_memory_file_or_404,
+    get_run_or_404,
+    get_staged_output_or_404,
+)
+from app.agents.schemas import (
+    AgentApprovalCreate,
+    AgentApprovalDecision,
+    AgentApprovalResponse,
+    AgentBudgetPolicyResponse,
+    AgentBudgetPolicyUpsert,
+    AgentConversationCreate,
+    AgentConversationResponse,
+    AgentExecutionDetailResponse,
+    AgentMemoryCurateRequest,
+    AgentMemoryFileResponse,
+    AgentMemoryRollbackRequest,
+    AgentMemorySearchResult,
+    AgentMemoryVersionResponse,
+    AgentMessageCreate,
+    AgentMessageResponse,
+    AgentRepositorySandboxResponse,
+    AgentRunCancelRequest,
+    AgentRunCreate,
+    AgentRunExecuteRequest,
+    AgentRunExecuteResponse,
+    AgentRunResponse,
+    AgentRunResumeRequest,
+    AgentStagedOutputCreate,
+    AgentStagedOutputResponse,
+    AgentStagedOutputUpdate,
+    AgentSubagentRunResponse,
+    AgentToolCallCreate,
+    AgentToolCallResponse,
+    CoverageEntryResponse,
+)
+from app.agents.serializers import (
+    approval_to_response,
+    budget_policy_to_response,
+    conversation_to_response,
+    coverage_snapshot,
+    coverage_to_response,
+    evidence_refs_to_json,
+    memory_file_to_response,
+    memory_version_to_response,
+    message_to_response,
+    run_to_response,
+    sandbox_to_response,
+    staged_output_to_response,
+    subagent_run_to_response,
+    tool_call_to_response,
+)
+from app.agents.state import (
+    AgentRunStateError,
+    assert_run_can_execute,
+    mark_run_cancelled,
+    mark_run_failed,
+    mark_run_running,
+    mark_run_succeeded,
+    mark_run_waiting,
+)
+from app.platform.telemetry import (
     AGENT_APPROVAL_WAIT_SECONDS,
     AGENT_STAGED_OUTPUT_DECISIONS_TOTAL,
     AGENT_TOOL_CALLS_TOTAL,
     AGENT_TOOL_DURATION_SECONDS,
     elapsed_seconds,
 )
-from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
-
-
-class AgentConversationStatus(StrEnum):
-    active = "active"
-    archived = "archived"
-
-
-class AgentRunMode(StrEnum):
-    preview = "preview"
-    execute = "execute"
-
-
-class AgentRunStatus(StrEnum):
-    queued = "queued"
-    running = "running"
-    waiting_for_user = "waiting_for_user"
-    succeeded = "succeeded"
-    failed = "failed"
-    cancelled = "cancelled"
-
-
-class AgentMessageRole(StrEnum):
-    user = "user"
-    assistant = "assistant"
-    system = "system"
-    tool = "tool"
-
-
-class AgentStagedOutputStatus(StrEnum):
-    staged = "staged"
-    accepted = "accepted"
-    rejected = "rejected"
-
-
-class AgentToolCallStatus(StrEnum):
-    queued = "queued"
-    running = "running"
-    succeeded = "succeeded"
-    failed = "failed"
-
-
-class AgentSubagentRunStatus(StrEnum):
-    queued = "queued"
-    running = "running"
-    succeeded = "succeeded"
-    failed = "failed"
-    skipped = "skipped"
-
-
-class AgentRepositorySandboxStatus(StrEnum):
-    preparing = "preparing"
-    ready = "ready"
-    failed = "failed"
-    cleaned = "cleaned"
-
-
-class AgentApprovalStatus(StrEnum):
-    pending = "pending"
-    approved = "approved"
-    rejected = "rejected"
-    cancelled = "cancelled"
-
-
-class AgentStagedOutputType(StrEnum):
-    case_candidate = "case_candidate"
-    regression_recommendation = "regression_recommendation"
-    report_draft = "report_draft"
-    coverage_update = "coverage_update"
-    agent_note = "agent_note"
-
-
-class EvidenceKind(StrEnum):
-    import_cell_range = "import_cell_range"
-    import_row = "import_row"
-    code_file = "code_file"
-    grep_result = "grep_result"
-    diff_hunk = "diff_hunk"
-    diff_analysis = "diff_analysis"
-    test_case = "test_case"
-    case_revision = "case_revision"
-    module_mapping_rule = "module_mapping_rule"
-    user_message = "user_message"
-    memory_entry = "memory_entry"
-    audit_event = "audit_event"
-    metric = "metric"
-    trace_point = "trace_point"
-    log_signal = "log_signal"
-
-
-class AgentConversation(Base):
-    __tablename__ = "agent_conversations"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    title: Mapped[str] = mapped_column(String(220), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default=AgentConversationStatus.active.value, nullable=False, index=True)
-    created_by: Mapped[str] = mapped_column(String(254), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
-
-
-class AgentRun(Base):
-    __tablename__ = "agent_runs"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    conversation_id: Mapped[str] = mapped_column(ForeignKey("agent_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
-    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    goal: Mapped[str] = mapped_column(String(1000), nullable=False)
-    mode: Mapped[str] = mapped_column(String(32), default=AgentRunMode.preview.value, nullable=False, index=True)
-    trigger_type: Mapped[str] = mapped_column(String(40), default="user_message", nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default=AgentRunStatus.queued.value, nullable=False, index=True)
-    current_phase: Mapped[str] = mapped_column(String(80), default="created", nullable=False)
-    created_by: Mapped[str] = mapped_column(String(254), nullable=False)
-    temporal_workflow_id: Mapped[str] = mapped_column(String(160), default="", nullable=False)
-    langgraph_thread_id: Mapped[str] = mapped_column(String(160), default="", nullable=False)
-    budget_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    failure_reason: Mapped[str] = mapped_column(String(700), default="", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class AgentMessage(Base):
-    __tablename__ = "agent_messages"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    conversation_id: Mapped[str] = mapped_column(ForeignKey("agent_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
-    agent_run_id: Mapped[str | None] = mapped_column(ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True, index=True)
-    role: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    content: Mapped[str] = mapped_column(String(8000), nullable=False)
-    content_summary: Mapped[str] = mapped_column(String(700), default="", nullable=False)
-    message_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-
-
-class AgentToolCall(Base):
-    __tablename__ = "agent_tool_calls"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    parent_tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    subagent_name: Mapped[str] = mapped_column(String(80), default="", nullable=False, index=True)
-    tool_name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
-    permission_level: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
-    input_summary: Mapped[str] = mapped_column(String(700), nullable=False)
-    output_summary: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default=AgentToolCallStatus.queued.value, nullable=False, index=True)
-    idempotency_key: Mapped[str] = mapped_column(String(160), default="", nullable=False, index=True)
-    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    error_summary: Mapped[str] = mapped_column(String(700), default="", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class AgentSubagentRun(Base):
-    __tablename__ = "agent_subagent_runs"
-    __table_args__ = (UniqueConstraint("agent_run_id", "subagent_name", name="uq_agent_subagent_run_name"),)
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    subagent_name: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
-    stage: Mapped[str] = mapped_column(String(80), default="", nullable=False, index=True)
-    parallel_group: Mapped[str] = mapped_column(String(80), default="", nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(32), default=AgentSubagentRunStatus.queued.value, nullable=False, index=True)
-    summary: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
-    input_summary: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
-    output_summary: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
-    result_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    error_summary: Mapped[str] = mapped_column(String(700), default="", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class AgentRepositorySandbox(Base):
-    __tablename__ = "agent_repository_sandboxes"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    repository_id: Mapped[str] = mapped_column(ForeignKey("git_repositories.id", ondelete="CASCADE"), nullable=False, index=True)
-    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    ref: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
-    resolved_ref: Mapped[str] = mapped_column(String(160), default="", nullable=False)
-    worktree_path: Mapped[str] = mapped_column(String(1000), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default=AgentRepositorySandboxStatus.preparing.value, nullable=False, index=True)
-    error_summary: Mapped[str] = mapped_column(String(700), default="", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-    cleaned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class AgentApproval(Base):
-    __tablename__ = "agent_approvals"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    approval_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(32), default=AgentApprovalStatus.pending.value, nullable=False, index=True)
-    requested_by: Mapped[str] = mapped_column(String(254), nullable=False)
-    decided_by: Mapped[str] = mapped_column(String(254), default="", nullable=False)
-    request_summary: Mapped[str] = mapped_column(String(1000), nullable=False)
-    decision_summary: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class AgentStagedOutput(Base):
-    __tablename__ = "agent_staged_outputs"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    output_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(32), default=AgentStagedOutputStatus.staged.value, nullable=False, index=True)
-    idempotency_key: Mapped[str] = mapped_column(String(160), default="", nullable=False, index=True)
-    title: Mapped[str] = mapped_column(String(240), nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    evidence_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
-    quality_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    duplicate_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    coverage_entries: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
-    decision_summary: Mapped[str] = mapped_column(String(700), default="", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-    decided_by: Mapped[str] = mapped_column(String(254), default="", nullable=False)
-    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class CoverageIndexEntry(Base):
-    __tablename__ = "coverage_index_entries"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    source_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
-    source_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    coverage_state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    module_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    module_key: Mapped[str] = mapped_column(String(80), default="UNMAPPED", nullable=False, index=True)
-    behavior_summary: Mapped[str] = mapped_column(String(700), nullable=False)
-    signals: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
-    evidence_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
-    confidence: Mapped[int] = mapped_column(Integer, default=70, nullable=False)
-    verified_by_human: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
-
-
-class AgentMemoryFile(Base):
-    __tablename__ = "agent_memory_files"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    user_id: Mapped[str] = mapped_column(String(254), default="", nullable=False, index=True)
-    scope: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
-    path: Mapped[str] = mapped_column(String(1000), nullable=False, index=True)
-    current_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    checksum: Mapped[str] = mapped_column(String(80), default="", nullable=False)
-    updated_by: Mapped[str] = mapped_column(String(254), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
-
-
-class AgentMemoryVersion(Base):
-    __tablename__ = "agent_memory_versions"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    memory_file_id: Mapped[str] = mapped_column(ForeignKey("agent_memory_files.id", ondelete="CASCADE"), nullable=False, index=True)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    content: Mapped[str] = mapped_column(String(20000), nullable=False)
-    patch_summary: Mapped[str] = mapped_column(String(700), default="", nullable=False)
-    editor: Mapped[str] = mapped_column(String(254), nullable=False)
-    reason: Mapped[str] = mapped_column(String(700), default="", nullable=False)
-    checksum: Mapped[str] = mapped_column(String(80), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-
-
-class AgentBudgetPolicy(Base):
-    __tablename__ = "agent_budget_policies"
-    __table_args__ = (UniqueConstraint("workspace_id", "scope", "project_id", "purpose", name="uq_agent_budget_policy_scope"),)
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    scope: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    purpose: Mapped[str] = mapped_column(String(80), default="agent_run", nullable=False, index=True)
-    defaults: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    hard_caps: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    updated_by: Mapped[str] = mapped_column(String(254), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
-
-
-class AgentConversationCreate(BaseModel):
-    title: str = Field(min_length=1, max_length=220)
-    project_id: str | None = Field(default=None, max_length=64)
-
-
-class AgentConversationResponse(BaseModel):
-    id: str
-    workspace_id: str
-    project_id: str | None
-    title: str
-    status: str
-    created_by: str
-    created_at: datetime
-    updated_at: datetime
-
-
-class AgentRunCreate(BaseModel):
-    goal: str = Field(min_length=1, max_length=1000)
-    mode: AgentRunMode = AgentRunMode.preview
-    trigger_type: str = Field(default="user_message", max_length=40)
-    project_id: str | None = Field(default=None, max_length=64)
-    budget_snapshot: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentRunResponse(BaseModel):
-    id: str
-    conversation_id: str
-    workspace_id: str
-    project_id: str | None
-    goal: str
-    mode: str
-    trigger_type: str
-    status: str
-    current_phase: str
-    created_by: str
-    temporal_workflow_id: str
-    langgraph_thread_id: str
-    budget_snapshot: dict[str, Any]
-    failure_reason: str
-    created_at: datetime
-    started_at: datetime | None
-    completed_at: datetime | None
-    cancelled_at: datetime | None
-
-
-class AgentRunExecuteRequest(BaseModel):
-    repository_id: str = Field(min_length=1, max_length=64)
-    ref: str = Field(default="", max_length=160)
-    candidate_limit: int = Field(default=3, ge=1, le=5)
-
-
-class AgentRunResumeRequest(BaseModel):
-    budget_snapshot: dict[str, Any] = Field(default_factory=dict)
-    resume_reason: str = Field(default="", max_length=700)
-
-
-class AgentRunCancelRequest(BaseModel):
-    cancel_reason: str = Field(default="", max_length=700)
-
-
-class AgentMessageCreate(BaseModel):
-    role: AgentMessageRole = AgentMessageRole.user
-    content: str = Field(min_length=1, max_length=8000)
-    agent_run_id: str | None = Field(default=None, max_length=64)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentMessageResponse(BaseModel):
-    id: str
-    conversation_id: str
-    agent_run_id: str | None
-    role: str
-    content: str
-    content_summary: str
-    metadata: dict[str, Any]
-    created_at: datetime
-
-
-class EvidenceRef(BaseModel):
-    kind: EvidenceKind
-    ref_id: str = Field(default="", max_length=240)
-    label: str = Field(default="", max_length=300)
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    summary: str = Field(default="", max_length=700)
-    source: str = Field(default="", max_length=120)
-
-
-class CoverageEntryCreate(BaseModel):
-    module_id: str | None = Field(default=None, max_length=64)
-    module_key: str = Field(default="UNMAPPED", max_length=80)
-    behavior_summary: str = Field(min_length=1, max_length=700)
-    signals: list[dict[str, Any]] = Field(default_factory=list)
-    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
-    confidence: int = Field(default=70, ge=0, le=100)
-    verified_by_human: bool = False
-
-
-class CoverageEntryResponse(BaseModel):
-    id: str
-    workspace_id: str
-    project_id: str | None
-    source_type: str
-    source_id: str
-    coverage_state: str
-    module_id: str | None
-    module_key: str
-    behavior_summary: str
-    signals: list[dict[str, Any]]
-    evidence_refs: list[dict[str, Any]]
-    confidence: int
-    verified_by_human: bool
-    created_at: datetime
-    updated_at: datetime
-
-
-class AgentToolCallCreate(BaseModel):
-    tool_name: str = Field(min_length=1, max_length=120)
-    permission_level: str = Field(min_length=1, max_length=40)
-    input_summary: str = Field(min_length=1, max_length=700)
-    parent_tool_call_id: str | None = Field(default=None, max_length=64)
-    subagent_name: str = Field(default="", max_length=80)
-    output_summary: str = Field(default="", max_length=1000)
-    status: AgentToolCallStatus = AgentToolCallStatus.succeeded
-    idempotency_key: str = Field(default="", max_length=160)
-    duration_ms: int = Field(default=0, ge=0)
-    error_summary: str = Field(default="", max_length=700)
-
-
-class AgentToolCallResponse(BaseModel):
-    id: str
-    agent_run_id: str
-    parent_tool_call_id: str | None
-    subagent_name: str
-    tool_name: str
-    permission_level: str
-    input_summary: str
-    output_summary: str
-    status: str
-    idempotency_key: str
-    duration_ms: int
-    error_summary: str
-    created_at: datetime
-    completed_at: datetime | None
-
-
-class AgentSubagentRunResponse(BaseModel):
-    id: str
-    agent_run_id: str
-    workspace_id: str
-    project_id: str | None
-    subagent_name: str
-    stage: str
-    parallel_group: str
-    status: str
-    summary: str
-    input_summary: str
-    output_summary: str
-    result_snapshot: dict[str, Any]
-    duration_ms: int
-    error_summary: str
-    created_at: datetime
-    started_at: datetime | None
-    completed_at: datetime | None
-
-
-class AgentRepositorySandboxResponse(BaseModel):
-    id: str
-    agent_run_id: str
-    repository_id: str
-    workspace_id: str
-    project_id: str | None
-    ref: str
-    resolved_ref: str
-    worktree_path: str
-    status: str
-    error_summary: str
-    created_at: datetime
-    cleaned_at: datetime | None
-
-
-class AgentApprovalCreate(BaseModel):
-    approval_type: str = Field(min_length=1, max_length=80)
-    request_summary: str = Field(min_length=1, max_length=1000)
-
-
-class AgentApprovalDecision(BaseModel):
-    status: AgentApprovalStatus
-    decision_summary: str = Field(default="", max_length=1000)
-
-
-class AgentApprovalResponse(BaseModel):
-    id: str
-    agent_run_id: str
-    approval_type: str
-    status: str
-    requested_by: str
-    decided_by: str
-    request_summary: str
-    decision_summary: str
-    created_at: datetime
-    decided_at: datetime | None
-
-
-class AgentStagedOutputCreate(BaseModel):
-    output_type: AgentStagedOutputType
-    title: str = Field(min_length=1, max_length=240)
-    payload: dict[str, Any] = Field(default_factory=dict)
-    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
-    quality_result: dict[str, Any] = Field(default_factory=dict)
-    duplicate_result: dict[str, Any] = Field(default_factory=dict)
-    coverage_entries: list[CoverageEntryCreate] = Field(default_factory=list)
-
-
-class AgentStagedOutputUpdate(BaseModel):
-    status: AgentStagedOutputStatus
-    decision_summary: str = Field(default="", max_length=500)
-
-
-class AgentStagedOutputResponse(BaseModel):
-    id: str
-    agent_run_id: str
-    workspace_id: str
-    project_id: str | None
-    output_type: str
-    status: str
-    idempotency_key: str
-    title: str
-    payload: dict[str, Any]
-    evidence_refs: list[dict[str, Any]]
-    quality_result: dict[str, Any]
-    duplicate_result: dict[str, Any]
-    created_at: datetime
-    decided_by: str
-    decision_summary: str
-    accepted_at: datetime | None
-    rejected_at: datetime | None
-    coverage_entries: list[CoverageEntryResponse] = Field(default_factory=list)
-
-
-class AgentRunExecuteResponse(BaseModel):
-    run: AgentRunResponse
-    summary: str
-    staged_outputs: list[AgentStagedOutputResponse] = Field(default_factory=list)
-    tool_calls: list[AgentToolCallResponse] = Field(default_factory=list)
-    sandboxes: list[AgentRepositorySandboxResponse] = Field(default_factory=list)
-
-
-class AgentRunBudgetResponse(BaseModel):
-    snapshot: dict[str, Any]
-    usage: dict[str, Any]
-    limits: dict[str, Any]
-
-
-class AgentExecutionDetailResponse(BaseModel):
-    run: AgentRunResponse
-    staged_outputs: list[AgentStagedOutputResponse] = Field(default_factory=list)
-    tool_calls: list[AgentToolCallResponse] = Field(default_factory=list)
-    subagent_runs: list[AgentSubagentRunResponse] = Field(default_factory=list)
-    ai_invocations: list[AIInvocationResponse] = Field(default_factory=list)
-    repository_sandboxes: list[AgentRepositorySandboxResponse] = Field(default_factory=list)
-    budget: AgentRunBudgetResponse
-    pending_approvals: list[AgentApprovalResponse] = Field(default_factory=list)
-
-
-class AgentBudgetPolicyUpsert(BaseModel):
-    scope: Literal["workspace", "project"] = "workspace"
-    project_id: str | None = Field(default=None, max_length=64)
-    purpose: str = Field(default="agent_run", max_length=80)
-    defaults: dict[str, Any] = Field(default_factory=dict)
-    hard_caps: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentBudgetPolicyResponse(BaseModel):
-    id: str
-    workspace_id: str
-    project_id: str | None
-    scope: str
-    purpose: str
-    defaults: dict[str, Any]
-    hard_caps: dict[str, Any]
-    updated_by: str
-    created_at: datetime
-    updated_at: datetime
-
-
-class AgentMemoryFileResponse(BaseModel):
-    id: str
-    workspace_id: str
-    project_id: str | None
-    user_id: str
-    scope: str
-    path: str
-    current_version: int
-    checksum: str
-    updated_by: str
-    updated_at: datetime
-
-
-class AgentMemoryVersionResponse(BaseModel):
-    id: str
-    memory_file_id: str
-    version: int
-    patch_summary: str
-    editor: str
-    reason: str
-    checksum: str
-    created_at: datetime
-
-
-class AgentMemorySearchResult(BaseModel):
-    memory_file: AgentMemoryFileResponse
-    score: int
-    snippet: str
-
-
-class AgentMemoryCurateRequest(BaseModel):
-    scope: Literal["workspace", "project", "user", "dreams"]
-    project_id: str | None = Field(default=None, max_length=64)
-    user_id: str = Field(default="", max_length=254)
-    content: str = Field(min_length=1, max_length=20000)
-    reason: str = Field(default="curated_update", max_length=700)
-    patch_summary: str = Field(default="", max_length=700)
-
-
-class AgentMemoryRollbackRequest(BaseModel):
-    target_version: int = Field(ge=1)
-    reason: str = Field(default="", max_length=700)
+from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, now_utc
 
 
 def get_db(request: Request):
@@ -655,557 +118,6 @@ def get_db(request: Request):
 DbSession = Annotated[Session, Depends(get_db)]
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["agents"])
-
-
-def evidence_refs_to_json(refs: list[EvidenceRef]) -> list[dict[str, Any]]:
-    return [ref.model_dump(mode="json") for ref in refs]
-
-
-def conversation_to_response(conversation: AgentConversation) -> AgentConversationResponse:
-    return AgentConversationResponse(
-        id=conversation.id,
-        workspace_id=conversation.workspace_id,
-        project_id=conversation.project_id,
-        title=conversation.title,
-        status=conversation.status,
-        created_by=conversation.created_by,
-        created_at=conversation.created_at,
-        updated_at=conversation.updated_at,
-    )
-
-
-def run_to_response(run: AgentRun) -> AgentRunResponse:
-    return AgentRunResponse(
-        id=run.id,
-        conversation_id=run.conversation_id,
-        workspace_id=run.workspace_id,
-        project_id=run.project_id,
-        goal=run.goal,
-        mode=run.mode,
-        trigger_type=run.trigger_type,
-        status=run.status,
-        current_phase=run.current_phase,
-        created_by=run.created_by,
-        temporal_workflow_id=run.temporal_workflow_id,
-        langgraph_thread_id=run.langgraph_thread_id,
-        budget_snapshot=run.budget_snapshot,
-        failure_reason=run.failure_reason,
-        created_at=run.created_at,
-        started_at=run.started_at,
-        completed_at=run.completed_at,
-        cancelled_at=run.cancelled_at,
-    )
-
-
-def message_to_response(message: AgentMessage) -> AgentMessageResponse:
-    return AgentMessageResponse(
-        id=message.id,
-        conversation_id=message.conversation_id,
-        agent_run_id=message.agent_run_id,
-        role=message.role,
-        content=message.content,
-        content_summary=message.content_summary,
-        metadata=message.message_metadata,
-        created_at=message.created_at,
-    )
-
-
-def coverage_to_response(entry: CoverageIndexEntry) -> CoverageEntryResponse:
-    return CoverageEntryResponse(
-        id=entry.id,
-        workspace_id=entry.workspace_id,
-        project_id=entry.project_id,
-        source_type=entry.source_type,
-        source_id=entry.source_id,
-        coverage_state=entry.coverage_state,
-        module_id=entry.module_id,
-        module_key=entry.module_key,
-        behavior_summary=entry.behavior_summary,
-        signals=entry.signals,
-        evidence_refs=entry.evidence_refs,
-        confidence=entry.confidence,
-        verified_by_human=entry.verified_by_human,
-        created_at=entry.created_at,
-        updated_at=entry.updated_at,
-    )
-
-
-def tool_call_to_response(tool_call: AgentToolCall) -> AgentToolCallResponse:
-    return AgentToolCallResponse(
-        id=tool_call.id,
-        agent_run_id=tool_call.agent_run_id,
-        parent_tool_call_id=tool_call.parent_tool_call_id,
-        subagent_name=tool_call.subagent_name,
-        tool_name=tool_call.tool_name,
-        permission_level=tool_call.permission_level,
-        input_summary=tool_call.input_summary,
-        output_summary=tool_call.output_summary,
-        status=tool_call.status,
-        idempotency_key=tool_call.idempotency_key,
-        duration_ms=tool_call.duration_ms,
-        error_summary=tool_call.error_summary,
-        created_at=tool_call.created_at,
-        completed_at=tool_call.completed_at,
-    )
-
-
-def subagent_run_to_response(subagent_run: AgentSubagentRun) -> AgentSubagentRunResponse:
-    return AgentSubagentRunResponse(
-        id=subagent_run.id,
-        agent_run_id=subagent_run.agent_run_id,
-        workspace_id=subagent_run.workspace_id,
-        project_id=subagent_run.project_id,
-        subagent_name=subagent_run.subagent_name,
-        stage=subagent_run.stage,
-        parallel_group=subagent_run.parallel_group,
-        status=subagent_run.status,
-        summary=subagent_run.summary,
-        input_summary=subagent_run.input_summary,
-        output_summary=subagent_run.output_summary,
-        result_snapshot=subagent_run.result_snapshot,
-        duration_ms=subagent_run.duration_ms,
-        error_summary=subagent_run.error_summary,
-        created_at=subagent_run.created_at,
-        started_at=subagent_run.started_at,
-        completed_at=subagent_run.completed_at,
-    )
-
-
-def sandbox_to_response(sandbox: AgentRepositorySandbox) -> AgentRepositorySandboxResponse:
-    return AgentRepositorySandboxResponse(
-        id=sandbox.id,
-        agent_run_id=sandbox.agent_run_id,
-        repository_id=sandbox.repository_id,
-        workspace_id=sandbox.workspace_id,
-        project_id=sandbox.project_id,
-        ref=sandbox.ref,
-        resolved_ref=sandbox.resolved_ref,
-        worktree_path=sandbox.worktree_path,
-        status=sandbox.status,
-        error_summary=sandbox.error_summary,
-        created_at=sandbox.created_at,
-        cleaned_at=sandbox.cleaned_at,
-    )
-
-
-def approval_to_response(approval: AgentApproval) -> AgentApprovalResponse:
-    return AgentApprovalResponse(
-        id=approval.id,
-        agent_run_id=approval.agent_run_id,
-        approval_type=approval.approval_type,
-        status=approval.status,
-        requested_by=approval.requested_by,
-        decided_by=approval.decided_by,
-        request_summary=approval.request_summary,
-        decision_summary=approval.decision_summary,
-        created_at=approval.created_at,
-        decided_at=approval.decided_at,
-    )
-
-
-def coverage_snapshot(entry: CoverageIndexEntry) -> dict[str, Any]:
-    return {
-        "id": entry.id,
-        "workspace_id": entry.workspace_id,
-        "project_id": entry.project_id,
-        "source_type": entry.source_type,
-        "source_id": entry.source_id,
-        "coverage_state": entry.coverage_state,
-        "module_id": entry.module_id,
-        "module_key": entry.module_key,
-        "behavior_summary": entry.behavior_summary,
-        "signals": entry.signals,
-        "evidence_refs": entry.evidence_refs,
-        "confidence": entry.confidence,
-        "verified_by_human": entry.verified_by_human,
-    }
-
-
-def staged_output_to_response(db: Session, output: AgentStagedOutput) -> AgentStagedOutputResponse:
-    coverage = db.scalars(
-        select(CoverageIndexEntry)
-        .where(CoverageIndexEntry.source_type == "staged_output", CoverageIndexEntry.source_id == output.id)
-        .order_by(CoverageIndexEntry.created_at, CoverageIndexEntry.id)
-    ).all()
-    return AgentStagedOutputResponse(
-        id=output.id,
-        agent_run_id=output.agent_run_id,
-        workspace_id=output.workspace_id,
-        project_id=output.project_id,
-        output_type=output.output_type,
-        status=output.status,
-        idempotency_key=output.idempotency_key,
-        title=output.title,
-        payload=output.payload,
-        evidence_refs=output.evidence_refs,
-        quality_result=output.quality_result,
-        duplicate_result=output.duplicate_result,
-        created_at=output.created_at,
-        decided_by=output.decided_by,
-        decision_summary=output.decision_summary,
-        accepted_at=output.accepted_at,
-        rejected_at=output.rejected_at,
-        coverage_entries=[coverage_to_response(entry) for entry in coverage],
-    )
-
-
-def budget_policy_to_response(policy: AgentBudgetPolicy) -> AgentBudgetPolicyResponse:
-    return AgentBudgetPolicyResponse(
-        id=policy.id,
-        workspace_id=policy.workspace_id,
-        project_id=policy.project_id,
-        scope=policy.scope,
-        purpose=policy.purpose,
-        defaults=policy.defaults,
-        hard_caps=policy.hard_caps,
-        updated_by=policy.updated_by,
-        created_at=policy.created_at,
-        updated_at=policy.updated_at,
-    )
-
-
-def memory_file_to_response(memory_file: AgentMemoryFile) -> AgentMemoryFileResponse:
-    return AgentMemoryFileResponse(
-        id=memory_file.id,
-        workspace_id=memory_file.workspace_id,
-        project_id=memory_file.project_id,
-        user_id=memory_file.user_id,
-        scope=memory_file.scope,
-        path=memory_file.path,
-        current_version=memory_file.current_version,
-        checksum=memory_file.checksum,
-        updated_by=memory_file.updated_by,
-        updated_at=memory_file.updated_at,
-    )
-
-
-def memory_version_to_response(version: AgentMemoryVersion) -> AgentMemoryVersionResponse:
-    return AgentMemoryVersionResponse(
-        id=version.id,
-        memory_file_id=version.memory_file_id,
-        version=version.version,
-        patch_summary=version.patch_summary,
-        editor=version.editor,
-        reason=version.reason,
-        checksum=version.checksum,
-        created_at=version.created_at,
-    )
-
-
-def get_conversation_or_404(db: Session, workspace_id: str, conversation_id: str) -> AgentConversation:
-    conversation = db.scalar(
-        select(AgentConversation).where(
-            AgentConversation.id == conversation_id,
-            AgentConversation.workspace_id == workspace_id,
-        )
-    )
-    if conversation is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent conversation not found")
-    return conversation
-
-
-def get_run_or_404(db: Session, workspace_id: str, run_id: str) -> AgentRun:
-    run = db.scalar(select(AgentRun).where(AgentRun.id == run_id, AgentRun.workspace_id == workspace_id))
-    if run is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent run not found")
-    return run
-
-
-def get_staged_output_or_404(db: Session, workspace_id: str, output_id: str) -> AgentStagedOutput:
-    output = db.scalar(
-        select(AgentStagedOutput).where(
-            AgentStagedOutput.id == output_id,
-            AgentStagedOutput.workspace_id == workspace_id,
-        )
-    )
-    if output is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent staged output not found")
-    return output
-
-
-def get_approval_or_404(db: Session, workspace_id: str, approval_id: str) -> AgentApproval:
-    approval = db.scalar(
-        select(AgentApproval)
-        .join(AgentRun, AgentRun.id == AgentApproval.agent_run_id)
-        .where(AgentApproval.id == approval_id, AgentRun.workspace_id == workspace_id)
-    )
-    if approval is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent approval not found")
-    return approval
-
-
-def get_memory_file_or_404(db: Session, workspace_id: str, memory_file_id: str) -> AgentMemoryFile:
-    memory_file = db.scalar(
-        select(AgentMemoryFile).where(AgentMemoryFile.id == memory_file_id, AgentMemoryFile.workspace_id == workspace_id)
-    )
-    if memory_file is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent memory file not found")
-    return memory_file
-
-
-def assert_project_scope(db: Session, workspace_id: str, project_id: str | None) -> None:
-    if project_id:
-        get_project_or_404(db, workspace_id, project_id)
-
-
-AGENT_RUN_ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    AgentRunStatus.queued.value: {AgentRunStatus.running.value, AgentRunStatus.cancelled.value},
-    AgentRunStatus.running.value: {
-        AgentRunStatus.succeeded.value,
-        AgentRunStatus.failed.value,
-        AgentRunStatus.waiting_for_user.value,
-        AgentRunStatus.cancelled.value,
-    },
-    AgentRunStatus.waiting_for_user.value: {AgentRunStatus.running.value, AgentRunStatus.cancelled.value},
-    AgentRunStatus.failed.value: {AgentRunStatus.running.value},
-    AgentRunStatus.succeeded.value: set(),
-    AgentRunStatus.cancelled.value: set(),
-}
-
-
-class AgentRunStateError(ValueError):
-    """Raised when an AgentRun status transition is not allowed."""
-
-
-def _assert_transition(
-    run: AgentRun,
-    next_status: AgentRunStatus,
-    *,
-    explicit_resume: bool = False,
-    explicit_retry: bool = False,
-) -> None:
-    current_status = run.status
-    target_status = next_status.value
-    if target_status not in AGENT_RUN_ALLOWED_TRANSITIONS.get(current_status, set()):
-        raise AgentRunStateError(f"Agent run cannot transition from {current_status} to {target_status}")
-    if (
-        current_status == AgentRunStatus.failed.value
-        and target_status == AgentRunStatus.running.value
-        and not (explicit_resume or explicit_retry)
-    ):
-        raise AgentRunStateError("Failed agent runs require an explicit retry or resume")
-
-
-def assert_run_can_execute(run: AgentRun, *, explicit_resume: bool = False, explicit_retry: bool = False) -> None:
-    if run.status == AgentRunStatus.succeeded.value:
-        raise AgentRunStateError("Agent run already succeeded")
-    if run.status == AgentRunStatus.running.value:
-        raise AgentRunStateError("Agent run is already running")
-    if run.status == AgentRunStatus.cancelled.value:
-        raise AgentRunStateError("Cancelled agent runs cannot be executed")
-    _assert_transition(run, AgentRunStatus.running, explicit_resume=explicit_resume, explicit_retry=explicit_retry)
-
-
-def mark_run_running(run: AgentRun, *, explicit_resume: bool = False, explicit_retry: bool = False) -> None:
-    _assert_transition(run, AgentRunStatus.running, explicit_resume=explicit_resume, explicit_retry=explicit_retry)
-    run.status = AgentRunStatus.running.value
-    run.current_phase = "starting"
-    run.started_at = run.started_at or now_utc()
-    run.completed_at = None
-    run.cancelled_at = None
-    run.failure_reason = ""
-    run.langgraph_thread_id = run.langgraph_thread_id or f"lg-{run.id}"
-
-
-def mark_run_waiting(run: AgentRun, reason: str, *, phase: str = "waiting_for_user") -> None:
-    _assert_transition(run, AgentRunStatus.waiting_for_user)
-    run.status = AgentRunStatus.waiting_for_user.value
-    run.current_phase = phase
-    run.failure_reason = reason[:700]
-    run.completed_at = None
-
-
-def mark_run_succeeded(run: AgentRun, *, phase: str = "summarize") -> None:
-    _assert_transition(run, AgentRunStatus.succeeded)
-    run.status = AgentRunStatus.succeeded.value
-    run.current_phase = phase
-    run.failure_reason = ""
-    run.completed_at = now_utc()
-
-
-def mark_run_failed(run: AgentRun, reason: str, *, phase: str = "failed") -> None:
-    _assert_transition(run, AgentRunStatus.failed)
-    run.status = AgentRunStatus.failed.value
-    run.current_phase = phase
-    run.failure_reason = reason[:700]
-    run.completed_at = now_utc()
-
-
-def mark_run_cancelled(run: AgentRun, reason: str = "") -> None:
-    _assert_transition(run, AgentRunStatus.cancelled)
-    run.status = AgentRunStatus.cancelled.value
-    run.current_phase = "cancelled"
-    run.failure_reason = reason[:700]
-    run.completed_at = now_utc()
-    run.cancelled_at = now_utc()
-
-
-def budget_response_for_run(run: AgentRun) -> AgentRunBudgetResponse:
-    snapshot = dict(run.budget_snapshot or {})
-    limits = dict(snapshot.get("limits") or {})
-    if not limits:
-        limits = {key: snapshot[key] for key in AGENT_BUDGET_NUMERIC_KEYS if key in snapshot}
-    usage = dict(snapshot.get("usage") or {})
-    if not usage:
-        usage = {
-            "tool_calls": 0,
-            "subagents": 0,
-            "parallel_subagents": 0,
-            "model_calls": 0,
-            "case_candidates": 0,
-            "source_chars_sent": 0,
-            "wall_time_seconds": 0,
-        }
-    return AgentRunBudgetResponse(
-        snapshot=snapshot,
-        usage=usage,
-        limits=limits,
-    )
-
-
-AGENT_BUDGET_NUMERIC_KEYS = {
-    "max_tool_calls",
-    "max_subagents",
-    "max_parallel_subagents",
-    "max_model_calls",
-    "max_case_candidates_per_run",
-    "max_wall_time_minutes",
-    "max_total_source_chars_sent",
-}
-
-
-def _settings_budget_defaults(settings) -> dict[str, int]:
-    return {
-        "max_tool_calls": settings.agent_default_max_tool_calls,
-        "max_subagents": settings.agent_default_max_subagents,
-        "max_parallel_subagents": settings.agent_default_max_parallel_subagents,
-        "max_model_calls": settings.agent_default_max_model_calls,
-        "max_case_candidates_per_run": settings.agent_default_max_case_candidates_per_run,
-        "max_wall_time_minutes": settings.agent_default_max_wall_time_minutes,
-        "max_total_source_chars_sent": settings.agent_default_max_total_source_chars_sent,
-    }
-
-
-def _settings_budget_caps(settings) -> dict[str, int]:
-    return {
-        "max_tool_calls": settings.agent_system_max_tool_calls,
-        "max_subagents": settings.agent_system_max_subagents,
-        "max_parallel_subagents": settings.agent_system_max_parallel_subagents,
-        "max_model_calls": settings.agent_system_max_model_calls,
-        "max_case_candidates_per_run": settings.agent_system_max_case_candidates_per_run,
-        "max_wall_time_minutes": settings.agent_system_max_wall_time_minutes,
-        "max_total_source_chars_sent": settings.agent_system_max_total_source_chars_sent,
-    }
-
-
-def _sanitize_budget_values(values: dict[str, Any], hard_caps: dict[str, int]) -> dict[str, Any]:
-    sanitized: dict[str, Any] = {}
-    for key, value in values.items():
-        if key in {"usage", "last_execute_request", "limits"}:
-            continue
-        if key in AGENT_BUDGET_NUMERIC_KEYS:
-            try:
-                numeric = max(0, int(value))
-            except (TypeError, ValueError):
-                continue
-            sanitized[key] = min(numeric, hard_caps.get(key, numeric))
-        else:
-            sanitized[key] = value
-    return sanitized
-
-
-def _budget_policy_for_scope(
-    db: Session,
-    *,
-    workspace_id: str,
-    scope: str,
-    project_id: str | None,
-    purpose: str,
-) -> AgentBudgetPolicy | None:
-    statement = select(AgentBudgetPolicy).where(
-        AgentBudgetPolicy.workspace_id == workspace_id,
-        AgentBudgetPolicy.scope == scope,
-        AgentBudgetPolicy.purpose == purpose,
-    )
-    if project_id:
-        statement = statement.where(AgentBudgetPolicy.project_id == project_id)
-    else:
-        statement = statement.where(AgentBudgetPolicy.project_id.is_(None))
-    return db.scalar(statement.order_by(AgentBudgetPolicy.updated_at.desc(), AgentBudgetPolicy.id.desc()))
-
-
-def build_agent_run_budget_snapshot(
-    db: Session,
-    *,
-    settings,
-    workspace_id: str,
-    project_id: str | None,
-    override: dict[str, Any],
-    purpose: str = "agent_run",
-) -> dict[str, Any]:
-    hard_caps = _settings_budget_caps(settings)
-    snapshot: dict[str, Any] = dict(_settings_budget_defaults(settings))
-    sources: list[dict[str, Any]] = [{"scope": "system_defaults", "keys": sorted(snapshot)}]
-
-    workspace_policy = _budget_policy_for_scope(
-        db,
-        workspace_id=workspace_id,
-        scope="workspace",
-        project_id=None,
-        purpose=purpose,
-    )
-    project_policy = (
-        _budget_policy_for_scope(db, workspace_id=workspace_id, scope="project", project_id=project_id, purpose=purpose)
-        if project_id
-        else None
-    )
-    for policy in [workspace_policy, project_policy]:
-        if policy is None:
-            continue
-        hard_caps.update(_sanitize_budget_values(dict(policy.hard_caps or {}), hard_caps))
-        sanitized_defaults = _sanitize_budget_values(dict(policy.defaults or {}), hard_caps)
-        snapshot.update(sanitized_defaults)
-        sources.append({"scope": policy.scope, "policy_id": policy.id, "keys": sorted(sanitized_defaults)})
-
-    sanitized_override = _sanitize_budget_values(dict(override or {}), hard_caps)
-    snapshot.update(sanitized_override)
-    if sanitized_override:
-        sources.append({"scope": "run_override", "keys": sorted(sanitized_override)})
-    snapshot = _sanitize_budget_values(snapshot, hard_caps)
-    snapshot["system_hard_caps"] = hard_caps
-    snapshot["budget_sources"] = sources
-    return snapshot
-
-
-def add_coverage_entries(
-    db: Session,
-    *,
-    workspace_id: str,
-    project_id: str | None,
-    source_type: str,
-    source_id: str,
-    coverage_state: str,
-    entries: list[CoverageEntryCreate],
-) -> list[CoverageIndexEntry]:
-    created: list[CoverageIndexEntry] = []
-    for payload in entries:
-        entry = CoverageIndexEntry(
-            workspace_id=workspace_id,
-            project_id=project_id,
-            source_type=source_type,
-            source_id=source_id,
-            coverage_state=coverage_state,
-            module_id=payload.module_id,
-            module_key=payload.module_key or "UNMAPPED",
-            behavior_summary=payload.behavior_summary,
-            signals=payload.signals,
-            evidence_refs=evidence_refs_to_json(payload.evidence_refs),
-            confidence=payload.confidence,
-            verified_by_human=payload.verified_by_human,
-        )
-        db.add(entry)
-        created.append(entry)
-    return created
 
 
 @router.post("/agent/conversations", response_model=AgentConversationResponse, status_code=status.HTTP_201_CREATED)
@@ -1492,7 +404,7 @@ def execute_agent_run(
 
     settings = request.app.state.settings
     if not settings.agent_execute_sync_mode:
-        from app.agent_temporal import AgentTemporalUnavailable, start_agent_run_workflow
+        from app.agents.temporal import AgentTemporalUnavailable, start_agent_run_workflow
 
         starter = getattr(request.app.state, "agent_workflow_starter", start_agent_run_workflow)
         try:
@@ -1518,7 +430,7 @@ def execute_agent_run(
             sandboxes=[],
         )
 
-    from app.agent_graph import AgentGraphConflict, AgentPolicyViolation, execute_agent_graph
+    from app.agents.graph import AgentGraphConflict, AgentPolicyViolation, execute_agent_graph
 
     try:
         result = execute_agent_graph(
@@ -1651,7 +563,7 @@ def resume_agent_run(
             resume_reason=payload.resume_reason,
         )
         db.commit()
-        from app.agent_temporal import AgentTemporalUnavailable, signal_agent_run_resume
+        from app.agents.temporal import AgentTemporalUnavailable, signal_agent_run_resume
 
         signal_resume = getattr(request.app.state, "agent_workflow_resume_signaler", signal_agent_run_resume)
         try:
@@ -1682,7 +594,7 @@ def resume_agent_run(
     )
     db.commit()
 
-    from app.agent_graph import AgentGraphConflict, AgentPolicyViolation, execute_agent_graph
+    from app.agents.graph import AgentGraphConflict, AgentPolicyViolation, execute_agent_graph
 
     try:
         result = execute_agent_graph(
@@ -1732,7 +644,7 @@ def cancel_agent_run(
     db.commit()
     db.refresh(run)
     if not request.app.state.settings.agent_execute_sync_mode and run.temporal_workflow_id:
-        from app.agent_temporal import AgentTemporalUnavailable, cancel_agent_run_workflow
+        from app.agents.temporal import AgentTemporalUnavailable, cancel_agent_run_workflow
 
         cancel_workflow = getattr(request.app.state, "agent_workflow_canceller", cancel_agent_run_workflow)
         try:
@@ -1802,7 +714,7 @@ def list_agent_memory_files(
     get_workspace_or_404(db, workspace_id)
     if project_id:
         get_project_or_404(db, workspace_id, project_id)
-    from app.agent_memory import list_memory_files
+    from app.agents.memory import list_memory_files
 
     return [
         memory_file_to_response(memory_file)
@@ -1833,7 +745,7 @@ def search_agent_memory(
     get_workspace_or_404(db, workspace_id)
     if project_id:
         get_project_or_404(db, workspace_id, project_id)
-    from app.agent_memory import search_memory
+    from app.agents.memory import search_memory
 
     results = search_memory(
         db,
@@ -1864,7 +776,7 @@ def curate_agent_memory(
     get_workspace_or_404(db, workspace_id)
     if payload.project_id:
         get_project_or_404(db, workspace_id, payload.project_id)
-    from app.agent_memory import curate_memory_file
+    from app.agents.memory import curate_memory_file
 
     try:
         memory_file = curate_memory_file(
@@ -1896,7 +808,7 @@ def rollback_agent_memory(
     actor_email: ActorEmail,
 ) -> AgentMemoryFileResponse:
     memory_file = get_memory_file_or_404(db, workspace_id, memory_file_id)
-    from app.agent_memory import rollback_memory_file
+    from app.agents.memory import rollback_memory_file
 
     try:
         rolled_back = rollback_memory_file(

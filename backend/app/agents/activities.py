@@ -16,10 +16,10 @@ from app.agents import (
     mark_run_cancelled,
     mark_run_failed,
 )
-from app.config import Settings
-from app.database import Database
-from app.telemetry import agent_span
-from app.workspaces import audit
+from app.platform.config import Settings
+from app.platform.database import Database
+from app.platform.telemetry import agent_span
+from app.workspace.routes import audit
 
 
 TEMPORAL_CHILD_RESULT_LIMIT = 8
@@ -127,7 +127,8 @@ def _run_child_git(command: list[str], timeout_seconds: int) -> subprocess.Compl
 
 
 def _scan_repository_child_task(payload: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
-    from app.gitlab import GitRepository, RepositoryStatus, ensure_safe_sandbox_path
+    from app.git.models import GitRepository, RepositoryStatus
+    from app.git.sandbox import ensure_safe_sandbox_path
 
     database = Database(settings.database_url)
     database.init()
@@ -197,7 +198,7 @@ def _top_counts(values: list[str], *, default: str = "unknown") -> list[dict[str
 
 
 def _analyze_import_child_task(payload: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
-    from app.case_imports import ImportBatch, ImportCaseDraft
+    from app.cases.imports import ImportBatch, ImportCaseDraft
 
     database = Database(settings.database_url)
     database.init()
@@ -333,7 +334,7 @@ def _activity_checkpoint(phase: str) -> None:
         return
     activity.heartbeat({"phase": phase})
     if activity.is_cancelled():
-        from app.agent_graph import AgentRunCancelled
+        from app.agents.graph import AgentRunCancelled
 
         raise AgentRunCancelled("Temporal cancellation requested")
 
@@ -352,7 +353,7 @@ def execute_agent_graph_activity_with_settings(
     *,
     settings: Settings,
 ) -> dict[str, Any]:
-    from app.agent_graph import AgentGraphConflict, execute_agent_graph
+    from app.agents.graph import AgentGraphConflict, execute_agent_graph
 
     with agent_span(
         "temporal.activity",

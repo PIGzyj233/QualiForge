@@ -13,8 +13,8 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, St
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.database import Base
-from app.workspaces import ActorEmail, audit, get_workspace_or_404, new_id, now_utc
+from app.platform.database import Base
+from app.workspace.routes import ActorEmail, audit, get_workspace_or_404, new_id, now_utc
 
 
 class AIPurpose(StrEnum):

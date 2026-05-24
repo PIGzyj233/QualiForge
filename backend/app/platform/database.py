@@ -90,6 +90,9 @@ class Database:
         with self._lock:
             if self._initialized:
                 return
+            from app.platform.model_registry import register_models
+
+            register_models()
             Base.metadata.create_all(bind=self.engine)
             run_schema_upgrades(self.engine)
             self._initialized = True

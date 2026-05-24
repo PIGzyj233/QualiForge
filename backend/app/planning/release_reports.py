@@ -9,9 +9,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, ForeignKey, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from app.database import Base
-from app.test_plans import PlanItem, PlanItemStatus, TestPlan, get_plan_or_404
-from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
+from app.platform.database import Base
+from app.planning.test_plans import PlanItem, PlanItemStatus, TestPlan, get_plan_or_404
+from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
 
 
 class ReleaseReportStatus(StrEnum):

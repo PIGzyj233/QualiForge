@@ -1,6 +1,6 @@
 from redis.asyncio import Redis
 
-from app.config import Settings
+from app.platform.config import Settings
 
 
 async def check_redis(settings: Settings) -> dict[str, str]:

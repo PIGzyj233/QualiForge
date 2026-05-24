@@ -8,15 +8,15 @@ from redis.asyncio import Redis
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from app.agent_activities import (
+from app.agents.activities import (
     execute_agent_child_task_activity,
     execute_agent_graph_activity,
     mark_agent_run_cancelled_activity,
     mark_agent_run_failed_activity,
 )
-from app.agent_workflows import AgentChildTaskWorkflow, AgentRunWorkflow
-from app.config import get_settings
-from app.telemetry import configure_telemetry
+from app.agents.workflows import AgentChildTaskWorkflow, AgentRunWorkflow
+from app.platform.config import get_settings
+from app.platform.telemetry import configure_telemetry
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
