@@ -2,15 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, select
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.ai_config import AIInvocationLog, AIInvocationResponse, invocation_to_response
 from app.database import Base
+from app.telemetry import (
+    AGENT_APPROVAL_WAIT_SECONDS,
+    AGENT_STAGED_OUTPUT_DECISIONS_TOTAL,
+    AGENT_TOOL_CALLS_TOTAL,
+    AGENT_TOOL_DURATION_SECONDS,
+    elapsed_seconds,
+)
 from app.workspaces import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc
 
 
@@ -51,6 +58,14 @@ class AgentToolCallStatus(StrEnum):
     running = "running"
     succeeded = "succeeded"
     failed = "failed"
+
+
+class AgentSubagentRunStatus(StrEnum):
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+    skipped = "skipped"
 
 
 class AgentRepositorySandboxStatus(StrEnum):
@@ -161,6 +176,29 @@ class AgentToolCall(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AgentSubagentRun(Base):
+    __tablename__ = "agent_subagent_runs"
+    __table_args__ = (UniqueConstraint("agent_run_id", "subagent_name", name="uq_agent_subagent_run_name"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    agent_run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    subagent_name: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    stage: Mapped[str] = mapped_column(String(80), default="", nullable=False, index=True)
+    parallel_group: Mapped[str] = mapped_column(String(80), default="", nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default=AgentSubagentRunStatus.queued.value, nullable=False, index=True)
+    summary: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    input_summary: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    output_summary: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    result_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_summary: Mapped[str] = mapped_column(String(700), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AgentRepositorySandbox(Base):
     __tablename__ = "agent_repository_sandboxes"
 
@@ -202,6 +240,7 @@ class AgentStagedOutput(Base):
     project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     output_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default=AgentStagedOutputStatus.staged.value, nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), default="", nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(240), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     evidence_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
@@ -231,6 +270,51 @@ class CoverageIndexEntry(Base):
     evidence_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     confidence: Mapped[int] = mapped_column(Integer, default=70, nullable=False)
     verified_by_human: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
+
+
+class AgentMemoryFile(Base):
+    __tablename__ = "agent_memory_files"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id: Mapped[str] = mapped_column(String(254), default="", nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    path: Mapped[str] = mapped_column(String(1000), nullable=False, index=True)
+    current_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(254), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
+
+
+class AgentMemoryVersion(Base):
+    __tablename__ = "agent_memory_versions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    memory_file_id: Mapped[str] = mapped_column(ForeignKey("agent_memory_files.id", ondelete="CASCADE"), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    content: Mapped[str] = mapped_column(String(20000), nullable=False)
+    patch_summary: Mapped[str] = mapped_column(String(700), default="", nullable=False)
+    editor: Mapped[str] = mapped_column(String(254), nullable=False)
+    reason: Mapped[str] = mapped_column(String(700), default="", nullable=False)
+    checksum: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
+
+
+class AgentBudgetPolicy(Base):
+    __tablename__ = "agent_budget_policies"
+    __table_args__ = (UniqueConstraint("workspace_id", "scope", "project_id", "purpose", name="uq_agent_budget_policy_scope"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    purpose: Mapped[str] = mapped_column(String(80), default="agent_run", nullable=False, index=True)
+    defaults: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    hard_caps: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(254), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
 
@@ -380,6 +464,26 @@ class AgentToolCallResponse(BaseModel):
     completed_at: datetime | None
 
 
+class AgentSubagentRunResponse(BaseModel):
+    id: str
+    agent_run_id: str
+    workspace_id: str
+    project_id: str | None
+    subagent_name: str
+    stage: str
+    parallel_group: str
+    status: str
+    summary: str
+    input_summary: str
+    output_summary: str
+    result_snapshot: dict[str, Any]
+    duration_ms: int
+    error_summary: str
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
 class AgentRepositorySandboxResponse(BaseModel):
     id: str
     agent_run_id: str
@@ -440,6 +544,7 @@ class AgentStagedOutputResponse(BaseModel):
     project_id: str | None
     output_type: str
     status: str
+    idempotency_key: str
     title: str
     payload: dict[str, Any]
     evidence_refs: list[dict[str, Any]]
@@ -471,10 +576,76 @@ class AgentExecutionDetailResponse(BaseModel):
     run: AgentRunResponse
     staged_outputs: list[AgentStagedOutputResponse] = Field(default_factory=list)
     tool_calls: list[AgentToolCallResponse] = Field(default_factory=list)
+    subagent_runs: list[AgentSubagentRunResponse] = Field(default_factory=list)
     ai_invocations: list[AIInvocationResponse] = Field(default_factory=list)
     repository_sandboxes: list[AgentRepositorySandboxResponse] = Field(default_factory=list)
     budget: AgentRunBudgetResponse
     pending_approvals: list[AgentApprovalResponse] = Field(default_factory=list)
+
+
+class AgentBudgetPolicyUpsert(BaseModel):
+    scope: Literal["workspace", "project"] = "workspace"
+    project_id: str | None = Field(default=None, max_length=64)
+    purpose: str = Field(default="agent_run", max_length=80)
+    defaults: dict[str, Any] = Field(default_factory=dict)
+    hard_caps: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentBudgetPolicyResponse(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str | None
+    scope: str
+    purpose: str
+    defaults: dict[str, Any]
+    hard_caps: dict[str, Any]
+    updated_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentMemoryFileResponse(BaseModel):
+    id: str
+    workspace_id: str
+    project_id: str | None
+    user_id: str
+    scope: str
+    path: str
+    current_version: int
+    checksum: str
+    updated_by: str
+    updated_at: datetime
+
+
+class AgentMemoryVersionResponse(BaseModel):
+    id: str
+    memory_file_id: str
+    version: int
+    patch_summary: str
+    editor: str
+    reason: str
+    checksum: str
+    created_at: datetime
+
+
+class AgentMemorySearchResult(BaseModel):
+    memory_file: AgentMemoryFileResponse
+    score: int
+    snippet: str
+
+
+class AgentMemoryCurateRequest(BaseModel):
+    scope: Literal["workspace", "project", "user", "dreams"]
+    project_id: str | None = Field(default=None, max_length=64)
+    user_id: str = Field(default="", max_length=254)
+    content: str = Field(min_length=1, max_length=20000)
+    reason: str = Field(default="curated_update", max_length=700)
+    patch_summary: str = Field(default="", max_length=700)
+
+
+class AgentMemoryRollbackRequest(BaseModel):
+    target_version: int = Field(ge=1)
+    reason: str = Field(default="", max_length=700)
 
 
 def get_db(request: Request):
@@ -578,6 +749,28 @@ def tool_call_to_response(tool_call: AgentToolCall) -> AgentToolCallResponse:
     )
 
 
+def subagent_run_to_response(subagent_run: AgentSubagentRun) -> AgentSubagentRunResponse:
+    return AgentSubagentRunResponse(
+        id=subagent_run.id,
+        agent_run_id=subagent_run.agent_run_id,
+        workspace_id=subagent_run.workspace_id,
+        project_id=subagent_run.project_id,
+        subagent_name=subagent_run.subagent_name,
+        stage=subagent_run.stage,
+        parallel_group=subagent_run.parallel_group,
+        status=subagent_run.status,
+        summary=subagent_run.summary,
+        input_summary=subagent_run.input_summary,
+        output_summary=subagent_run.output_summary,
+        result_snapshot=subagent_run.result_snapshot,
+        duration_ms=subagent_run.duration_ms,
+        error_summary=subagent_run.error_summary,
+        created_at=subagent_run.created_at,
+        started_at=subagent_run.started_at,
+        completed_at=subagent_run.completed_at,
+    )
+
+
 def sandbox_to_response(sandbox: AgentRepositorySandbox) -> AgentRepositorySandboxResponse:
     return AgentRepositorySandboxResponse(
         id=sandbox.id,
@@ -641,6 +834,7 @@ def staged_output_to_response(db: Session, output: AgentStagedOutput) -> AgentSt
         project_id=output.project_id,
         output_type=output.output_type,
         status=output.status,
+        idempotency_key=output.idempotency_key,
         title=output.title,
         payload=output.payload,
         evidence_refs=output.evidence_refs,
@@ -652,6 +846,49 @@ def staged_output_to_response(db: Session, output: AgentStagedOutput) -> AgentSt
         accepted_at=output.accepted_at,
         rejected_at=output.rejected_at,
         coverage_entries=[coverage_to_response(entry) for entry in coverage],
+    )
+
+
+def budget_policy_to_response(policy: AgentBudgetPolicy) -> AgentBudgetPolicyResponse:
+    return AgentBudgetPolicyResponse(
+        id=policy.id,
+        workspace_id=policy.workspace_id,
+        project_id=policy.project_id,
+        scope=policy.scope,
+        purpose=policy.purpose,
+        defaults=policy.defaults,
+        hard_caps=policy.hard_caps,
+        updated_by=policy.updated_by,
+        created_at=policy.created_at,
+        updated_at=policy.updated_at,
+    )
+
+
+def memory_file_to_response(memory_file: AgentMemoryFile) -> AgentMemoryFileResponse:
+    return AgentMemoryFileResponse(
+        id=memory_file.id,
+        workspace_id=memory_file.workspace_id,
+        project_id=memory_file.project_id,
+        user_id=memory_file.user_id,
+        scope=memory_file.scope,
+        path=memory_file.path,
+        current_version=memory_file.current_version,
+        checksum=memory_file.checksum,
+        updated_by=memory_file.updated_by,
+        updated_at=memory_file.updated_at,
+    )
+
+
+def memory_version_to_response(version: AgentMemoryVersion) -> AgentMemoryVersionResponse:
+    return AgentMemoryVersionResponse(
+        id=version.id,
+        memory_file_id=version.memory_file_id,
+        version=version.version,
+        patch_summary=version.patch_summary,
+        editor=version.editor,
+        reason=version.reason,
+        checksum=version.checksum,
+        created_at=version.created_at,
     )
 
 
@@ -695,6 +932,15 @@ def get_approval_or_404(db: Session, workspace_id: str, approval_id: str) -> Age
     if approval is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent approval not found")
     return approval
+
+
+def get_memory_file_or_404(db: Session, workspace_id: str, memory_file_id: str) -> AgentMemoryFile:
+    memory_file = db.scalar(
+        select(AgentMemoryFile).where(AgentMemoryFile.id == memory_file_id, AgentMemoryFile.workspace_id == workspace_id)
+    )
+    if memory_file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent memory file not found")
+    return memory_file
 
 
 def assert_project_scope(db: Session, workspace_id: str, project_id: str | None) -> None:
@@ -796,11 +1042,139 @@ def mark_run_cancelled(run: AgentRun, reason: str = "") -> None:
 
 def budget_response_for_run(run: AgentRun) -> AgentRunBudgetResponse:
     snapshot = dict(run.budget_snapshot or {})
+    limits = dict(snapshot.get("limits") or {})
+    if not limits:
+        limits = {key: snapshot[key] for key in AGENT_BUDGET_NUMERIC_KEYS if key in snapshot}
+    usage = dict(snapshot.get("usage") or {})
+    if not usage:
+        usage = {
+            "tool_calls": 0,
+            "subagents": 0,
+            "parallel_subagents": 0,
+            "model_calls": 0,
+            "case_candidates": 0,
+            "source_chars_sent": 0,
+            "wall_time_seconds": 0,
+        }
     return AgentRunBudgetResponse(
         snapshot=snapshot,
-        usage=dict(snapshot.get("usage") or {}),
-        limits=dict(snapshot.get("limits") or {}),
+        usage=usage,
+        limits=limits,
     )
+
+
+AGENT_BUDGET_NUMERIC_KEYS = {
+    "max_tool_calls",
+    "max_subagents",
+    "max_parallel_subagents",
+    "max_model_calls",
+    "max_case_candidates_per_run",
+    "max_wall_time_minutes",
+    "max_total_source_chars_sent",
+}
+
+
+def _settings_budget_defaults(settings) -> dict[str, int]:
+    return {
+        "max_tool_calls": settings.agent_default_max_tool_calls,
+        "max_subagents": settings.agent_default_max_subagents,
+        "max_parallel_subagents": settings.agent_default_max_parallel_subagents,
+        "max_model_calls": settings.agent_default_max_model_calls,
+        "max_case_candidates_per_run": settings.agent_default_max_case_candidates_per_run,
+        "max_wall_time_minutes": settings.agent_default_max_wall_time_minutes,
+        "max_total_source_chars_sent": settings.agent_default_max_total_source_chars_sent,
+    }
+
+
+def _settings_budget_caps(settings) -> dict[str, int]:
+    return {
+        "max_tool_calls": settings.agent_system_max_tool_calls,
+        "max_subagents": settings.agent_system_max_subagents,
+        "max_parallel_subagents": settings.agent_system_max_parallel_subagents,
+        "max_model_calls": settings.agent_system_max_model_calls,
+        "max_case_candidates_per_run": settings.agent_system_max_case_candidates_per_run,
+        "max_wall_time_minutes": settings.agent_system_max_wall_time_minutes,
+        "max_total_source_chars_sent": settings.agent_system_max_total_source_chars_sent,
+    }
+
+
+def _sanitize_budget_values(values: dict[str, Any], hard_caps: dict[str, int]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in values.items():
+        if key in {"usage", "last_execute_request", "limits"}:
+            continue
+        if key in AGENT_BUDGET_NUMERIC_KEYS:
+            try:
+                numeric = max(0, int(value))
+            except (TypeError, ValueError):
+                continue
+            sanitized[key] = min(numeric, hard_caps.get(key, numeric))
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
+def _budget_policy_for_scope(
+    db: Session,
+    *,
+    workspace_id: str,
+    scope: str,
+    project_id: str | None,
+    purpose: str,
+) -> AgentBudgetPolicy | None:
+    statement = select(AgentBudgetPolicy).where(
+        AgentBudgetPolicy.workspace_id == workspace_id,
+        AgentBudgetPolicy.scope == scope,
+        AgentBudgetPolicy.purpose == purpose,
+    )
+    if project_id:
+        statement = statement.where(AgentBudgetPolicy.project_id == project_id)
+    else:
+        statement = statement.where(AgentBudgetPolicy.project_id.is_(None))
+    return db.scalar(statement.order_by(AgentBudgetPolicy.updated_at.desc(), AgentBudgetPolicy.id.desc()))
+
+
+def build_agent_run_budget_snapshot(
+    db: Session,
+    *,
+    settings,
+    workspace_id: str,
+    project_id: str | None,
+    override: dict[str, Any],
+    purpose: str = "agent_run",
+) -> dict[str, Any]:
+    hard_caps = _settings_budget_caps(settings)
+    snapshot: dict[str, Any] = dict(_settings_budget_defaults(settings))
+    sources: list[dict[str, Any]] = [{"scope": "system_defaults", "keys": sorted(snapshot)}]
+
+    workspace_policy = _budget_policy_for_scope(
+        db,
+        workspace_id=workspace_id,
+        scope="workspace",
+        project_id=None,
+        purpose=purpose,
+    )
+    project_policy = (
+        _budget_policy_for_scope(db, workspace_id=workspace_id, scope="project", project_id=project_id, purpose=purpose)
+        if project_id
+        else None
+    )
+    for policy in [workspace_policy, project_policy]:
+        if policy is None:
+            continue
+        hard_caps.update(_sanitize_budget_values(dict(policy.hard_caps or {}), hard_caps))
+        sanitized_defaults = _sanitize_budget_values(dict(policy.defaults or {}), hard_caps)
+        snapshot.update(sanitized_defaults)
+        sources.append({"scope": policy.scope, "policy_id": policy.id, "keys": sorted(sanitized_defaults)})
+
+    sanitized_override = _sanitize_budget_values(dict(override or {}), hard_caps)
+    snapshot.update(sanitized_override)
+    if sanitized_override:
+        sources.append({"scope": "run_override", "keys": sorted(sanitized_override)})
+    snapshot = _sanitize_budget_values(snapshot, hard_caps)
+    snapshot["system_hard_caps"] = hard_caps
+    snapshot["budget_sources"] = sources
+    return snapshot
 
 
 def add_coverage_entries(
@@ -939,6 +1313,7 @@ def create_agent_run(
     conversation_id: str,
     payload: AgentRunCreate,
     db: DbSession,
+    request: Request,
     actor_email: ActorEmail,
 ) -> AgentRunResponse:
     conversation = get_conversation_or_404(db, workspace_id, conversation_id)
@@ -952,7 +1327,13 @@ def create_agent_run(
         mode=payload.mode.value,
         trigger_type=payload.trigger_type,
         created_by=actor_email,
-        budget_snapshot=payload.budget_snapshot,
+        budget_snapshot=build_agent_run_budget_snapshot(
+            db,
+            settings=request.app.state.settings,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            override=payload.budget_snapshot,
+        ),
     )
     conversation.updated_at = now_utc()
     db.add(run)
@@ -981,9 +1362,108 @@ def list_agent_runs(workspace_id: str, conversation_id: str, db: DbSession) -> l
     return [run_to_response(run) for run in runs]
 
 
+@router.get("/agent/runs", response_model=list[AgentRunResponse])
+def list_workspace_agent_runs(
+    workspace_id: str,
+    db: DbSession,
+    project_id: str | None = Query(default=None, max_length=64),
+    status_filter: AgentRunStatus | None = Query(default=None, alias="status"),
+) -> list[AgentRunResponse]:
+    get_workspace_or_404(db, workspace_id)
+    statement = select(AgentRun).where(AgentRun.workspace_id == workspace_id)
+    if project_id:
+        statement = statement.where(AgentRun.project_id == project_id)
+    if status_filter is not None:
+        statement = statement.where(AgentRun.status == status_filter.value)
+    runs = db.scalars(statement.order_by(AgentRun.created_at.desc(), AgentRun.id.desc()).limit(200)).all()
+    return [run_to_response(run) for run in runs]
+
+
 @router.get("/agent/runs/{run_id}", response_model=AgentRunResponse)
 def get_agent_run(workspace_id: str, run_id: str, db: DbSession) -> AgentRunResponse:
     return run_to_response(get_run_or_404(db, workspace_id, run_id))
+
+
+@router.get("/agent/budget-policies", response_model=list[AgentBudgetPolicyResponse])
+def list_agent_budget_policies(
+    workspace_id: str,
+    db: DbSession,
+    project_id: str | None = Query(default=None, max_length=64),
+    purpose: str = Query(default="agent_run", max_length=80),
+) -> list[AgentBudgetPolicyResponse]:
+    get_workspace_or_404(db, workspace_id)
+    statement = select(AgentBudgetPolicy).where(AgentBudgetPolicy.workspace_id == workspace_id, AgentBudgetPolicy.purpose == purpose)
+    if project_id:
+        statement = statement.where((AgentBudgetPolicy.project_id == project_id) | (AgentBudgetPolicy.project_id.is_(None)))
+    policies = db.scalars(statement.order_by(AgentBudgetPolicy.scope, AgentBudgetPolicy.updated_at.desc())).all()
+    return [budget_policy_to_response(policy) for policy in policies]
+
+
+@router.put("/agent/budget-policies", response_model=AgentBudgetPolicyResponse)
+def upsert_agent_budget_policy(
+    workspace_id: str,
+    payload: AgentBudgetPolicyUpsert,
+    db: DbSession,
+    request: Request,
+    actor_email: ActorEmail,
+) -> AgentBudgetPolicyResponse:
+    get_workspace_or_404(db, workspace_id)
+    project_id = payload.project_id if payload.scope == "project" else None
+    if payload.scope == "project":
+        if not project_id:
+            raise HTTPException(status_code=422, detail="Project budget policy requires project_id")
+        get_project_or_404(db, workspace_id, project_id)
+    caps = _settings_budget_caps(request.app.state.settings)
+    defaults = _sanitize_budget_values(payload.defaults, caps)
+    hard_caps = _sanitize_budget_values(payload.hard_caps, caps)
+    policy = _budget_policy_for_scope(
+        db,
+        workspace_id=workspace_id,
+        scope=payload.scope,
+        project_id=project_id,
+        purpose=payload.purpose,
+    )
+    before = None
+    if policy is None:
+        policy = AgentBudgetPolicy(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            scope=payload.scope,
+            purpose=payload.purpose,
+            defaults=defaults,
+            hard_caps=hard_caps,
+            updated_by=actor_email,
+        )
+        db.add(policy)
+        action = "agent_budget_policy.created"
+    else:
+        before = {"defaults": policy.defaults, "hard_caps": policy.hard_caps}
+        policy.defaults = defaults
+        policy.hard_caps = hard_caps
+        policy.updated_by = actor_email
+        policy.updated_at = now_utc()
+        action = "agent_budget_policy.updated"
+    db.flush()
+    audit(
+        db,
+        workspace_id=workspace_id,
+        actor_email=actor_email,
+        action=action,
+        entity_type="AgentBudgetPolicy",
+        entity_id=policy.id,
+        summary=f"Updated {policy.scope} agent budget policy",
+        before=before,
+        after={
+            "scope": policy.scope,
+            "project_id": policy.project_id,
+            "purpose": policy.purpose,
+            "defaults": policy.defaults,
+            "hard_caps": policy.hard_caps,
+        },
+    )
+    db.commit()
+    db.refresh(policy)
+    return budget_policy_to_response(policy)
 
 
 def _agent_run_execution_response(db: Session, result) -> AgentRunExecuteResponse:
@@ -1003,18 +1483,47 @@ def execute_agent_run(
     payload: AgentRunExecuteRequest,
     db: DbSession,
     request: Request,
+    response: Response,
     actor_email: ActorEmail,
 ) -> AgentRunExecuteResponse:
     run = get_run_or_404(db, workspace_id, run_id)
     if run.mode != AgentRunMode.execute.value:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent execute requires an execute mode run")
 
+    settings = request.app.state.settings
+    if not settings.agent_execute_sync_mode:
+        from app.agent_temporal import AgentTemporalUnavailable, start_agent_run_workflow
+
+        starter = getattr(request.app.state, "agent_workflow_starter", start_agent_run_workflow)
+        try:
+            started = starter(
+                db=db,
+                settings=settings,
+                run=run,
+                workspace_id=workspace_id,
+                repository_id=payload.repository_id,
+                ref=payload.ref,
+                candidate_limit=payload.candidate_limit,
+                actor_email=actor_email,
+            )
+        except AgentTemporalUnavailable as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        response.status_code = status.HTTP_202_ACCEPTED
+        db.refresh(run)
+        return AgentRunExecuteResponse(
+            run=run_to_response(run),
+            summary=started.get("summary", "Agent workflow started"),
+            staged_outputs=[],
+            tool_calls=[],
+            sandboxes=[],
+        )
+
     from app.agent_graph import AgentGraphConflict, AgentPolicyViolation, execute_agent_graph
 
     try:
         result = execute_agent_graph(
             db=db,
-            settings=request.app.state.settings,
+            settings=settings,
             workspace_id=workspace_id,
             run_id=run_id,
             repository_id=payload.repository_id,
@@ -1036,15 +1545,57 @@ def _merge_budget_override(run: AgentRun, override: dict[str, Any]) -> tuple[dic
     after = dict(before)
     usage = before.get("usage")
     last_execute_request = before.get("last_execute_request")
+    hard_caps = {key: int(value) for key, value in dict(before.get("system_hard_caps") or {}).items() if key in AGENT_BUDGET_NUMERIC_KEYS}
+    changed_keys: list[str] = []
     for key, value in override.items():
-        if key in {"usage", "last_execute_request"}:
+        if key in {"usage", "last_execute_request", "limits", "system_hard_caps", "budget_sources"}:
             continue
-        after[key] = value
+        if key in AGENT_BUDGET_NUMERIC_KEYS:
+            try:
+                numeric = max(0, int(value))
+            except (TypeError, ValueError):
+                continue
+            after[key] = min(numeric, hard_caps.get(key, numeric))
+        else:
+            after[key] = value
+        changed_keys.append(key)
     if usage is not None:
         after["usage"] = usage
     if last_execute_request is not None:
         after["last_execute_request"] = last_execute_request
+    if changed_keys:
+        sources = [
+            source
+            for source in list(before.get("budget_sources") or [])
+            if not (isinstance(source, dict) and source.get("scope") == "resume_override")
+        ]
+        sources.append({"scope": "resume_override", "keys": sorted(set(changed_keys))})
+        after["budget_sources"] = sources
     run.budget_snapshot = after
+    return before, after
+
+
+def apply_agent_run_budget_override(
+    db: Session,
+    *,
+    run: AgentRun,
+    workspace_id: str,
+    actor_email: str,
+    budget_snapshot: dict[str, Any],
+    resume_reason: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    before, after = _merge_budget_override(run, budget_snapshot)
+    audit(
+        db,
+        workspace_id=workspace_id,
+        actor_email=actor_email,
+        action="agent_run.budget_overridden",
+        entity_type="AgentRun",
+        entity_id=run.id,
+        summary=resume_reason or "Resumed agent run with budget override",
+        before={"budget_snapshot": before},
+        after={"budget_snapshot": after, "resume_reason": resume_reason},
+    )
     return before, after
 
 
@@ -1089,22 +1640,45 @@ def resume_agent_run(
     if run.status not in {AgentRunStatus.waiting_for_user.value, AgentRunStatus.failed.value}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only waiting or failed agent runs can be resumed")
 
+    settings = request.app.state.settings
+    if not settings.agent_execute_sync_mode and run.temporal_workflow_id:
+        apply_agent_run_budget_override(
+            db,
+            run=run,
+            workspace_id=workspace_id,
+            actor_email=actor_email,
+            budget_snapshot=payload.budget_snapshot,
+            resume_reason=payload.resume_reason,
+        )
+        db.commit()
+        from app.agent_temporal import AgentTemporalUnavailable, signal_agent_run_resume
+
+        signal_resume = getattr(request.app.state, "agent_workflow_resume_signaler", signal_agent_run_resume)
+        try:
+            signal_resume(db=db, settings=settings, run=run, actor_email=actor_email, resume_reason=payload.resume_reason)
+        except AgentTemporalUnavailable as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        db.refresh(run)
+        return AgentRunExecuteResponse(
+            run=run_to_response(run),
+            summary="Agent workflow resume signal sent",
+            staged_outputs=[],
+            tool_calls=[],
+            sandboxes=[],
+        )
+
     try:
         repository_id, ref, candidate_limit = _resume_execution_context(db, run)
     except AgentRunStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
-    before, after = _merge_budget_override(run, payload.budget_snapshot)
-    audit(
+    apply_agent_run_budget_override(
         db,
+        run=run,
         workspace_id=workspace_id,
         actor_email=actor_email,
-        action="agent_run.budget_overridden",
-        entity_type="AgentRun",
-        entity_id=run.id,
-        summary=payload.resume_reason or "Resumed agent run with budget override",
-        before={"budget_snapshot": before},
-        after={"budget_snapshot": after, "resume_reason": payload.resume_reason},
+        budget_snapshot=payload.budget_snapshot,
+        resume_reason=payload.resume_reason,
     )
     db.commit()
 
@@ -1113,7 +1687,7 @@ def resume_agent_run(
     try:
         result = execute_agent_graph(
             db=db,
-            settings=request.app.state.settings,
+            settings=settings,
             workspace_id=workspace_id,
             run_id=run_id,
             repository_id=repository_id,
@@ -1137,6 +1711,7 @@ def cancel_agent_run(
     run_id: str,
     payload: AgentRunCancelRequest,
     db: DbSession,
+    request: Request,
     actor_email: ActorEmail,
 ) -> AgentRunResponse:
     run = get_run_or_404(db, workspace_id, run_id)
@@ -1156,6 +1731,21 @@ def cancel_agent_run(
     )
     db.commit()
     db.refresh(run)
+    if not request.app.state.settings.agent_execute_sync_mode and run.temporal_workflow_id:
+        from app.agent_temporal import AgentTemporalUnavailable, cancel_agent_run_workflow
+
+        cancel_workflow = getattr(request.app.state, "agent_workflow_canceller", cancel_agent_run_workflow)
+        try:
+            cancel_workflow(
+                settings=request.app.state.settings,
+                workflow_id=run.temporal_workflow_id,
+                cancel_reason=payload.cancel_reason or "Agent run cancelled by user",
+                actor_email=actor_email,
+            )
+        except AgentTemporalUnavailable:
+            # The product cancellation state is still authoritative; Temporal may
+            # already be down or the workflow may have completed between requests.
+            pass
     return run_to_response(run)
 
 
@@ -1169,6 +1759,11 @@ def get_agent_execution_detail(workspace_id: str, run_id: str, db: DbSession) ->
     ).all()
     tool_calls = db.scalars(
         select(AgentToolCall).where(AgentToolCall.agent_run_id == run.id).order_by(AgentToolCall.created_at, AgentToolCall.id)
+    ).all()
+    subagent_runs = db.scalars(
+        select(AgentSubagentRun)
+        .where(AgentSubagentRun.agent_run_id == run.id, AgentSubagentRun.workspace_id == workspace_id)
+        .order_by(AgentSubagentRun.created_at, AgentSubagentRun.id)
     ).all()
     invocations = db.scalars(
         select(AIInvocationLog)
@@ -1189,11 +1784,134 @@ def get_agent_execution_detail(workspace_id: str, run_id: str, db: DbSession) ->
         run=run_to_response(run),
         staged_outputs=[staged_output_to_response(db, output) for output in staged_outputs],
         tool_calls=[tool_call_to_response(tool_call) for tool_call in tool_calls],
+        subagent_runs=[subagent_run_to_response(subagent_run) for subagent_run in subagent_runs],
         ai_invocations=[invocation_to_response(invocation) for invocation in invocations],
         repository_sandboxes=[sandbox_to_response(sandbox) for sandbox in sandboxes],
         budget=budget_response_for_run(run),
         pending_approvals=[approval_to_response(approval) for approval in pending_approvals],
     )
+
+
+@router.get("/agent/memory/files", response_model=list[AgentMemoryFileResponse])
+def list_agent_memory_files(
+    workspace_id: str,
+    db: DbSession,
+    project_id: str | None = Query(default=None, max_length=64),
+    scope: str | None = Query(default=None, max_length=40),
+) -> list[AgentMemoryFileResponse]:
+    get_workspace_or_404(db, workspace_id)
+    if project_id:
+        get_project_or_404(db, workspace_id, project_id)
+    from app.agent_memory import list_memory_files
+
+    return [
+        memory_file_to_response(memory_file)
+        for memory_file in list_memory_files(db, workspace_id=workspace_id, project_id=project_id, scope=scope)
+    ]
+
+
+@router.get("/agent/memory/files/{memory_file_id}/versions", response_model=list[AgentMemoryVersionResponse])
+def list_agent_memory_versions(workspace_id: str, memory_file_id: str, db: DbSession) -> list[AgentMemoryVersionResponse]:
+    memory_file = get_memory_file_or_404(db, workspace_id, memory_file_id)
+    versions = db.scalars(
+        select(AgentMemoryVersion)
+        .where(AgentMemoryVersion.memory_file_id == memory_file.id)
+        .order_by(AgentMemoryVersion.version.desc(), AgentMemoryVersion.id.desc())
+    ).all()
+    return [memory_version_to_response(version) for version in versions]
+
+
+@router.get("/agent/memory/search", response_model=list[AgentMemorySearchResult])
+def search_agent_memory(
+    workspace_id: str,
+    db: DbSession,
+    query: str = Query(default="", max_length=500),
+    project_id: str | None = Query(default=None, max_length=64),
+    scope: str | None = Query(default=None, max_length=40),
+    limit: int = Query(default=10, ge=1, le=50),
+) -> list[AgentMemorySearchResult]:
+    get_workspace_or_404(db, workspace_id)
+    if project_id:
+        get_project_or_404(db, workspace_id, project_id)
+    from app.agent_memory import search_memory
+
+    results = search_memory(
+        db,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        scope=scope,
+        query=query,
+        limit=limit,
+    )
+    return [
+        AgentMemorySearchResult(
+            memory_file=memory_file_to_response(item["memory_file"]),
+            score=int(item["score"]),
+            snippet=str(item["snippet"]),
+        )
+        for item in results
+    ]
+
+
+@router.post("/agent/memory/curate", response_model=AgentMemoryFileResponse)
+def curate_agent_memory(
+    workspace_id: str,
+    payload: AgentMemoryCurateRequest,
+    db: DbSession,
+    request: Request,
+    actor_email: ActorEmail,
+) -> AgentMemoryFileResponse:
+    get_workspace_or_404(db, workspace_id)
+    if payload.project_id:
+        get_project_or_404(db, workspace_id, payload.project_id)
+    from app.agent_memory import curate_memory_file
+
+    try:
+        memory_file = curate_memory_file(
+            db,
+            settings=request.app.state.settings,
+            workspace_id=workspace_id,
+            scope=payload.scope,
+            project_id=payload.project_id,
+            user_id=payload.user_id,
+            content=payload.content,
+            actor_email=actor_email,
+            reason=payload.reason,
+            patch_summary=payload.patch_summary,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(memory_file)
+    return memory_file_to_response(memory_file)
+
+
+@router.post("/agent/memory/files/{memory_file_id}/rollback", response_model=AgentMemoryFileResponse)
+def rollback_agent_memory(
+    workspace_id: str,
+    memory_file_id: str,
+    payload: AgentMemoryRollbackRequest,
+    db: DbSession,
+    request: Request,
+    actor_email: ActorEmail,
+) -> AgentMemoryFileResponse:
+    memory_file = get_memory_file_or_404(db, workspace_id, memory_file_id)
+    from app.agent_memory import rollback_memory_file
+
+    try:
+        rolled_back = rollback_memory_file(
+            db,
+            settings=request.app.state.settings,
+            memory_file=memory_file,
+            target_version=payload.target_version,
+            actor_email=actor_email,
+            reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(rolled_back)
+    return memory_file_to_response(rolled_back)
 
 
 @router.post("/agent/runs/{run_id}/staged-outputs", response_model=AgentStagedOutputResponse, status_code=status.HTTP_201_CREATED)
@@ -1284,6 +2002,8 @@ def record_tool_call(
     )
     db.add(tool_call)
     db.flush()
+    AGENT_TOOL_CALLS_TOTAL.labels(tool=tool_call.tool_name, status=tool_call.status).inc()
+    AGENT_TOOL_DURATION_SECONDS.labels(tool=tool_call.tool_name, status=tool_call.status).observe(max(0, tool_call.duration_ms) / 1000)
     audit(
         db,
         workspace_id=workspace_id,
@@ -1372,6 +2092,9 @@ def decide_approval(
     approval.decided_by = actor_email
     approval.decision_summary = payload.decision_summary
     approval.decided_at = now_utc()
+    AGENT_APPROVAL_WAIT_SECONDS.labels(approval_type=approval.approval_type, status=approval.status).observe(
+        elapsed_seconds(approval.created_at, approval.decided_at)
+    )
     audit(
         db,
         workspace_id=workspace_id,
@@ -1412,6 +2135,7 @@ def decide_staged_output(
         action = "agent_staged_output.rejected"
     else:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Decision must accept or reject staged output")
+    AGENT_STAGED_OUTPUT_DECISIONS_TOTAL.labels(output_type=output.output_type, status=output.status).inc()
 
     coverage_entries = db.scalars(
         select(CoverageIndexEntry).where(CoverageIndexEntry.source_type == "staged_output", CoverageIndexEntry.source_id == output.id)

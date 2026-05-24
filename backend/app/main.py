@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,7 @@ from app.health import check_redis
 from app.modules import router as modules_router
 from app.release_reports import router as release_reports_router
 from app.test_plans import router as test_plans_router
+from app.telemetry import agent_span, configure_telemetry, prometheus_response
 from app.workspaces import router as workspace_router
 
 
@@ -38,6 +39,7 @@ class SessionResponse(BaseModel):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    configure_telemetry(settings)
 
     app = FastAPI(
         title=settings.app_name,
@@ -54,6 +56,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def telemetry_request_span(request: Request, call_next) -> Response:
+        with agent_span("api.request", http_method=request.method, http_path=request.url.path) as span:
+            response = await call_next(request)
+            span.set_attribute("http_status_code", response.status_code)
+            return response
 
     @app.get("/")
     async def root() -> dict[str, str]:
@@ -87,6 +96,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "worker": {"status": "configured", "detail": "worker service uses Redis for heartbeat and jobs"},
             },
         }
+
+    @app.get("/api/metrics")
+    async def metrics() -> Response:
+        body, media_type = prometheus_response()
+        return Response(content=body, media_type=media_type)
 
     @app.post("/api/auth/login", response_model=SessionResponse)
     async def login(payload: LoginRequest) -> SessionResponse:

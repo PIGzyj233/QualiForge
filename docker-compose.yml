@@ -27,6 +27,8 @@ services:
 
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
+    profiles:
+      - model-gateway
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     env_file:
       - path: .env
@@ -43,6 +45,18 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+
+  temporal:
+    image: temporalio/temporal:latest
+    command: ["server", "start-dev", "--ip", "0.0.0.0"]
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "localhost:7233"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   backend:
     build:
@@ -64,17 +78,31 @@ services:
       QUALIFORGE_MODEL_GATEWAY_DEFAULT_MODEL: ${QUALIFORGE_MODEL_GATEWAY_DEFAULT_MODEL:-qf-supervisor-strong}
       QUALIFORGE_MODEL_GATEWAY_TIMEOUT_SECONDS: ${QUALIFORGE_MODEL_GATEWAY_TIMEOUT_SECONDS:-30}
       QUALIFORGE_MODEL_GATEWAY_MAX_ATTEMPTS: ${QUALIFORGE_MODEL_GATEWAY_MAX_ATTEMPTS:-3}
+      QUALIFORGE_TEMPORAL_ADDRESS: ${QUALIFORGE_TEMPORAL_ADDRESS:-temporal:7233}
+      QUALIFORGE_TEMPORAL_NAMESPACE: ${QUALIFORGE_TEMPORAL_NAMESPACE:-default}
+      QUALIFORGE_AGENT_TASK_QUEUE: ${QUALIFORGE_AGENT_TASK_QUEUE:-qualiforge-agent-runs}
+      QUALIFORGE_AGENT_EXECUTE_SYNC_MODE: ${QUALIFORGE_AGENT_EXECUTE_SYNC_MODE:-false}
+      QUALIFORGE_AGENT_MEMORY_ROOT: ${QUALIFORGE_AGENT_MEMORY_ROOT:-/data/agent-memory}
+      QUALIFORGE_TELEMETRY_SERVICE_NAME: ${QUALIFORGE_TELEMETRY_SERVICE_NAME:-qualiforge-backend}
+      QUALIFORGE_TELEMETRY_OTLP_ENABLED: ${QUALIFORGE_TELEMETRY_OTLP_ENABLED:-false}
+      QUALIFORGE_TELEMETRY_OTLP_ENDPOINT: ${QUALIFORGE_TELEMETRY_OTLP_ENDPOINT:-}
+      QUALIFORGE_TELEMETRY_OTLP_HEADERS: ${QUALIFORGE_TELEMETRY_OTLP_HEADERS:-}
+      QUALIFORGE_TELEMETRY_LANGFUSE_ENABLED: ${QUALIFORGE_TELEMETRY_LANGFUSE_ENABLED:-false}
+      QUALIFORGE_TELEMETRY_LANGFUSE_HOST: ${QUALIFORGE_TELEMETRY_LANGFUSE_HOST:-}
+      QUALIFORGE_TELEMETRY_LANGFUSE_PUBLIC_KEY: ${QUALIFORGE_TELEMETRY_LANGFUSE_PUBLIC_KEY:-}
+      QUALIFORGE_TELEMETRY_LANGFUSE_SECRET_KEY: ${QUALIFORGE_TELEMETRY_LANGFUSE_SECRET_KEY:-}
     ports:
       - "8000:8000"
     volumes:
       - git_sandbox_data:/data/git-sandbox
       - import_data:/data/imports
+      - agent_memory_data:/data/agent-memory
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      litellm:
+      temporal:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).read()"]
@@ -103,15 +131,29 @@ services:
       QUALIFORGE_MODEL_GATEWAY_DEFAULT_MODEL: ${QUALIFORGE_MODEL_GATEWAY_DEFAULT_MODEL:-qf-supervisor-strong}
       QUALIFORGE_MODEL_GATEWAY_TIMEOUT_SECONDS: ${QUALIFORGE_MODEL_GATEWAY_TIMEOUT_SECONDS:-30}
       QUALIFORGE_MODEL_GATEWAY_MAX_ATTEMPTS: ${QUALIFORGE_MODEL_GATEWAY_MAX_ATTEMPTS:-3}
+      QUALIFORGE_TEMPORAL_ADDRESS: ${QUALIFORGE_TEMPORAL_ADDRESS:-temporal:7233}
+      QUALIFORGE_TEMPORAL_NAMESPACE: ${QUALIFORGE_TEMPORAL_NAMESPACE:-default}
+      QUALIFORGE_AGENT_TASK_QUEUE: ${QUALIFORGE_AGENT_TASK_QUEUE:-qualiforge-agent-runs}
+      QUALIFORGE_AGENT_EXECUTE_SYNC_MODE: ${QUALIFORGE_AGENT_EXECUTE_SYNC_MODE:-false}
+      QUALIFORGE_AGENT_MEMORY_ROOT: ${QUALIFORGE_AGENT_MEMORY_ROOT:-/data/agent-memory}
+      QUALIFORGE_TELEMETRY_SERVICE_NAME: ${QUALIFORGE_TELEMETRY_SERVICE_NAME:-qualiforge-worker}
+      QUALIFORGE_TELEMETRY_OTLP_ENABLED: ${QUALIFORGE_TELEMETRY_OTLP_ENABLED:-false}
+      QUALIFORGE_TELEMETRY_OTLP_ENDPOINT: ${QUALIFORGE_TELEMETRY_OTLP_ENDPOINT:-}
+      QUALIFORGE_TELEMETRY_OTLP_HEADERS: ${QUALIFORGE_TELEMETRY_OTLP_HEADERS:-}
+      QUALIFORGE_TELEMETRY_LANGFUSE_ENABLED: ${QUALIFORGE_TELEMETRY_LANGFUSE_ENABLED:-false}
+      QUALIFORGE_TELEMETRY_LANGFUSE_HOST: ${QUALIFORGE_TELEMETRY_LANGFUSE_HOST:-}
+      QUALIFORGE_TELEMETRY_LANGFUSE_PUBLIC_KEY: ${QUALIFORGE_TELEMETRY_LANGFUSE_PUBLIC_KEY:-}
+      QUALIFORGE_TELEMETRY_LANGFUSE_SECRET_KEY: ${QUALIFORGE_TELEMETRY_LANGFUSE_SECRET_KEY:-}
     volumes:
       - git_sandbox_data:/data/git-sandbox
       - import_data:/data/imports
+      - agent_memory_data:/data/agent-memory
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      litellm:
+      temporal:
         condition: service_healthy
 
   web:
@@ -127,3 +169,4 @@ volumes:
   postgres_data:
   git_sandbox_data:
   import_data:
+  agent_memory_data:

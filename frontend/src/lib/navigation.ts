@@ -1,7 +1,8 @@
-import { ClipboardCheck, FileInput, FileText, GitBranch, LayoutDashboard, Lightbulb, ListChecks, ShieldCheck, Users } from "lucide-react";
+import { Bot, ClipboardCheck, FileInput, FileText, GitBranch, LayoutDashboard, Lightbulb, ListChecks, ShieldCheck, Users } from "lucide-react";
 
 export const navItems = [
   { key: "workbench", label: "工作台", icon: LayoutDashboard },
+  { key: "agent", label: "Agent", icon: Bot },
   { key: "projects", label: "项目", icon: GitBranch },
   { key: "library", label: "用例库", icon: ClipboardCheck },
   { key: "reviews", label: "评审队列", icon: Users },

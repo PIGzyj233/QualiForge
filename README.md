@@ -9,11 +9,46 @@ Copy-Item .env.example .env
 docker compose up --build
 ```
 
+The default Compose stack starts the Temporal-backed agent path without pulling
+the optional LiteLLM model-gateway image. To exercise real model calls through
+the bundled LiteLLM gateway, start the stack with:
+
+```powershell
+docker compose --profile model-gateway up --build
+```
+
 Then open:
 
 - Web workbench: http://localhost:5173
 - Backend health: http://localhost:8000/api/health
 - Detailed health: http://localhost:8000/api/health/detailed
+
+Temporal-backed agent execution is enabled by default in Docker Compose. After
+the stack is healthy, the durable workflow path can be smoke-tested without the
+model-gateway profile with:
+
+```powershell
+python scripts/smoke_temporal_compose.py
+```
+
+The smoke test creates a temporary workspace, container-local Git repository,
+repository sync job, Temporal-backed Agent run, detail refresh, resume signal,
+and cancellation.
+
+If Docker cannot pull `temporalio/temporal:latest`, the Compose smoke is an
+environment prerequisite failure rather than an agent implementation failure.
+The SDK-level durable workflow path can still be verified locally without Docker
+with:
+
+```powershell
+Set-Location backend
+uv run pytest tests/test_agent_temporal_workflow.py tests/test_agent_temporal_api_integration.py
+```
+
+Those tests run a real Temporal Python test environment and worker, covering the
+workflow id, activity retry, timeout failure, child workflows, resume signal,
+cancel path, and the API execute/resume/cancel round trip. The Compose smoke is
+still the product-mode check once the Temporal image is available.
 
 The current implementation covers the first MVP platform slice:
 

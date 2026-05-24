@@ -267,3 +267,94 @@ def test_database_init_upgrades_legacy_ai_invocation_log_schema(tmp_path: Path) 
     assert row["attempts"] == 0
     assert row["usage"] == "{}"
     assert row["raw_invocation_id"] == ""
+
+
+def test_database_init_upgrades_legacy_test_case_schema(tmp_path: Path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'legacy-cases.db'}"
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE test_cases (
+                    id VARCHAR(32) PRIMARY KEY,
+                    workspace_id VARCHAR(32) NOT NULL,
+                    project_id VARCHAR(32) NOT NULL,
+                    module_id VARCHAR(32),
+                    import_batch_id VARCHAR(32),
+                    title VARCHAR(300) NOT NULL,
+                    steps JSON NOT NULL DEFAULT '[]',
+                    expected_result VARCHAR(2000) NOT NULL DEFAULT '',
+                    priority VARCHAR(32) NOT NULL DEFAULT 'P2',
+                    risk VARCHAR(80) NOT NULL DEFAULT 'medium',
+                    tags JSON NOT NULL DEFAULT '[]',
+                    custom_fields JSON NOT NULL DEFAULT '{}',
+                    status VARCHAR(32) NOT NULL DEFAULT 'draft',
+                    submitted_by VARCHAR(254) NOT NULL DEFAULT '',
+                    approved_by VARCHAR(254) NOT NULL DEFAULT '',
+                    current_revision_number INTEGER NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO test_cases (
+                    id, workspace_id, project_id, module_id, import_batch_id,
+                    title, steps, status, submitted_by, created_at, updated_at
+                )
+                VALUES
+                    (
+                        'case-approved', 'workspace-1', 'project-1', 'module-1', 'batch-1',
+                        'Approved legacy case', '[]', 'approved', 'reviewer@qualiforge.local',
+                        '2026-05-24 00:00:00', '2026-05-24 00:00:00'
+                    ),
+                    (
+                        'case-archived', 'workspace-1', 'project-1', NULL, NULL,
+                        'Archived legacy case', '[]', 'archived', '',
+                        '2026-05-24 00:00:00', '2026-05-24 00:00:00'
+                    )
+                """
+            )
+        )
+
+    database = Database(database_url)
+    database.init()
+
+    inspector = inspect(database.engine)
+    columns = {column["name"] for column in inspector.get_columns("test_cases")}
+    assert {
+        "lifecycle_status",
+        "current_revision_id",
+        "current_module_id",
+        "source_type",
+        "source_ref",
+        "created_by",
+    } <= columns
+    indexes = {index["name"] for index in inspector.get_indexes("test_cases")}
+    assert "ix_test_cases_lifecycle_status" in indexes
+    assert "ix_test_cases_current_module_id" in indexes
+
+    with database.engine.connect() as connection:
+        rows = {
+            row["id"]: row
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT id, lifecycle_status, current_module_id, source_type, source_ref, created_by
+                    FROM test_cases
+                    ORDER BY id
+                    """
+                )
+            ).mappings()
+        }
+
+    assert rows["case-approved"]["lifecycle_status"] == "active"
+    assert rows["case-approved"]["current_module_id"] == "module-1"
+    assert rows["case-approved"]["source_type"] == "import"
+    assert rows["case-approved"]["source_ref"] == "{}"
+    assert rows["case-approved"]["created_by"] == "reviewer@qualiforge.local"
+    assert rows["case-archived"]["lifecycle_status"] == "archived"

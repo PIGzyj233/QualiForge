@@ -29,6 +29,39 @@ class Settings(BaseSettings):
     model_gateway_default_model: str = "qf-supervisor-strong"
     model_gateway_timeout_seconds: int = 30
     model_gateway_max_attempts: int = 3
+    temporal_address: str = "localhost:7233"
+    temporal_namespace: str = "default"
+    agent_task_queue: str = "qualiforge-agent-runs"
+    agent_execute_sync_mode: bool = True
+    agent_workflow_timeout_minutes: int = 30
+    agent_activity_start_to_close_timeout_minutes: int = 25
+    agent_activity_heartbeat_timeout_seconds: int = 30
+    agent_activity_retry_attempts: int = 3
+    agent_default_max_tool_calls: int = 60
+    agent_default_max_subagents: int = 4
+    agent_default_max_parallel_subagents: int = 3
+    agent_default_max_model_calls: int = 20
+    agent_default_max_case_candidates_per_run: int = 30
+    agent_default_max_wall_time_minutes: int = 20
+    agent_default_max_total_source_chars_sent: int = 200000
+    agent_system_max_tool_calls: int = 200
+    agent_system_max_subagents: int = 12
+    agent_system_max_parallel_subagents: int = 6
+    agent_system_max_model_calls: int = 40
+    agent_system_max_case_candidates_per_run: int = 100
+    agent_system_max_wall_time_minutes: int = 60
+    agent_system_max_total_source_chars_sent: int = 500000
+    agent_memory_root: str = ".qualiforge/agent-memory"
+    telemetry_service_name: str = "qualiforge-backend"
+    telemetry_otlp_enabled: bool = False
+    telemetry_otlp_endpoint: str = ""
+    telemetry_otlp_headers: str = ""
+    telemetry_trace_console_enabled: bool = False
+    telemetry_prometheus_enabled: bool = True
+    telemetry_langfuse_enabled: bool = False
+    telemetry_langfuse_host: str = ""
+    telemetry_langfuse_public_key: str = ""
+    telemetry_langfuse_secret_key: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:

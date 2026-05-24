@@ -20,9 +20,11 @@ import { ReportsView } from "./ReportsView";
 import { ReviewsView } from "./ReviewsView";
 import { SettingsView } from "./SettingsView";
 import { TestPlanAdmin } from "./TestPlanAdmin";
+import { AgentWorkbenchView } from "./AgentWorkbenchView";
 
 const navTitles: Record<NavKey, string> = {
   workbench: "工作台",
+  agent: "Agent Workbench",
   projects: "项目管理",
   library: "用例库",
   reviews: "评审队列",
@@ -216,6 +218,7 @@ export function Workbench({ session, onSignOut }: { session: Session; onSignOut:
           </>
         ) : null}
 
+        {activeNav === "agent" ? <AgentWorkbenchView session={session} /> : null}
         {activeNav === "projects" ? <ProjectsView session={session} /> : null}
         {activeNav === "library" ? <LibraryView session={session} /> : null}
         {activeNav === "reviews" ? <ReviewsView session={session} /> : null}

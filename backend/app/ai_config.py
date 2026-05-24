@@ -101,6 +101,9 @@ class AIInvocationLog(Base):
     provider_name: Mapped[str] = mapped_column(String(120), default="", nullable=False, index=True)
     model_alias: Mapped[str] = mapped_column(String(160), default="", nullable=False, index=True)
     model_name: Mapped[str] = mapped_column(String(160), default="", nullable=False, index=True)
+    prompt_hash: Mapped[str] = mapped_column(String(80), default="", nullable=False, index=True)
+    prompt_version: Mapped[str] = mapped_column(String(80), default="", nullable=False, index=True)
+    subagent_name: Mapped[str] = mapped_column(String(80), default="", nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default=AIInvocationStatus.queued.value, nullable=False, index=True)
     input_summary: Mapped[str] = mapped_column(String(500), nullable=False)
     input_data_types: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -221,6 +224,9 @@ class AIInvocationResponse(BaseModel):
     provider_name: str
     model_alias: str
     model_name: str
+    prompt_hash: str
+    prompt_version: str
+    subagent_name: str
     status: str
     input_summary: str
     input_data_types: list[str]
@@ -315,6 +321,9 @@ def invocation_to_response(invocation: AIInvocationLog) -> AIInvocationResponse:
         provider_name=invocation.provider_name,
         model_alias=invocation.model_alias,
         model_name=invocation.model_name,
+        prompt_hash=invocation.prompt_hash,
+        prompt_version=invocation.prompt_version,
+        subagent_name=invocation.subagent_name,
         status=invocation.status,
         input_summary=invocation.input_summary,
         input_data_types=invocation.input_data_types,

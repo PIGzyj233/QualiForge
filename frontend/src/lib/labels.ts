@@ -19,6 +19,7 @@ export const statusLabel: Record<string, string> = {
   synced: "已同步",
   sync_failed: "同步失败",
   running: "运行中",
+  waiting_for_user: "等待用户",
   cancelled: "已取消",
   uploaded: "已上传",
   preview_ready: "可预览",
