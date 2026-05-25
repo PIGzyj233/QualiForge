@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(npx vite *)",
+      "Bash(uv run *)",
+      "Bash(echo \"EXIT=$?\")"
+    ]
+  }
+}

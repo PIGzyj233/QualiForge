@@ -1,5 +1,10 @@
 const API_BASE = import.meta.env.VITE_API_URL ?? "/api";
 
+export type CaseStep = {
+  action: string;
+  expected: string;
+};
+
 export type HealthPayload = {
   status: "ok" | "degraded";
   service: string;
@@ -646,8 +651,7 @@ export type ImportDraftRecord = {
   case_draft_id: string | null;
   review_cycle_id: string | null;
   title: string;
-  steps: string[];
-  expected_result: string;
+  steps: CaseStep[];
   priority: string;
   risk: string;
   tags: string[];
@@ -712,8 +716,7 @@ export type CaseDraftRecord = {
   base_revision_id: string | null;
   module_id: string | null;
   title: string;
-  steps: string[];
-  expected_result: string;
+  steps: CaseStep[];
   priority: string;
   risk: string;
   tags: string[];
@@ -775,8 +778,7 @@ export type CaseRevisionRecord = {
 export type TestCasePayload = {
   module_id?: string | null;
   title: string;
-  steps: string[];
-  expected_result: string;
+  steps: CaseStep[];
   priority: string;
   risk: string;
   tags: string[];
@@ -1627,7 +1629,7 @@ export function updateImportDraft(
   batchId: string,
   draftId: string,
   actorEmail: string,
-  payload: Partial<Pick<ImportDraftRecord, "module_id" | "title" | "steps" | "expected_result" | "priority" | "risk" | "tags" | "custom_fields">>
+  payload: Partial<Pick<ImportDraftRecord, "module_id" | "title" | "steps" | "priority" | "risk" | "tags" | "custom_fields">>
 ): Promise<ImportDraftRecord> {
   return requestJson<ImportDraftRecord>(
     `/workspaces/${workspaceId}/projects/${projectId}/imports/${batchId}/drafts/${draftId}?actor_email=${encodeURIComponent(actorEmail)}`,
@@ -1643,7 +1645,7 @@ export function bulkUpdateImportDrafts(
   projectId: string,
   batchId: string,
   actorEmail: string,
-  payload: Partial<Pick<ImportDraftRecord, "module_id" | "title" | "steps" | "expected_result" | "priority" | "risk" | "tags" | "custom_fields">> & {
+  payload: Partial<Pick<ImportDraftRecord, "module_id" | "title" | "steps" | "priority" | "risk" | "tags" | "custom_fields">> & {
     draft_ids?: string[];
   }
 ): Promise<ImportDraftRecord[]> {

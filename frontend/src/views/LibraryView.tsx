@@ -3,6 +3,7 @@ import { Archive, FilePlus2, GitCompareArrows, History, RefreshCcw } from "lucid
 import {
   addressReviewChanges,
   CaseDraftRecord,
+  CaseStep,
   createActiveEditDraft,
   createTestCase,
   getTestCase,
@@ -25,15 +26,20 @@ import { CaseRevisionViewer } from "../components/CaseRevisionViewer";
 import { CaseStatusBadge } from "../components/CaseStatusBadge";
 import { ModuleTree } from "../components/ModuleTree";
 import { ReviewStatusBadge } from "../components/ReviewStatusBadge";
+import { StepsEditor } from "../components/StepsEditor";
 import { statusLabel } from "../lib/labels";
 
 const detailTabs = ["基本信息", "草稿/正式", "对比", "评审记录", "版本历史", "来源血缘"] as const;
 
-function splitList(value: string) {
-  return value
-    .split(/\r?\n|[,，;；]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+function normalizeSteps(value: unknown): CaseStep[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      const o = item as Record<string, unknown>;
+      return { action: String(o.action ?? ""), expected: String(o.expected ?? "") };
+    }
+    return { action: String(item ?? ""), expected: "" };
+  });
 }
 
 function draftOrRevision(caseRecord: TestCaseRecord) {
@@ -41,8 +47,7 @@ function draftOrRevision(caseRecord: TestCaseRecord) {
   const snapshot = caseRecord.current_revision?.content_snapshot;
   return {
     title: draft?.title ?? String(snapshot?.title ?? caseRecord.title),
-    steps: draft?.steps ?? (Array.isArray(snapshot?.steps) ? snapshot.steps.map(String) : []),
-    expected: draft?.expected_result ?? String(snapshot?.expected_result ?? ""),
+    steps: draft?.steps ?? normalizeSteps(snapshot?.steps),
     priority: draft?.priority ?? String(snapshot?.priority ?? "P2"),
     risk: draft?.risk ?? String(snapshot?.risk ?? "medium"),
     tags: draft?.tags ?? (Array.isArray(snapshot?.tags) ? snapshot.tags.map(String) : [])
@@ -69,8 +74,10 @@ export function LibraryView({ session }: { session: Session }) {
   const [activeDetailTab, setActiveDetailTab] = useState<(typeof detailTabs)[number]>("基本信息");
   const [newTitle, setNewTitle] = useState("新的测试用例");
   const [newModuleId, setNewModuleId] = useState("");
-  const [newSteps, setNewSteps] = useState("打开目标功能\n执行关键路径");
-  const [newExpected, setNewExpected] = useState("行为符合预期");
+  const [newSteps, setNewSteps] = useState<CaseStep[]>([
+    { action: "打开目标功能", expected: "进入对应界面" },
+    { action: "执行关键路径", expected: "行为符合预期" }
+  ]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -151,8 +158,7 @@ export function LibraryView({ session }: { session: Session }) {
       const payload: TestCasePayload = {
         module_id: newModuleId || null,
         title: newTitle,
-        steps: splitList(newSteps),
-        expected_result: newExpected,
+        steps: newSteps.filter((step) => step.action.trim() || step.expected.trim()),
         priority: "P2",
         risk: "medium",
         tags: ["manual"],
@@ -334,8 +340,7 @@ export function LibraryView({ session }: { session: Session }) {
                   </option>
                 ))}
               </select>
-              <input value={newSteps} onChange={(event) => setNewSteps(event.target.value)} placeholder="步骤" />
-              <input value={newExpected} onChange={(event) => setNewExpected(event.target.value)} placeholder="预期结果" />
+              <StepsEditor steps={newSteps} onChange={setNewSteps} disabled={busy} />
               <button className="primary-button small" type="submit" disabled={busy || !selectedWorkspaceId || !selectedProjectId}>
                 创建草稿
               </button>
@@ -382,12 +387,14 @@ export function LibraryView({ session }: { session: Session }) {
                       <span>{selectedCase.source_type}</span>
                       <span>rev {selectedCase.current_revision_number}</span>
                     </div>
-                    <ol className="step-list">
-                      {selectedContent.steps.map((step) => (
-                        <li key={step}>{step}</li>
+                    <ol className="step-list paired">
+                      {selectedContent.steps.map((step, i) => (
+                        <li key={i}>
+                          <span className="step-action">{step.action || "(空步骤)"}</span>
+                          {step.expected ? <span className="step-expected">→ {step.expected}</span> : null}
+                        </li>
                       ))}
                     </ol>
-                    <p>{selectedContent.expected}</p>
                     <small>{selectedContent.tags.join(", ") || "无标签"}</small>
                   </div>
                 ) : null}
@@ -421,12 +428,14 @@ export function LibraryView({ session }: { session: Session }) {
                     {selectedCase.active_draft ? (
                       <div className="case-content">
                         <h3>{selectedCase.active_draft.title}</h3>
-                        <ol className="step-list">
-                          {selectedCase.active_draft.steps.map((step) => (
-                            <li key={step}>{step}</li>
+                        <ol className="step-list paired">
+                          {selectedCase.active_draft.steps.map((step, i) => (
+                            <li key={i}>
+                              <span className="step-action">{step.action || "(空步骤)"}</span>
+                              {step.expected ? <span className="step-expected">→ {step.expected}</span> : null}
+                            </li>
                           ))}
                         </ol>
-                        <p>{selectedCase.active_draft.expected_result}</p>
                       </div>
                     ) : (
                       <p className="empty-state">暂无待对比草稿</p>

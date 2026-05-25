@@ -186,12 +186,14 @@ export function ReviewQueueView({ session }: { session: Session }) {
                   <CaseRevisionViewer revision={selectedCase.current_revision} />
                   <div className="case-content">
                     <h3>{selectedCase.active_draft.title}</h3>
-                    <ol className="step-list">
-                      {selectedCase.active_draft.steps.map((step) => (
-                        <li key={step}>{step}</li>
+                    <ol className="step-list paired">
+                      {selectedCase.active_draft.steps.map((step, i) => (
+                        <li key={i}>
+                          <span className="step-action">{step.action || "(空步骤)"}</span>
+                          {step.expected ? <span className="step-expected">→ {step.expected}</span> : null}
+                        </li>
                       ))}
                     </ol>
-                    <p>{selectedCase.active_draft.expected_result}</p>
                   </div>
                 </div>
                 <label className="select-label">

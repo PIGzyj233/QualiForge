@@ -1,19 +1,20 @@
-import { FormEvent, useEffect, useState } from "react";
-import { FileText, FolderKanban, GitBranch, Network, PencilLine, Trash2 } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FolderPlus, GitBranch, Network, PencilLine, Plus, Trash2 } from "lucide-react";
 import {
   createMappingRule,
   createModule,
   deleteMappingRule,
   deleteModule,
   listMappingRules,
-  listModules,
+  listModuleTree,
   listProjects,
   listWorkspaces,
   MappingRuleType,
   MappingSource,
   ModuleMappingRuleRecord,
-  ProjectRecord,
+  ModuleTreeNode,
   ProjectModuleRecord,
+  ProjectRecord,
   Session,
   updateMappingRule,
   updateModule,
@@ -21,143 +22,305 @@ import {
 } from "../api";
 import { mappingRuleTypeLabel, mappingSourceLabel } from "../lib/labels";
 
+type DialogMode = { kind: "create"; parentId: string | null } | { kind: "edit"; module: ProjectModuleRecord } | null;
+
+function flattenTree(nodes: ModuleTreeNode[], acc: ProjectModuleRecord[] = []): ProjectModuleRecord[] {
+  for (const node of nodes) {
+    acc.push(node);
+    flattenTree(node.children, acc);
+  }
+  return acc;
+}
+
+function TreeNode({
+  node,
+  selectedId,
+  onSelect,
+  onAddChild,
+  onEdit,
+  onDelete
+}: {
+  node: ModuleTreeNode;
+  selectedId: string;
+  onSelect: (id: string) => void;
+  onAddChild: (parentId: string) => void;
+  onEdit: (module: ProjectModuleRecord) => void;
+  onDelete: (id: string) => void;
+}) {
+  const active = selectedId === node.id;
+  return (
+    <li className="module-tree-node">
+      <div className={active ? "module-tree-row active" : "module-tree-row"} style={{ paddingLeft: 6 + node.depth * 16 }}>
+        <button className="module-tree-label" type="button" onClick={() => onSelect(node.id)}>
+          <span>{node.name}</span>
+          <small>
+            {node.key || "—"} · {node.reference_count} 引用 · {node.mapping_rules.length} 映射
+          </small>
+        </button>
+        <div className="module-tree-actions">
+          <button className="icon-button subtle" type="button" onClick={() => onAddChild(node.id)} title="新增子模块">
+            <FolderPlus size={14} aria-hidden="true" />
+          </button>
+          <button className="icon-button subtle" type="button" onClick={() => onEdit(node)} title="编辑模块">
+            <PencilLine size={14} aria-hidden="true" />
+          </button>
+          <button className="icon-button subtle" type="button" onClick={() => onDelete(node.id)} title="删除模块">
+            <Trash2 size={14} aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+      {node.children.length ? (
+        <ul className="module-tree-children">
+          {node.children.map((child) => (
+            <TreeNode
+              key={child.id}
+              node={child}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              onAddChild={onAddChild}
+              onEdit={onEdit}
+              onDelete={onDelete}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+function ModuleDialog({
+  mode,
+  busy,
+  onClose,
+  onSubmit
+}: {
+  mode: DialogMode;
+  busy: boolean;
+  onClose: () => void;
+  onSubmit: (payload: {
+    name: string;
+    code: string;
+    slug: string;
+    description: string;
+    owner: string;
+    status: "active" | "archived";
+  }) => Promise<void>;
+}) {
+  const isEdit = mode?.kind === "edit";
+  const module = mode?.kind === "edit" ? mode.module : null;
+  const [name, setName] = useState(module?.name ?? "");
+  const [code, setCode] = useState(module?.key ?? "");
+  const [slug, setSlug] = useState(module?.slug ?? "");
+  const [description, setDescription] = useState(module?.description ?? "");
+  const [owner, setOwner] = useState(module?.owner ?? "");
+  const [status, setStatus] = useState<"active" | "archived">(module?.status ?? "active");
+
+  useEffect(() => {
+    if (mode?.kind === "edit") {
+      setName(mode.module.name);
+      setCode(mode.module.key);
+      setSlug(mode.module.slug);
+      setDescription(mode.module.description);
+      setOwner(mode.module.owner);
+      setStatus(mode.module.status);
+    } else if (mode?.kind === "create") {
+      setName("");
+      setCode("");
+      setSlug("");
+      setDescription("");
+      setOwner("");
+      setStatus("active");
+    }
+  }, [mode]);
+
+  if (!mode) return null;
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await onSubmit({ name, code, slug, description, owner, status });
+  }
+
+  return (
+    <div className="dialog-backdrop" onClick={onClose}>
+      <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={handleSubmit}>
+        <h3>{isEdit ? `编辑模块 · ${module?.path_label ?? ""}` : "新建模块"}</h3>
+        {!isEdit && mode.parentId ? <p className="panel-sub">将作为子模块新增。</p> : null}
+        <div className="form-row">
+          <label>
+            名称
+            <input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+          </label>
+          <label>
+            编号
+            <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="可选" />
+          </label>
+        </div>
+        <label>
+          Slug
+          <input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="留空自动生成" />
+        </label>
+        <label>
+          描述
+          <input value={description} onChange={(e) => setDescription(e.target.value)} />
+        </label>
+        <div className="form-row">
+          <label>
+            Owner
+            <input value={owner} onChange={(e) => setOwner(e.target.value)} />
+          </label>
+          {isEdit ? (
+            <label>
+              状态
+              <select value={status} onChange={(e) => setStatus(e.target.value as "active" | "archived")}>
+                <option value="active">Active</option>
+                <option value="archived">Archived</option>
+              </select>
+            </label>
+          ) : null}
+        </div>
+        <div className="form-row compact">
+          <button type="button" className="ghost-button" onClick={onClose} disabled={busy}>
+            取消
+          </button>
+          <button type="submit" className="primary-button" disabled={busy || !name.trim()}>
+            {isEdit ? "保存" : "创建"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export function ModuleMappingAdmin({ session }: { session: Session }) {
   const actorEmail = session.user.email;
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
-  const [modules, setModules] = useState<ProjectModuleRecord[]>([]);
+  const [tree, setTree] = useState<ModuleTreeNode[]>([]);
   const [mappingRules, setMappingRules] = useState<ModuleMappingRuleRecord[]>([]);
-  const [moduleKey, setModuleKey] = useState("PAYMENT");
-  const [moduleSlug, setModuleSlug] = useState("");
-  const [moduleParentId, setModuleParentId] = useState("");
-  const [moduleStatus, setModuleStatus] = useState<"active" | "archived">("active");
-  const [moduleName, setModuleName] = useState("支付与退款");
-  const [moduleDescription, setModuleDescription] = useState("Checkout payment and refund behavior");
-  const [moduleOwner, setModuleOwner] = useState("Checkout QA");
-  const [editingModuleId, setEditingModuleId] = useState<string | null>(null);
-  const [ruleModuleId, setRuleModuleId] = useState("");
+  const [selectedModuleId, setSelectedModuleId] = useState("");
+  const [dialog, setDialog] = useState<DialogMode>(null);
+
+  // Rule editor state
   const [ruleType, setRuleType] = useState<MappingRuleType>("directory");
   const [rulePattern, setRulePattern] = useState("backend/app/payments/**");
   const [ruleSource, setRuleSource] = useState<MappingSource>("manual");
   const [ruleDescription, setRuleDescription] = useState("Payment implementation surface");
   const [ruleConfidence, setRuleConfidence] = useState("90");
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
+  const allModules = useMemo(() => flattenTree(tree), [tree]);
+  const selectedModule = allModules.find((m) => m.id === selectedModuleId) ?? null;
+  const ruleList = useMemo(() => mappingRules.filter((r) => r.module_id === selectedModuleId), [mappingRules, selectedModuleId]);
+
   async function refreshProjectModules(workspaceId: string, projectId: string) {
-    const [nextModules, nextRules] = await Promise.all([listModules(workspaceId, projectId), listMappingRules(workspaceId, projectId)]);
-    setModules(nextModules);
+    const [nextTree, nextRules] = await Promise.all([
+      listModuleTree(workspaceId, projectId),
+      listMappingRules(workspaceId, projectId)
+    ]);
+    setTree(nextTree);
     setMappingRules(nextRules);
-    if (!ruleModuleId || !nextModules.some((module) => module.id === ruleModuleId)) {
-      setRuleModuleId(nextModules[0]?.id ?? "");
+    const flattened = flattenTree(nextTree);
+    if (!flattened.some((m) => m.id === selectedModuleId)) {
+      setSelectedModuleId(flattened[0]?.id ?? "");
     }
   }
 
-  async function refreshModuleWorkspaces(preferredWorkspaceId?: string, preferredProjectId?: string) {
+  async function refreshWorkspaces(preferredWorkspaceId?: string, preferredProjectId?: string) {
     setBusy(true);
     setMessage(null);
     try {
-      const nextWorkspaces = await listWorkspaces(actorEmail);
-      setWorkspaces(nextWorkspaces);
-      const nextWorkspaceId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
-      setSelectedWorkspaceId(nextWorkspaceId);
-      if (!nextWorkspaceId) {
+      const ws = await listWorkspaces(actorEmail);
+      setWorkspaces(ws);
+      const wid = preferredWorkspaceId || selectedWorkspaceId || ws[0]?.id || "";
+      setSelectedWorkspaceId(wid);
+      if (!wid) {
         setProjects([]);
-        setModules([]);
+        setTree([]);
         setMappingRules([]);
         return;
       }
-
-      const nextProjects = await listProjects(nextWorkspaceId);
-      setProjects(nextProjects);
-      const nextProjectId = preferredProjectId || selectedProjectId || nextProjects[0]?.id || "";
-      setSelectedProjectId(nextProjectId);
-      if (nextProjectId) {
-        await refreshProjectModules(nextWorkspaceId, nextProjectId);
-      } else {
-        setModules([]);
-        setMappingRules([]);
-      }
+      const ps = await listProjects(wid);
+      setProjects(ps);
+      const pid = preferredProjectId || selectedProjectId || ps[0]?.id || "";
+      setSelectedProjectId(pid);
+      if (pid) await refreshProjectModules(wid, pid);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "模块配置加载失败");
+      setMessage(err instanceof Error ? err.message : "模块数据加载失败");
     } finally {
       setBusy(false);
     }
   }
 
   useEffect(() => {
-    void refreshModuleWorkspaces();
+    void refreshWorkspaces();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function handleWorkspaceSwitch(workspaceId: string) {
-    setSelectedWorkspaceId(workspaceId);
+  async function handleProjectSwitch(pid: string) {
+    setSelectedProjectId(pid);
+    if (!selectedWorkspaceId || !pid) return;
     setBusy(true);
-    setMessage(null);
     try {
-      const nextProjects = await listProjects(workspaceId);
-      setProjects(nextProjects);
-      const nextProjectId = nextProjects[0]?.id ?? "";
-      setSelectedProjectId(nextProjectId);
-      if (nextProjectId) {
-        await refreshProjectModules(workspaceId, nextProjectId);
-      } else {
-        setModules([]);
-        setMappingRules([]);
-      }
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "模块 Workspace 切换失败");
+      await refreshProjectModules(selectedWorkspaceId, pid);
     } finally {
       setBusy(false);
     }
   }
 
-  async function handleProjectSwitch(projectId: string) {
-    setSelectedProjectId(projectId);
-    if (!selectedWorkspaceId || !projectId) return;
+  async function handleWorkspaceSwitch(wid: string) {
+    setSelectedWorkspaceId(wid);
     setBusy(true);
-    setMessage(null);
     try {
-      await refreshProjectModules(selectedWorkspaceId, projectId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "模块项目切换失败");
+      const ps = await listProjects(wid);
+      setProjects(ps);
+      const pid = ps[0]?.id ?? "";
+      setSelectedProjectId(pid);
+      if (pid) await refreshProjectModules(wid, pid);
     } finally {
       setBusy(false);
     }
   }
 
-  async function handleModuleSave(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedWorkspaceId || !selectedProjectId) return;
+  async function handleSubmitModule(payload: {
+    name: string;
+    code: string;
+    slug: string;
+    description: string;
+    owner: string;
+    status: "active" | "archived";
+  }) {
+    if (!selectedWorkspaceId || !selectedProjectId || !dialog) return;
     setBusy(true);
     setMessage(null);
     try {
-      if (editingModuleId) {
-        const module = await updateModule(selectedWorkspaceId, selectedProjectId, editingModuleId, actorEmail, {
-          name: moduleName,
-          slug: moduleSlug || undefined,
-          code: moduleKey,
-          parent_id: moduleParentId || null,
-          status: moduleStatus,
-          description: moduleDescription,
-          owner: moduleOwner
+      if (dialog.kind === "edit") {
+        await updateModule(selectedWorkspaceId, selectedProjectId, dialog.module.id, actorEmail, {
+          name: payload.name,
+          code: payload.code || undefined,
+          slug: payload.slug || undefined,
+          description: payload.description,
+          owner: payload.owner,
+          status: payload.status
         });
-        setMessage(`已更新模块：${module.key}`);
+        setMessage(`已更新模块 ${payload.name}`);
       } else {
-        const module = await createModule(selectedWorkspaceId, selectedProjectId, actorEmail, {
-          code: moduleKey,
-          slug: moduleSlug || undefined,
-          parent_id: moduleParentId || null,
-          name: moduleName,
-          description: moduleDescription,
-          owner: moduleOwner
+        const created = await createModule(selectedWorkspaceId, selectedProjectId, actorEmail, {
+          name: payload.name,
+          code: payload.code || undefined,
+          slug: payload.slug || undefined,
+          parent_id: dialog.parentId,
+          description: payload.description,
+          owner: payload.owner
         });
-        setRuleModuleId(module.id);
-        setMessage(`已创建模块：${module.key}`);
+        setMessage(`已创建模块 ${payload.name}`);
+        setSelectedModuleId(created.id);
       }
-      clearModuleForm();
+      setDialog(null);
       await refreshProjectModules(selectedWorkspaceId, selectedProjectId);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "模块保存失败");
@@ -166,12 +329,12 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
     }
   }
 
-  async function handleModuleDelete(moduleId: string) {
+  async function handleDeleteModule(id: string) {
     if (!selectedWorkspaceId || !selectedProjectId) return;
+    if (!window.confirm("确认删除此模块？子模块或绑定关系会阻止删除。")) return;
     setBusy(true);
-    setMessage(null);
     try {
-      await deleteModule(selectedWorkspaceId, selectedProjectId, moduleId, actorEmail);
+      await deleteModule(selectedWorkspaceId, selectedProjectId, id, actorEmail);
       setMessage("已删除模块");
       await refreshProjectModules(selectedWorkspaceId, selectedProjectId);
     } catch (err) {
@@ -181,32 +344,34 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
     }
   }
 
-  async function handleRuleSave(event: FormEvent<HTMLFormElement>) {
+  async function handleRuleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedWorkspaceId || !selectedProjectId || !ruleModuleId) return;
+    if (!selectedWorkspaceId || !selectedProjectId || !selectedModuleId) return;
     setBusy(true);
     setMessage(null);
     try {
       if (editingRuleId) {
-        const rule = await updateMappingRule(selectedWorkspaceId, selectedProjectId, ruleModuleId, editingRuleId, actorEmail, {
+        await updateMappingRule(selectedWorkspaceId, selectedProjectId, selectedModuleId, editingRuleId, actorEmail, {
           rule_type: ruleType,
           pattern: rulePattern,
           source: ruleSource,
           description: ruleDescription,
           confidence: Number(ruleConfidence)
         });
-        setMessage(`已更新映射规则：${mappingRuleTypeLabel[rule.rule_type]}`);
+        setMessage("已更新映射规则");
       } else {
-        const rule = await createMappingRule(selectedWorkspaceId, selectedProjectId, ruleModuleId, actorEmail, {
+        await createMappingRule(selectedWorkspaceId, selectedProjectId, selectedModuleId, actorEmail, {
           rule_type: ruleType,
           pattern: rulePattern,
           source: ruleSource,
           description: ruleDescription,
           confidence: Number(ruleConfidence)
         });
-        setMessage(`已创建映射规则：${mappingRuleTypeLabel[rule.rule_type]}`);
+        setMessage("已新增映射规则");
       }
-      clearRuleForm();
+      setEditingRuleId(null);
+      setRulePattern("");
+      setRuleDescription("");
       await refreshProjectModules(selectedWorkspaceId, selectedProjectId);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "映射规则保存失败");
@@ -215,10 +380,18 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
     }
   }
 
-  async function handleRuleDelete(rule: ModuleMappingRuleRecord) {
+  function editRule(rule: ModuleMappingRuleRecord) {
+    setEditingRuleId(rule.id);
+    setRuleType(rule.rule_type);
+    setRulePattern(rule.pattern);
+    setRuleSource(rule.source);
+    setRuleDescription(rule.description);
+    setRuleConfidence(String(rule.confidence));
+  }
+
+  async function deleteRule(rule: ModuleMappingRuleRecord) {
     if (!selectedWorkspaceId || !selectedProjectId) return;
     setBusy(true);
-    setMessage(null);
     try {
       await deleteMappingRule(selectedWorkspaceId, selectedProjectId, rule.module_id, rule.id, actorEmail);
       setMessage("已删除映射规则");
@@ -230,289 +403,185 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
     }
   }
 
-  function editModule(module: ProjectModuleRecord) {
-    setEditingModuleId(module.id);
-    setModuleKey(module.key);
-    setModuleSlug(module.slug);
-    setModuleParentId(module.parent_id ?? "");
-    setModuleStatus(module.status);
-    setModuleName(module.name);
-    setModuleDescription(module.description);
-    setModuleOwner(module.owner);
-  }
-
-  function editRule(rule: ModuleMappingRuleRecord) {
-    setEditingRuleId(rule.id);
-    setRuleModuleId(rule.module_id);
-    setRuleType(rule.rule_type);
-    setRulePattern(rule.pattern);
-    setRuleSource(rule.source);
-    setRuleDescription(rule.description);
-    setRuleConfidence(String(rule.confidence));
-  }
-
-  function clearModuleForm() {
-    setEditingModuleId(null);
-    setModuleKey("");
-    setModuleSlug("");
-    setModuleParentId("");
-    setModuleStatus("active");
-    setModuleName("");
-    setModuleDescription("");
-    setModuleOwner("");
-  }
-
-  function clearRuleForm() {
-    setEditingRuleId(null);
-    setRuleType("directory");
-    setRulePattern("");
-    setRuleSource("manual");
-    setRuleDescription("");
-    setRuleConfidence("90");
-  }
-
-  const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId);
-  const selectedProject = projects.find((project) => project.id === selectedProjectId);
-  const moduleById = new Map(modules.map((module) => [module.id, module]));
-
   return (
-    <section className="section-block module-admin">
-      <div className="section-heading">
+    <section className="panel module-admin-panel">
+      <header className="panel-head">
         <div>
-          <span className="eyebrow">Module Directory</span>
-          <h2>模块目录与映射</h2>
+          <span className="eyebrow">Modules</span>
+          <h2>模块目录与代码映射</h2>
+          <p className="panel-sub">维护功能模块层级，并在每个模块上绑定代码路径、API、配置等映射规则。</p>
         </div>
         <Network size={20} aria-hidden="true" />
-      </div>
-      <div className="admin-body">
-        {message ? <div className="inline-notice">{message}</div> : null}
+      </header>
 
-        <div className="admin-toolbar">
-          <label className="select-label">
-            当前 Workspace
-            <select
-              value={selectedWorkspaceId}
-              onChange={(event) => void handleWorkspaceSwitch(event.target.value)}
-              disabled={busy || workspaces.length === 0}
-            >
-              <option value="">未选择</option>
-              {workspaces.map((workspace) => (
-                <option value={workspace.id} key={workspace.id}>
-                  {workspace.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="select-label">
-            当前 Project
-            <select
-              value={selectedProjectId}
-              onChange={(event) => void handleProjectSwitch(event.target.value)}
-              disabled={busy || projects.length === 0}
-            >
-              <option value="">未选择</option>
-              {projects.map((project) => (
-                <option value={project.id} key={project.id}>
-                  {project.key} · {project.name}
-                </option>
-              ))}
-            </select>
-          </label>
+      {(workspaces.length > 1 || projects.length > 1) ? (
+        <div className="form-row compact">
+          {workspaces.length > 1 ? (
+            <label className="select-label">
+              Workspace
+              <select value={selectedWorkspaceId} onChange={(e) => void handleWorkspaceSwitch(e.target.value)} disabled={busy}>
+                {workspaces.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {projects.length > 1 ? (
+            <label className="select-label">
+              Project
+              <select value={selectedProjectId} onChange={(e) => void handleProjectSwitch(e.target.value)} disabled={busy}>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.key} · {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
+      ) : null}
 
-        <div className="admin-context">
-          <strong>{selectedProject ? `${selectedProject.key} · ${selectedProject.name}` : selectedWorkspace?.name ?? "尚未选择 Project"}</strong>
-          <span>{selectedProject ? `${modules.length} modules · ${mappingRules.length} mapping rules` : "先创建 Project，然后维护业务模块和技术映射。"}</span>
-        </div>
+      {message ? <div className="inline-notice">{message}</div> : null}
 
-        <div className="admin-grid">
-          <section className="admin-pane" aria-label="模块管理">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Modules</span>
-                <h3>模块目录</h3>
-              </div>
-              <FolderKanban size={18} aria-hidden="true" />
-            </div>
-            <form className="stack-form" onSubmit={handleModuleSave}>
-              <div className="form-row">
-                <label>
-                  Key
-                  <input
-                    value={moduleKey}
-                    onChange={(event) => setModuleKey(event.target.value.toUpperCase())}
-                    placeholder="可选编号"
-                  />
-                </label>
-                <label>
-                  名称
-                  <input value={moduleName} onChange={(event) => setModuleName(event.target.value)} required />
-                </label>
-              </div>
-              <div className="form-row">
-                <label>
-                  Slug
-                  <input value={moduleSlug} onChange={(event) => setModuleSlug(event.target.value)} placeholder="留空自动生成" />
-                </label>
-                <label>
-                  父模块
-                  <select value={moduleParentId} onChange={(event) => setModuleParentId(event.target.value)}>
-                    <option value="">根模块</option>
-                    {modules.filter((module) => module.id !== editingModuleId).map((module) => (
-                      <option value={module.id} key={module.id}>
-                        {module.path_label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <label>
-                描述
-                <input value={moduleDescription} onChange={(event) => setModuleDescription(event.target.value)} />
-              </label>
-              <div className="form-row compact">
-                <label>
-                  Owner
-                  <input value={moduleOwner} onChange={(event) => setModuleOwner(event.target.value)} />
-                </label>
-                <label>
-                  状态
-                  <select value={moduleStatus} onChange={(event) => setModuleStatus(event.target.value as "active" | "archived")}>
-                    <option value="active">Active</option>
-                    <option value="archived">Archived</option>
-                  </select>
-                </label>
-                <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId || !selectedProjectId}>
-                  {editingModuleId ? "保存模块" : "创建模块"}
-                </button>
-                {editingModuleId ? (
-                  <button className="ghost-button" type="button" onClick={clearModuleForm}>
-                    取消
-                  </button>
-                ) : null}
-              </div>
-            </form>
-            <div className="data-list">
-              {modules.map((module) => (
-                <div className="data-row module-row" key={module.id}>
-                  <div>
-                    <strong>{module.path_label}</strong>
-                    <span>{module.key} · {module.path} · {module.status} · {module.reference_count} refs · {module.mapping_rules.length} rules</span>
-                    <small>{module.description || "无描述"} · owner {module.owner || "none"}</small>
-                  </div>
-                  <button className="icon-button subtle" type="button" onClick={() => editModule(module)} title="编辑模块">
-                    <PencilLine size={16} aria-hidden="true" />
-                  </button>
-                  <button className="icon-button subtle" type="button" disabled={busy} onClick={() => void handleModuleDelete(module.id)} title="删除模块">
-                    <Trash2 size={16} aria-hidden="true" />
-                  </button>
-                </div>
-              ))}
-              {modules.length === 0 ? <p className="empty-state">暂无模块</p> : null}
-            </div>
-          </section>
-
-          <section className="admin-pane" aria-label="映射规则管理">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Mapping Rules</span>
-                <h3>技术对象映射</h3>
-              </div>
-              <GitBranch size={18} aria-hidden="true" />
-            </div>
-            <form className="stack-form" onSubmit={handleRuleSave}>
-              <label>
-                模块
-                <select
-                  value={ruleModuleId}
-                  onChange={(event) => setRuleModuleId(event.target.value)}
-                  disabled={Boolean(editingRuleId)}
-                  required
-                >
-                  <option value="">未选择</option>
-                  {modules.map((module) => (
-                    <option value={module.id} key={module.id}>
-                      {module.path_label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="form-row">
-                <label>
-                  类型
-                  <select value={ruleType} onChange={(event) => setRuleType(event.target.value as MappingRuleType)}>
-                    {(Object.keys(mappingRuleTypeLabel) as MappingRuleType[]).map((item) => (
-                      <option value={item} key={item}>
-                        {mappingRuleTypeLabel[item]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  来源
-                  <select value={ruleSource} onChange={(event) => setRuleSource(event.target.value as MappingSource)}>
-                    {(Object.keys(mappingSourceLabel) as MappingSource[]).map((item) => (
-                      <option value={item} key={item}>
-                        {mappingSourceLabel[item]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <label>
-                Pattern
-                <input value={rulePattern} onChange={(event) => setRulePattern(event.target.value)} required />
-              </label>
-              <div className="form-row compact">
-                <label>
-                  说明
-                  <input value={ruleDescription} onChange={(event) => setRuleDescription(event.target.value)} />
-                </label>
-                <label>
-                  置信度
-                  <input type="number" min="0" max="100" value={ruleConfidence} onChange={(event) => setRuleConfidence(event.target.value)} />
-                </label>
-                <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId || !selectedProjectId || modules.length === 0}>
-                  {editingRuleId ? "保存规则" : "添加规则"}
-                </button>
-                {editingRuleId ? (
-                  <button className="ghost-button" type="button" onClick={clearRuleForm}>
-                    取消
-                  </button>
-                ) : null}
-              </div>
-            </form>
-          </section>
-        </div>
-
-        <section className="audit-pane" aria-label="Module Mapping 列表">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Reusable References</span>
-              <h3>可引用映射规则</h3>
-            </div>
-            <FileText size={18} aria-hidden="true" />
+      <div className="module-admin-split">
+        <aside className="module-tree-panel">
+          <div className="module-tree-head">
+            <strong>模块树</strong>
+            <button className="ghost-button small" type="button" onClick={() => setDialog({ kind: "create", parentId: null })} disabled={busy || !selectedProjectId}>
+              <Plus size={14} aria-hidden="true" />
+              新增根模块
+            </button>
           </div>
-          <div className="data-list">
-            {mappingRules.map((rule) => (
-              <div className="data-row module-row" key={rule.id}>
+          {tree.length === 0 ? (
+            <p className="empty-state">尚无模块，点击「新增根模块」开始。</p>
+          ) : (
+            <ul className="module-tree-list">
+              {tree.map((root) => (
+                <TreeNode
+                  key={root.id}
+                  node={root}
+                  selectedId={selectedModuleId}
+                  onSelect={setSelectedModuleId}
+                  onAddChild={(parentId) => setDialog({ kind: "create", parentId })}
+                  onEdit={(m) => setDialog({ kind: "edit", module: m })}
+                  onDelete={(id) => void handleDeleteModule(id)}
+                />
+              ))}
+            </ul>
+          )}
+        </aside>
+
+        <section className="module-detail-panel">
+          {selectedModule ? (
+            <>
+              <header className="module-detail-head">
                 <div>
-                  <strong>{moduleById.get(rule.module_id)?.key ?? "UNKNOWN"} · {mappingRuleTypeLabel[rule.rule_type]} · {rule.pattern}</strong>
-                  <span>{mappingSourceLabel[rule.source]} · confidence {rule.confidence}% · id {rule.id}</span>
-                  <small>{rule.description || "无说明"}</small>
+                  <span className="eyebrow">已选模块</span>
+                  <h3>{selectedModule.path_label}</h3>
+                  <p>{selectedModule.description || "暂无描述"} · Owner {selectedModule.owner || "未指定"}</p>
                 </div>
-                <button className="icon-button subtle" type="button" onClick={() => editRule(rule)} title="编辑映射规则">
-                  <PencilLine size={16} aria-hidden="true" />
-                </button>
-                <button className="icon-button subtle" type="button" disabled={busy} onClick={() => void handleRuleDelete(rule)} title="删除映射规则">
-                  <Trash2 size={16} aria-hidden="true" />
-                </button>
-              </div>
-            ))}
-            {mappingRules.length === 0 ? <p className="empty-state">暂无映射规则</p> : null}
-          </div>
+                <div className="module-detail-actions">
+                  <button className="ghost-button small" type="button" onClick={() => setDialog({ kind: "create", parentId: selectedModule.id })} disabled={busy}>
+                    <FolderPlus size={14} aria-hidden="true" /> 新增子模块
+                  </button>
+                  <button className="ghost-button small" type="button" onClick={() => setDialog({ kind: "edit", module: selectedModule })} disabled={busy}>
+                    <PencilLine size={14} aria-hidden="true" /> 编辑
+                  </button>
+                </div>
+              </header>
+
+              <section className="rule-section">
+                <header className="rule-section-head">
+                  <h4>
+                    <GitBranch size={14} aria-hidden="true" /> 映射规则
+                  </h4>
+                  <small>{ruleList.length} 条规则</small>
+                </header>
+
+                <form className="card-form" onSubmit={handleRuleSubmit}>
+                  <div className="form-row">
+                    <label>
+                      类型
+                      <select value={ruleType} onChange={(e) => setRuleType(e.target.value as MappingRuleType)}>
+                        {(Object.keys(mappingRuleTypeLabel) as MappingRuleType[]).map((type) => (
+                          <option key={type} value={type}>
+                            {mappingRuleTypeLabel[type]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      来源
+                      <select value={ruleSource} onChange={(e) => setRuleSource(e.target.value as MappingSource)}>
+                        {(Object.keys(mappingSourceLabel) as MappingSource[]).map((src) => (
+                          <option key={src} value={src}>
+                            {mappingSourceLabel[src]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <label>
+                    Pattern
+                    <input value={rulePattern} onChange={(e) => setRulePattern(e.target.value)} required />
+                  </label>
+                  <div className="form-row">
+                    <label>
+                      说明
+                      <input value={ruleDescription} onChange={(e) => setRuleDescription(e.target.value)} />
+                    </label>
+                    <label>
+                      置信度
+                      <input type="number" min="0" max="100" value={ruleConfidence} onChange={(e) => setRuleConfidence(e.target.value)} />
+                    </label>
+                  </div>
+                  <div className="form-row compact">
+                    <button type="submit" className="primary-button small" disabled={busy}>
+                      {editingRuleId ? "保存规则" : "新增规则"}
+                    </button>
+                    {editingRuleId ? (
+                      <button type="button" className="ghost-button small" onClick={() => setEditingRuleId(null)}>
+                        取消
+                      </button>
+                    ) : null}
+                  </div>
+                </form>
+
+                <div className="card-list">
+                  {ruleList.map((rule) => (
+                    <article className="member-card" key={rule.id}>
+                      <div>
+                        <strong>
+                          {mappingRuleTypeLabel[rule.rule_type]} · {rule.pattern}
+                        </strong>
+                        <span>
+                          {mappingSourceLabel[rule.source]} · 置信度 {rule.confidence}%
+                        </span>
+                        <small>{rule.description || "无说明"}</small>
+                      </div>
+                      <div className="member-card-actions">
+                        <button className="icon-button subtle" type="button" onClick={() => editRule(rule)} title="编辑">
+                          <PencilLine size={14} aria-hidden="true" />
+                        </button>
+                        <button className="icon-button subtle" type="button" onClick={() => void deleteRule(rule)} title="删除">
+                          <Trash2 size={14} aria-hidden="true" />
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                  {ruleList.length === 0 ? <p className="empty-state">尚无映射规则，使用上方表单新增。</p> : null}
+                </div>
+              </section>
+            </>
+          ) : (
+            <p className="empty-state">从左侧选择或新建模块。</p>
+          )}
         </section>
       </div>
+
+      <ModuleDialog mode={dialog} busy={busy} onClose={() => setDialog(null)} onSubmit={handleSubmitModule} />
     </section>
   );
 }

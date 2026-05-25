@@ -3,6 +3,7 @@ import { ClipboardCheck, FileText, PencilLine } from "lucide-react";
 import {
   bulkImportTestCases,
   bulkUpdateImportDrafts,
+  CaseStep,
   ImportBatchRecord,
   ImportDraftRecord,
   listImportBatches,
@@ -20,6 +21,7 @@ import {
   WorkspaceRecord
 } from "../api";
 import { Pagination } from "../components/Pagination";
+import { StepsEditor } from "../components/StepsEditor";
 import { usePagination } from "../hooks/usePagination";
 import { statusLabel } from "../lib/labels";
 
@@ -37,8 +39,7 @@ export function CaseImportAdmin({ session }: { session: Session }) {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [bulkTitle, setBulkTitle] = useState("");
   const [bulkModuleId, setBulkModuleId] = useState("");
-  const [bulkSteps, setBulkSteps] = useState("");
-  const [bulkExpected, setBulkExpected] = useState("");
+  const [bulkSteps, setBulkSteps] = useState<CaseStep[]>([]);
   const [bulkPriority, setBulkPriority] = useState("P1");
   const [bulkRisk, setBulkRisk] = useState("high");
   const [bulkTags, setBulkTags] = useState("checkout, imported");
@@ -160,16 +161,12 @@ export function CaseImportAdmin({ session }: { session: Session }) {
     return value.split(/[,，;；\s]+/).map((item) => item.trim()).filter(Boolean);
   }
 
-  function parseStepsInput(value: string): string[] {
-    return value.split(/\r?\n|;|；/).map((item) => item.trim()).filter(Boolean);
-  }
-
   function buildBulkPayload() {
     const payload: Record<string, unknown> = {};
     if (bulkTitle.trim()) payload.title = bulkTitle.trim();
     if (bulkModuleId) payload.module_id = bulkModuleId;
-    if (bulkSteps.trim()) payload.steps = parseStepsInput(bulkSteps);
-    if (bulkExpected.trim()) payload.expected_result = bulkExpected.trim();
+    const cleanedSteps = bulkSteps.filter((s) => s.action.trim() || s.expected.trim());
+    if (cleanedSteps.length) payload.steps = cleanedSteps;
     if (bulkPriority.trim()) payload.priority = bulkPriority.trim();
     if (bulkRisk.trim()) payload.risk = bulkRisk.trim();
     const tags = parseTagsInput(bulkTags);
@@ -345,14 +342,7 @@ export function CaseImportAdmin({ session }: { session: Session }) {
                   </select>
                 </label>
               </div>
-              <label>
-                步骤
-                <input value={bulkSteps} onChange={(event) => setBulkSteps(event.target.value)} />
-              </label>
-              <label>
-                预期
-                <input value={bulkExpected} onChange={(event) => setBulkExpected(event.target.value)} />
-              </label>
+              <StepsEditor steps={bulkSteps} onChange={setBulkSteps} disabled={busy} />
               <div className="form-row">
                 <label>
                   优先级
@@ -404,7 +394,10 @@ export function CaseImportAdmin({ session }: { session: Session }) {
                   <span>
                     {moduleById.get(draft.module_id ?? "")?.key ?? "未归属"} · {draft.priority} · {draft.risk} · {draft.tags.join(", ") || "no tags"}
                   </span>
-                  <small>{draft.steps.join(" / ")} → {draft.expected_result}</small>
+                  <small>
+                    {draft.steps.length} 个步骤 ·{" "}
+                    {draft.steps.filter((s) => s.expected).length} 个步骤有预期
+                  </small>
                 </div>
               </div>
             ))}

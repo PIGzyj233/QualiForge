@@ -1,9 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
-import type { CaseDraftRecord, ProjectModuleRecord, TestCasePayload } from "../api";
-
-function joinList(items: string[]) {
-  return items.join("\n");
-}
+import type { CaseDraftRecord, CaseStep, ProjectModuleRecord, TestCasePayload } from "../api";
+import { StepsEditor } from "./StepsEditor";
 
 function splitList(value: string) {
   return value
@@ -29,8 +26,7 @@ export function CaseDraftEditor({
 }) {
   const [moduleId, setModuleId] = useState(draft.module_id ?? "");
   const [title, setTitle] = useState(draft.title);
-  const [steps, setSteps] = useState(joinList(draft.steps));
-  const [expected, setExpected] = useState(draft.expected_result);
+  const [steps, setSteps] = useState<CaseStep[]>(draft.steps);
   const [priority, setPriority] = useState(draft.priority);
   const [risk, setRisk] = useState(draft.risk);
   const [tags, setTags] = useState(draft.tags.join(", "));
@@ -39,8 +35,7 @@ export function CaseDraftEditor({
   useEffect(() => {
     setModuleId(draft.module_id ?? "");
     setTitle(draft.title);
-    setSteps(joinList(draft.steps));
-    setExpected(draft.expected_result);
+    setSteps(draft.steps);
     setPriority(draft.priority);
     setRisk(draft.risk);
     setTags(draft.tags.join(", "));
@@ -51,8 +46,7 @@ export function CaseDraftEditor({
     await onSave({
       module_id: moduleId || null,
       title,
-      steps: splitList(steps),
-      expected_result: expected,
+      steps,
       priority,
       risk,
       tags: splitList(tags),
@@ -79,14 +73,7 @@ export function CaseDraftEditor({
         标题
         <input value={title} onChange={(event) => setTitle(event.target.value)} disabled={busy} required />
       </label>
-      <label>
-        步骤
-        <textarea value={steps} onChange={(event) => setSteps(event.target.value)} disabled={busy} rows={4} />
-      </label>
-      <label>
-        预期结果
-        <textarea value={expected} onChange={(event) => setExpected(event.target.value)} disabled={busy} rows={3} />
-      </label>
+      <StepsEditor steps={steps} onChange={setSteps} disabled={busy} />
       <div className="form-row">
         <label>
           优先级
@@ -126,3 +113,4 @@ export function CaseDraftEditor({
     </form>
   );
 }
+
