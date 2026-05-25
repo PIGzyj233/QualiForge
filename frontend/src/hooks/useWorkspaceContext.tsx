@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ReactNode } from "react";
-import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api";
+import { getCurrentMember, listProjects, listWorkspaces, MemberRecord, ProjectRecord, Session, WorkspaceRecord } from "../api";
 
 export type WorkspaceContextValue = {
   session: Session;
@@ -9,6 +9,8 @@ export type WorkspaceContextValue = {
   currentWorkspace: WorkspaceRecord | null;
   projects: ProjectRecord[];
   currentProject: ProjectRecord | null;
+  currentMember: MemberRecord | null;
+  isOwner: boolean;
   busy: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -28,6 +30,7 @@ export function WorkspaceProvider({ session, children }: { session: Session; chi
   const [currentProjectId, setCurrentProjectId] = useState<string>("");
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [currentMember, setCurrentMember] = useState<MemberRecord | null>(null);
 
   const refresh = useCallback(async () => {
     setBusy(true);
@@ -61,6 +64,24 @@ export function WorkspaceProvider({ session, children }: { session: Session; chi
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actorEmail]);
+
+  useEffect(() => {
+    if (!currentWorkspaceId) {
+      setCurrentMember(null);
+      return;
+    }
+    let cancelled = false;
+    getCurrentMember(currentWorkspaceId, actorEmail)
+      .then((m) => {
+        if (!cancelled) setCurrentMember(m);
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentMember(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentWorkspaceId, actorEmail]);
 
   const refreshProjects = useCallback(async () => {
     if (!currentWorkspaceId) return;
@@ -106,6 +127,8 @@ export function WorkspaceProvider({ session, children }: { session: Session; chi
       currentWorkspace: workspaces.find((w) => w.id === currentWorkspaceId) ?? null,
       projects,
       currentProject: projects.find((p) => p.id === currentProjectId) ?? null,
+      currentMember,
+      isOwner: currentMember?.role === "WorkspaceOwner",
       busy,
       error,
       refresh,
@@ -121,6 +144,7 @@ export function WorkspaceProvider({ session, children }: { session: Session; chi
       currentWorkspaceId,
       projects,
       currentProjectId,
+      currentMember,
       busy,
       error,
       refresh,

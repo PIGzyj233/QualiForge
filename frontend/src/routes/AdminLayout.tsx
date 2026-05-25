@@ -1,5 +1,6 @@
 import { FolderKanban, History, ShieldCheck, Users } from "lucide-react";
 import { NavLink, Outlet, useParams } from "react-router-dom";
+import { useWorkspaceContext } from "../hooks/useWorkspaceContext";
 import { routes } from "../lib/routes";
 
 const tabs = (wid: string) => [
@@ -10,6 +11,20 @@ const tabs = (wid: string) => [
 
 export function AdminLayout() {
   const { wid = "" } = useParams<{ wid: string }>();
+  const { isOwner, currentMember, busy } = useWorkspaceContext();
+  if (!busy && currentMember && !isOwner) {
+    return (
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <ShieldCheck size={20} aria-hidden="true" />
+            <h2>无权限</h2>
+            <p className="panel-sub">只有 Workspace Owner 可以访问此页面。当前角色：{currentMember.role}</p>
+          </div>
+        </header>
+      </section>
+    );
+  }
   return (
     <section className="admin-shell">
       <header className="admin-shell-head">

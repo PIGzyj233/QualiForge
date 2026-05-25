@@ -8,17 +8,19 @@ import { WorkspaceSwitcher } from "../components/WorkspaceSwitcher";
 import { useWorkspaceContext } from "../hooks/useWorkspaceContext";
 import { routes } from "../lib/routes";
 
-function WorkspaceNav({ wid }: { wid: string }) {
+function WorkspaceNav({ wid, isOwner }: { wid: string; isOwner: boolean }) {
   return (
     <nav className="sidebar-section" aria-label="Workspace 主导航">
       <NavLink to={routes.workspaceOverview(wid)} end className={({ isActive }) => (isActive ? "nav-button active" : "nav-button")}>
         <LayoutDashboard size={18} aria-hidden="true" />
         <span>总览</span>
       </NavLink>
-      <NavLink to={routes.admin(wid)} className={({ isActive }) => (isActive ? "nav-button active" : "nav-button")}>
-        <ShieldCheck size={18} aria-hidden="true" />
-        <span>Workspace 管理</span>
-      </NavLink>
+      {isOwner ? (
+        <NavLink to={routes.admin(wid)} className={({ isActive }) => (isActive ? "nav-button active" : "nav-button")}>
+          <ShieldCheck size={18} aria-hidden="true" />
+          <span>Workspace 管理</span>
+        </NavLink>
+      ) : null}
       <NavLink to={routes.workspaceSettings(wid)} className={({ isActive }) => (isActive ? "nav-button active" : "nav-button")}>
         <Settings size={18} aria-hidden="true" />
         <span>AI 与设置</span>
@@ -68,7 +70,7 @@ export function WorkspaceLayout({
           }}
         />
 
-        {wid ? <WorkspaceNav wid={wid} /> : null}
+        {wid ? <WorkspaceNav wid={wid} isOwner={ctx.isOwner} /> : null}
 
         {wid && ctx.projects.length > 0 ? (
           <div className="sidebar-section">

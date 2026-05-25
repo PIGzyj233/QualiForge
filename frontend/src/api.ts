@@ -876,6 +876,10 @@ export function listMembers(workspaceId: string): Promise<MemberRecord[]> {
   return requestJson<MemberRecord[]>(`/workspaces/${workspaceId}/members`);
 }
 
+export function getCurrentMember(workspaceId: string, actorEmail: string): Promise<MemberRecord> {
+  return requestJson<MemberRecord>(`/workspaces/${workspaceId}/members/me?actor_email=${encodeURIComponent(actorEmail)}`);
+}
+
 export function addMember(
   workspaceId: string,
   actorEmail: string,

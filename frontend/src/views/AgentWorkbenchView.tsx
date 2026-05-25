@@ -586,49 +586,46 @@ export function AgentWorkbenchView({ session }: { session: Session }) {
                   <input type="number" min={1} max={5} value={candidateLimit} onChange={(event) => setCandidateLimit(numberValue(event.target.value, 3))} />
                 </label>
               </div>
-              <div className="agent-number-grid">
-                <label>
-                  Tool calls
-                  <input type="number" min={0} value={maxToolCalls} onChange={(event) => setMaxToolCalls(numberValue(event.target.value, 60))} />
-                </label>
-                <label>
-                  Subagents
-                  <input type="number" min={0} value={maxSubagents} onChange={(event) => setMaxSubagents(numberValue(event.target.value, 4))} />
-                </label>
-              </div>
-              <div className="agent-number-grid">
-                <label>
-                  Parallel
-                  <input type="number" min={1} value={maxParallelSubagents} onChange={(event) => setMaxParallelSubagents(numberValue(event.target.value, 3))} />
-                </label>
-                <label>
-                  Model calls
-                  <input type="number" min={0} value={maxModelCalls} onChange={(event) => setMaxModelCalls(numberValue(event.target.value, 20))} />
-                </label>
-              </div>
-              <div className="agent-number-grid">
-                <label>
-                  Wall minutes
-                  <input type="number" min={1} value={maxWallMinutes} onChange={(event) => setMaxWallMinutes(numberValue(event.target.value, 20))} />
-                </label>
-                <label>
-                  Source chars
-                  <input type="number" min={0} value={maxSourceChars} onChange={(event) => setMaxSourceChars(numberValue(event.target.value, 200000))} />
-                </label>
-              </div>
+              <details className="agent-advanced">
+                <summary>高级参数（预算 / 并发 / 上下文）</summary>
+                <div className="agent-number-grid">
+                  <label>
+                    Tool calls
+                    <input type="number" min={0} value={maxToolCalls} onChange={(event) => setMaxToolCalls(numberValue(event.target.value, 60))} />
+                  </label>
+                  <label>
+                    Subagents
+                    <input type="number" min={0} value={maxSubagents} onChange={(event) => setMaxSubagents(numberValue(event.target.value, 4))} />
+                  </label>
+                </div>
+                <div className="agent-number-grid">
+                  <label>
+                    Parallel
+                    <input type="number" min={1} value={maxParallelSubagents} onChange={(event) => setMaxParallelSubagents(numberValue(event.target.value, 3))} />
+                  </label>
+                  <label>
+                    Model calls
+                    <input type="number" min={0} value={maxModelCalls} onChange={(event) => setMaxModelCalls(numberValue(event.target.value, 20))} />
+                  </label>
+                </div>
+                <div className="agent-number-grid">
+                  <label>
+                    Wall minutes
+                    <input type="number" min={1} value={maxWallMinutes} onChange={(event) => setMaxWallMinutes(numberValue(event.target.value, 20))} />
+                  </label>
+                  <label>
+                    Source chars
+                    <input type="number" min={0} value={maxSourceChars} onChange={(event) => setMaxSourceChars(numberValue(event.target.value, 200000))} />
+                  </label>
+                </div>
+              </details>
               <button className="primary-button small" type="button" onClick={() => void handleLaunch()} disabled={busy || !selectedRepositoryId || !selectedProjectId}>
                 <Play size={16} aria-hidden="true" />
                 启动
               </button>
             </div>
-            <div className="agent-policy-box">
-              <div className="pane-heading">
-                <div>
-                  <span className="eyebrow">Defaults</span>
-                  <h3>项目预算</h3>
-                </div>
-                <Save size={16} aria-hidden="true" />
-              </div>
+            <details className="agent-advanced agent-policy-box">
+              <summary>项目预算默认值（保存后影响后续 Run）</summary>
               <div className="agent-number-grid">
                 <label>
                   Tool calls
@@ -647,7 +644,7 @@ export function AgentWorkbenchView({ session }: { session: Session }) {
                 <Save size={16} aria-hidden="true" />
                 保存
               </button>
-            </div>
+            </details>
           </section>
 
           <section className="agent-run-list" aria-label="Agent run list">
@@ -997,14 +994,8 @@ export function AgentWorkbenchView({ session }: { session: Session }) {
           </section>
         </div>
 
-        <section className="agent-memory-panel" aria-label="Agent memory">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Memory</span>
-              <h3>项目记忆</h3>
-            </div>
-            <Search size={18} aria-hidden="true" />
-          </div>
+        <details className="agent-memory-panel agent-advanced" aria-label="Agent memory">
+          <summary>项目记忆 / Memory Versions（按需展开）</summary>
           <div className="agent-memory-grid">
             <div className="stack-form">
               <label>
@@ -1073,7 +1064,7 @@ export function AgentWorkbenchView({ session }: { session: Session }) {
               </section>
             </div>
           </div>
-        </section>
+        </details>
       </div>
     </section>
   );

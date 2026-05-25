@@ -100,3 +100,17 @@ def test_projects_are_workspace_scoped_and_audited() -> None:
     audit_logs = client.get(f"/api/workspaces/{first_workspace['id']}/audit-logs").json()
     assert [entry["action"] for entry in audit_logs[:2]] == ["project.updated", "project.created"]
 
+
+
+def test_members_me_returns_current_actor_role_and_404s_for_non_members() -> None:
+    client = make_client()
+    workspace = create_workspace(client)
+
+    me = client.get(f"/api/workspaces/{workspace['id']}/members/me?actor_email=owner@qualiforge.local")
+    assert me.status_code == 200
+    payload = me.json()
+    assert payload["role"] == "WorkspaceOwner"
+    assert payload["email"] == "owner@qualiforge.local"
+
+    outsider = client.get(f"/api/workspaces/{workspace['id']}/members/me?actor_email=outsider@qualiforge.local")
+    assert outsider.status_code == 404

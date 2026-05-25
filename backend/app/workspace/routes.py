@@ -335,6 +335,15 @@ def list_members(workspace_id: str, db: DbSession) -> list[MemberResponse]:
     return [serialize_member(member) for member in members]
 
 
+@router.get("/workspaces/{workspace_id}/members/me", response_model=MemberResponse)
+def get_current_member(workspace_id: str, db: DbSession, actor_email: ActorEmail) -> MemberResponse:
+    get_workspace_or_404(db, workspace_id)
+    member = get_member(db, workspace_id, actor_email)
+    if member is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Actor is not a member of this workspace")
+    return serialize_member(member)
+
+
 @router.post("/workspaces/{workspace_id}/members", response_model=MemberResponse, status_code=status.HTTP_201_CREATED)
 def add_member(workspace_id: str, payload: MemberCreate, db: DbSession, actor_email: ActorEmail) -> MemberResponse:
     get_workspace_or_404(db, workspace_id)
