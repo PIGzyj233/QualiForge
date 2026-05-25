@@ -1,4 +1,4 @@
-import { LayoutDashboard, LogOut, Settings, ShieldCheck } from "lucide-react";
+import { ArrowUpRight, FolderKanban, LayoutDashboard, LogOut, Settings, ShieldCheck } from "lucide-react";
 import { ReactNode } from "react";
 import { Link, NavLink, Outlet, useNavigate, useParams } from "react-router-dom";
 import { Session } from "../api";
@@ -13,17 +13,17 @@ function WorkspaceNav({ wid, isOwner }: { wid: string; isOwner: boolean }) {
     <nav className="sidebar-section" aria-label="Workspace 主导航">
       <NavLink to={routes.workspaceOverview(wid)} end className={({ isActive }) => (isActive ? "nav-button active" : "nav-button")}>
         <LayoutDashboard size={18} aria-hidden="true" />
-        <span>总览</span>
+        <span>工作台</span>
       </NavLink>
       {isOwner ? (
         <NavLink to={routes.admin(wid)} className={({ isActive }) => (isActive ? "nav-button active" : "nav-button")}>
           <ShieldCheck size={18} aria-hidden="true" />
-          <span>Workspace 管理</span>
+          <span>组织管理</span>
         </NavLink>
       ) : null}
       <NavLink to={routes.workspaceSettings(wid)} className={({ isActive }) => (isActive ? "nav-button active" : "nav-button")}>
         <Settings size={18} aria-hidden="true" />
-        <span>AI 与设置</span>
+        <span>AI 设置</span>
       </NavLink>
     </nav>
   );
@@ -73,7 +73,11 @@ export function WorkspaceLayout({
         {wid ? <WorkspaceNav wid={wid} isOwner={ctx.isOwner} /> : null}
 
         {wid && ctx.projects.length > 0 ? (
-          <div className="sidebar-section">
+          <div className="sidebar-section project-sidebar-section">
+            <div className="sidebar-section-title">
+              <FolderKanban size={15} aria-hidden="true" />
+              <span>当前项目</span>
+            </div>
             <ProjectSwitcher
               projects={ctx.projects}
               currentProjectId={pid}
@@ -85,7 +89,8 @@ export function WorkspaceLayout({
             />
             {pid ? (
               <Link className="nav-button subtle" to={routes.projectOverview(wid, pid)}>
-                <span>→ 进入项目工作台</span>
+                <ArrowUpRight size={16} aria-hidden="true" />
+                <span>进入项目工作台</span>
               </Link>
             ) : null}
           </div>
