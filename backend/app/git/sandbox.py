@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import subprocess
@@ -105,6 +106,17 @@ def ensure_safe_sandbox_path(root: Path, target: Path) -> Path:
     return target_resolved
 
 
+def remove_tree_readonly(path: Path) -> None:
+    def retry_with_write_permission(function, target, exc_info) -> None:
+        try:
+            Path(target).chmod(0o700)
+            function(target)
+        except Exception:
+            raise exc_info[1]
+
+    shutil.rmtree(path, onexc=retry_with_write_permission)
+
+
 def directory_size_mb(path: Path) -> float:
     total = 0
     for item in path.rglob("*"):
@@ -130,16 +142,41 @@ def get_gitlab_credential(db: Session, workspace_id: str) -> WorkspaceGitLabCred
 
 
 def git_command_for_log(command: list[str]) -> str:
-    return " ".join("<redacted-git-header>" if "PRIVATE-TOKEN:" in part else part for part in command)
+    sensitive_markers = ("PRIVATE-TOKEN:", "Authorization:")
+    return " ".join("<redacted-git-header>" if any(marker in part for marker in sensitive_markers) else part for part in command)
 
 
-def run_git(command: list[str], timeout_seconds: int, key_logs: list[str]) -> subprocess.CompletedProcess[str]:
+def git_auth_env(credential: WorkspaceGitLabCredential | None, remote_url: str) -> dict[str, str]:
+    if credential is None or not remote_url.startswith(("http://", "https://")):
+        return {}
+
+    gitlab_base_url = credential.gitlab_base_url.rstrip("/")
+    if remote_url != gitlab_base_url and not remote_url.startswith(f"{gitlab_base_url}/"):
+        return {}
+
+    auth_value = base64.b64encode(f"oauth2:{credential.token_secret}".encode("utf-8")).decode("ascii")
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.extraHeader",
+        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {auth_value}",
+    }
+
+
+def run_git(
+    command: list[str],
+    timeout_seconds: int,
+    key_logs: list[str],
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     key_logs.append(f"$ {git_command_for_log(command)}")
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    if env_overrides:
+        env.update(env_overrides)
     return subprocess.run(
         command,
         capture_output=True,
         check=False,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        env=env,
         text=True,
         timeout=timeout_seconds,
     )
@@ -169,15 +206,21 @@ def run_repository_sync(database: Database, settings: Settings, job_id: str) -> 
             mirror_path.parent.mkdir(parents=True, exist_ok=True)
 
             credential = get_gitlab_credential(db, repository.workspace_id)
-            auth_args = []
-            if credential is not None and repository.remote_url.startswith(("http://", "https://")):
-                auth_args = ["-c", f"http.extraHeader=PRIVATE-TOKEN: {credential.token_secret}"]
+            auth_env = git_auth_env(credential, repository.remote_url)
 
             if mirror_path.exists():
-                command = ["git", *auth_args, "-C", str(mirror_path), "remote", "update", "--prune"]
+                set_url = run_git(
+                    ["git", "-C", str(mirror_path), "remote", "set-url", "origin", repository.remote_url],
+                    repository.sync_timeout_seconds,
+                    job.key_logs,
+                )
+                if set_url.returncode != 0:
+                    stderr = set_url.stderr.strip()[:500] or f"git exited with {set_url.returncode}"
+                    raise RuntimeError(stderr)
+                command = ["git", "-C", str(mirror_path), "remote", "update", "--prune"]
             else:
-                command = ["git", *auth_args, "clone", "--mirror", "--", repository.remote_url, str(mirror_path)]
-            result = run_git(command, repository.sync_timeout_seconds, job.key_logs)
+                command = ["git", "clone", "--mirror", "--", repository.remote_url, str(mirror_path)]
+            result = run_git(command, repository.sync_timeout_seconds, job.key_logs, env_overrides=auth_env)
             if result.stdout.strip():
                 job.key_logs = [*job.key_logs, result.stdout.strip()[:1000]]
             if result.returncode != 0:

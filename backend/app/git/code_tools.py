@@ -37,6 +37,10 @@ def _relative(root: Path, path: Path) -> str:
     return path.resolve(strict=False).relative_to(root.resolve(strict=False)).as_posix()
 
 
+def _normalize_tool_path(path: str) -> str:
+    return path.replace("\\", "/")
+
+
 def _run_read_command(command: list[str], *, cwd: Path, timeout_seconds: int = 10) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
@@ -55,6 +59,20 @@ def _run_read_command(command: list[str], *, cwd: Path, timeout_seconds: int = 1
     return result
 
 
+def _run_git_probe(command: list[str], *, cwd: Path, timeout_seconds: int = 10) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CodeToolError("Code read command timed out") from exc
+
+
 def code_rg_files(root: Path, *, path: str = ".", glob: str | None = None, max_results: int = 500) -> list[str]:
     sandbox_root = root.resolve(strict=False)
     search_path = resolve_sandbox_path(sandbox_root, path)
@@ -63,7 +81,7 @@ def code_rg_files(root: Path, *, path: str = ".", glob: str | None = None, max_r
         command.extend(["-g", glob])
     command.append(_relative(sandbox_root, search_path))
     result = _run_read_command(command, cwd=sandbox_root)
-    return [line for line in result.stdout.splitlines() if line][:max_results]
+    return [_normalize_tool_path(line) for line in result.stdout.splitlines() if line][:max_results]
 
 
 def code_search(
@@ -90,7 +108,7 @@ def code_search(
             continue
         file_path, line_no, column_no, text = parts
         try:
-            matches.append(CodeSearchMatch(path=file_path, line=int(line_no), column=int(column_no), text=text))
+            matches.append(CodeSearchMatch(path=_normalize_tool_path(file_path), line=int(line_no), column=int(column_no), text=text))
         except ValueError:
             continue
     return matches
@@ -144,8 +162,33 @@ def git_show_file(root: Path, *, ref: str, path: str) -> CodeReadResult:
     sandbox_root = root.resolve(strict=False)
     safe_path = resolve_sandbox_path(sandbox_root, path)
     relative_path = _relative(sandbox_root, safe_path)
-    result = _run_read_command(["git", "show", f"{ref}:{relative_path}"], cwd=sandbox_root)
+    try:
+        result = _run_read_command(["git", "show", f"{ref}:{relative_path}"], cwd=sandbox_root)
+    except CodeToolError as exc:
+        fallback = _read_clean_worktree_file_at_ref(sandbox_root, safe_path, ref, relative_path)
+        if fallback is None:
+            raise exc
+        return fallback
     content = result.stdout.rstrip("\n")
+    return CodeReadResult(
+        path=relative_path,
+        start_line=1,
+        end_line=len(content.splitlines()),
+        content=content,
+    )
+
+
+def _read_clean_worktree_file_at_ref(sandbox_root: Path, safe_path: Path, ref: str, relative_path: str) -> CodeReadResult | None:
+    resolved = _run_git_probe(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=sandbox_root)
+    head = _run_git_probe(["git", "rev-parse", "--verify", "HEAD^{commit}"], cwd=sandbox_root)
+    if resolved.returncode != 0 or head.returncode != 0 or resolved.stdout.strip() != head.stdout.strip():
+        return None
+    status = _run_git_probe(["git", "status", "--porcelain", "--", relative_path], cwd=sandbox_root)
+    if status.returncode != 0 or status.stdout.strip():
+        return None
+    if not safe_path.is_file():
+        return None
+    content = safe_path.read_text(encoding="utf-8", errors="ignore").rstrip("\n")
     return CodeReadResult(
         path=relative_path,
         start_line=1,

@@ -3,15 +3,16 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func, select
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.cases.domain import CaseDraft, CaseRevision, TestCase
+from app.git.models import GitRepository
 from app.platform.database import Base
 from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc, require_workspace_owner
 
@@ -26,9 +27,33 @@ class MappingRuleType(StrEnum):
     file = "file"
     api = "api"
     service = "service"
+    command = "command"
+    library_api = "library_api"
+    symbol = "symbol"
+    package = "package"
+    build_target = "build_target"
     config_key = "config_key"
     database_migration = "database_migration"
+    protocol = "protocol"
+    transport = "transport"
+    format = "format"
+    codec = "codec"
+    media_pipeline = "media_pipeline"
+    asset_fixture = "asset_fixture"
     keyword = "keyword"
+
+
+class MappingRelationship(StrEnum):
+    primary = "primary"
+    related = "related"
+    dependency = "dependency"
+    evidence = "evidence"
+
+
+class MappingRuleStatus(StrEnum):
+    active = "active"
+    stale = "stale"
+    archived = "archived"
 
 
 class MappingSource(StrEnum):
@@ -59,6 +84,7 @@ class ProjectModule(Base):
     status: Mapped[str] = mapped_column(String(32), default=ModuleStatus.active.value, nullable=False, index=True)
     description: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     owner: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    keywords: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
 
@@ -73,11 +99,22 @@ class ModuleMappingRule(Base):
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     module_id: Mapped[str] = mapped_column(ForeignKey("project_modules.id", ondelete="CASCADE"), nullable=False, index=True)
+    repository_id: Mapped[str | None] = mapped_column(ForeignKey("git_repositories.id", ondelete="SET NULL"), nullable=True, index=True)
     rule_type: Mapped[str] = mapped_column(String(40), nullable=False)
     pattern: Mapped[str] = mapped_column(String(500), nullable=False)
+    relationship: Mapped[str] = mapped_column(String(32), default=MappingRelationship.primary.value, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default=MappingRuleStatus.active.value, nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(40), nullable=False)
     description: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    ai_confidence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     confidence: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    evidence_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    accepted_from_output_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    verified_by: Mapped[str] = mapped_column(String(254), default="", nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stale_reason: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    conditions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    case_sensitive: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
 
@@ -90,6 +127,7 @@ class ModuleCreate(BaseModel):
     parent_id: str | None = None
     description: str = Field(default="", max_length=500)
     owner: str = Field(default="", max_length=120)
+    keywords: list[str] = Field(default_factory=list)
     sort_order: int = 0
 
 
@@ -100,24 +138,47 @@ class ModuleUpdate(BaseModel):
     parent_id: str | None = None
     description: str | None = Field(default=None, max_length=500)
     owner: str | None = Field(default=None, max_length=120)
+    keywords: list[str] | None = None
     sort_order: int | None = None
     status: ModuleStatus | None = None
 
 
 class MappingRuleCreate(BaseModel):
+    repository_id: str | None = Field(default=None, max_length=32)
     rule_type: MappingRuleType
     pattern: str = Field(min_length=1, max_length=500)
+    relationship: MappingRelationship = MappingRelationship.primary
+    status: MappingRuleStatus = MappingRuleStatus.active
     source: MappingSource = MappingSource.manual
     description: str = Field(default="", max_length=500)
+    ai_confidence: int = Field(default=0, ge=0, le=100)
     confidence: int = Field(default=100, ge=0, le=100)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    accepted_from_output_id: str | None = Field(default=None, max_length=32)
+    verified_by: str = Field(default="", max_length=254)
+    verified_at: datetime | None = None
+    stale_reason: str = Field(default="", max_length=500)
+    conditions: dict[str, Any] = Field(default_factory=dict)
+    case_sensitive: bool | None = None
 
 
 class MappingRuleUpdate(BaseModel):
+    repository_id: str | None = Field(default=None, max_length=32)
     rule_type: MappingRuleType | None = None
     pattern: str | None = Field(default=None, min_length=1, max_length=500)
+    relationship: MappingRelationship | None = None
+    status: MappingRuleStatus | None = None
     source: MappingSource | None = None
     description: str | None = Field(default=None, max_length=500)
+    ai_confidence: int | None = Field(default=None, ge=0, le=100)
     confidence: int | None = Field(default=None, ge=0, le=100)
+    evidence_refs: list[dict[str, Any]] | None = None
+    accepted_from_output_id: str | None = Field(default=None, max_length=32)
+    verified_by: str | None = Field(default=None, max_length=254)
+    verified_at: datetime | None = None
+    stale_reason: str | None = Field(default=None, max_length=500)
+    conditions: dict[str, Any] | None = None
+    case_sensitive: bool | None = None
 
 
 class MappingRuleResponse(BaseModel):
@@ -125,11 +186,22 @@ class MappingRuleResponse(BaseModel):
     workspace_id: str
     project_id: str
     module_id: str
+    repository_id: str | None
     rule_type: str
     pattern: str
+    relationship: str
+    status: str
     source: str
     description: str
+    ai_confidence: int
     confidence: int
+    evidence_refs: list[dict[str, Any]]
+    accepted_from_output_id: str | None
+    verified_by: str
+    verified_at: datetime | None
+    stale_reason: str
+    conditions: dict[str, Any]
+    case_sensitive: bool | None
     created_at: datetime
     updated_at: datetime
 
@@ -150,6 +222,7 @@ class ModuleResponse(BaseModel):
     status: str
     description: str
     owner: str
+    keywords: list[str]
     reference_count: int
     mapping_rules: list[MappingRuleResponse]
     created_at: datetime
@@ -216,17 +289,61 @@ def ensure_slug(value: str, fallback_seed: str | None = None) -> str:
     return f"module-{(fallback_seed or new_id())[:6].lower()}"
 
 
+def normalize_module_code(value: str) -> str:
+    return value.strip()
+
+
+def clean_keywords(values: list[str] | None) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        keyword = raw.strip()
+        key = keyword.lower()
+        if not keyword or key in seen:
+            continue
+        cleaned.append(keyword[:80])
+        seen.add(key)
+        if len(cleaned) >= 30:
+            break
+    return cleaned
+
+
+def assert_repository_scope(db: Session, workspace_id: str, project_id: str, repository_id: str | None) -> None:
+    if repository_id is None:
+        return
+    repository = db.scalar(
+        select(GitRepository).where(
+            GitRepository.id == repository_id,
+            GitRepository.workspace_id == workspace_id,
+            GitRepository.project_id == project_id,
+        )
+    )
+    if repository is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+
+
 def serialize_rule(rule: ModuleMappingRule) -> MappingRuleResponse:
     return MappingRuleResponse(
         id=rule.id,
         workspace_id=rule.workspace_id,
         project_id=rule.project_id,
         module_id=rule.module_id,
+        repository_id=rule.repository_id,
         rule_type=rule.rule_type,
         pattern=rule.pattern,
+        relationship=rule.relationship,
+        status=rule.status,
         source=rule.source,
         description=rule.description,
+        ai_confidence=rule.ai_confidence,
         confidence=rule.confidence,
+        evidence_refs=rule.evidence_refs or [],
+        accepted_from_output_id=rule.accepted_from_output_id,
+        verified_by=rule.verified_by,
+        verified_at=rule.verified_at,
+        stale_reason=rule.stale_reason,
+        conditions=rule.conditions or {},
+        case_sensitive=rule.case_sensitive,
         created_at=rule.created_at,
         updated_at=rule.updated_at,
     )
@@ -259,6 +376,7 @@ def serialize_module(module: ProjectModule, rules: list[ModuleMappingRule], refe
         status=module.status,
         description=module.description,
         owner=module.owner,
+        keywords=module.keywords or [],
         reference_count=reference_count,
         mapping_rules=[serialize_rule(rule) for rule in rules],
         created_at=module.created_at,
@@ -266,7 +384,7 @@ def serialize_module(module: ProjectModule, rules: list[ModuleMappingRule], refe
     )
 
 
-def module_snapshot(module: ProjectModule) -> dict[str, str | int | None]:
+def module_snapshot(module: ProjectModule) -> dict[str, Any]:
     return {
         "parent_id": module.parent_id,
         "name": module.name,
@@ -279,18 +397,30 @@ def module_snapshot(module: ProjectModule) -> dict[str, str | int | None]:
         "status": module.status,
         "description": module.description,
         "owner": module.owner,
+        "keywords": module.keywords or [],
         "project_id": module.project_id,
     }
 
 
-def rule_snapshot(rule: ModuleMappingRule) -> dict[str, str | int]:
+def rule_snapshot(rule: ModuleMappingRule) -> dict[str, str | int | bool | None]:
     return {
         "module_id": rule.module_id,
+        "repository_id": rule.repository_id,
         "rule_type": rule.rule_type,
         "pattern": rule.pattern,
+        "relationship": rule.relationship,
+        "status": rule.status,
         "source": rule.source,
         "description": rule.description,
+        "ai_confidence": rule.ai_confidence,
         "confidence": rule.confidence,
+        "evidence_count": len(rule.evidence_refs or []),
+        "accepted_from_output_id": rule.accepted_from_output_id,
+        "verified_by": rule.verified_by,
+        "verified_at": rule.verified_at.isoformat() if rule.verified_at else None,
+        "stale_reason": rule.stale_reason,
+        "condition_count": len(rule.conditions or {}),
+        "case_sensitive": rule.case_sensitive,
     }
 
 
@@ -327,12 +457,26 @@ def get_rule_or_404(
     return rule
 
 
-def rules_for_module(db: Session, module_id: str) -> list[ModuleMappingRule]:
+def apply_rule_status_filter(statement, status_filter: Literal["active", "stale", "archived", "all"]):
+    if status_filter == "all":
+        return statement
+    return statement.where(ModuleMappingRule.status == status_filter)
+
+
+def rules_for_module(
+    db: Session,
+    module_id: str,
+    status_filter: Literal["active", "stale", "archived", "all"] = "active",
+) -> list[ModuleMappingRule]:
+    statement = (
+        select(ModuleMappingRule)
+        .where(ModuleMappingRule.module_id == module_id)
+        .order_by(ModuleMappingRule.rule_type, ModuleMappingRule.pattern)
+    )
+    statement = apply_rule_status_filter(statement, status_filter)
     return list(
         db.scalars(
-            select(ModuleMappingRule)
-            .where(ModuleMappingRule.module_id == module_id)
-            .order_by(ModuleMappingRule.rule_type, ModuleMappingRule.pattern)
+            statement
         ).all()
     )
 
@@ -367,6 +511,20 @@ def assert_unique_slug(db: Session, module: ProjectModule | None, workspace_id: 
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Module slug already exists under this parent")
 
 
+def assert_unique_code(db: Session, module: ProjectModule | None, workspace_id: str, project_id: str, code: str) -> None:
+    normalized = normalize_module_code(code)
+    if not normalized:
+        return
+    statement = select(ProjectModule).where(
+        ProjectModule.workspace_id == workspace_id,
+        ProjectModule.project_id == project_id,
+        ProjectModule.code == normalized,
+    )
+    existing = db.scalar(statement)
+    if existing is not None and (module is None or existing.id != module.id):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Module code already exists in this project")
+
+
 def recalc_module_paths(db: Session, module: ProjectModule) -> None:
     parent = db.get(ProjectModule, module.parent_id) if module.parent_id else None
     if parent is not None:
@@ -399,6 +557,7 @@ def list_modules(
     project_id: str,
     db: DbSession,
     include_archived_modules: bool = Query(default=False),
+    mapping_rule_status: Literal["active", "stale", "archived", "all"] = Query(default="active"),
 ) -> list[ModuleResponse]:
     get_workspace_or_404(db, workspace_id)
     get_project_or_404(db, workspace_id, project_id)
@@ -406,7 +565,7 @@ def list_modules(
     if not include_archived_modules:
         statement = statement.where(ProjectModule.status == ModuleStatus.active.value)
     modules = db.scalars(statement.order_by(ProjectModule.path)).all()
-    return [serialize_module(module, rules_for_module(db, module.id), module_reference_count(db, module.id)) for module in modules]
+    return [serialize_module(module, rules_for_module(db, module.id, mapping_rule_status), module_reference_count(db, module.id)) for module in modules]
 
 
 @router.get("/modules/tree", response_model=list[ModuleTreeNode])
@@ -415,8 +574,9 @@ def list_module_tree(
     project_id: str,
     db: DbSession,
     include_archived_modules: bool = Query(default=False),
+    mapping_rule_status: Literal["active", "stale", "archived", "all"] = Query(default="active"),
 ) -> list[ModuleTreeNode]:
-    modules = list_modules(workspace_id, project_id, db, include_archived_modules)
+    modules = list_modules(workspace_id, project_id, db, include_archived_modules, mapping_rule_status)
     nodes = {module.id: ModuleTreeNode(**module.model_dump(), children=[]) for module in modules}
     ordered = db.scalars(
         select(ProjectModule)
@@ -432,7 +592,10 @@ def list_mapping_rules(
     project_id: str,
     db: DbSession,
     module_id: str | None = Query(default=None),
+    repository_id: str | None = Query(default=None),
     rule_type: MappingRuleType | None = Query(default=None),
+    relationship: MappingRelationship | None = Query(default=None),
+    status_filter: Literal["active", "stale", "archived", "all"] = Query(default="active", alias="status"),
     source: MappingSource | None = Query(default=None),
 ) -> list[MappingRuleResponse]:
     get_workspace_or_404(db, workspace_id)
@@ -445,8 +608,14 @@ def list_mapping_rules(
     if module_id:
         get_module_or_404(db, workspace_id, project_id, module_id)
         statement = statement.where(ModuleMappingRule.module_id == module_id)
+    if repository_id:
+        assert_repository_scope(db, workspace_id, project_id, repository_id)
+        statement = statement.where(ModuleMappingRule.repository_id == repository_id)
     if rule_type:
         statement = statement.where(ModuleMappingRule.rule_type == rule_type.value)
+    if relationship:
+        statement = statement.where(ModuleMappingRule.relationship == relationship.value)
+    statement = apply_rule_status_filter(statement, status_filter)
     if source:
         statement = statement.where(ModuleMappingRule.source == source.value)
     return [serialize_rule(rule) for rule in db.scalars(statement).all()]
@@ -459,20 +628,23 @@ def create_module(workspace_id: str, project_id: str, payload: ModuleCreate, db:
     require_workspace_owner(db, workspace_id, actor_email)
     parent = get_module_or_404(db, workspace_id, project_id, payload.parent_id) if payload.parent_id else None
     slug = ensure_slug(payload.slug or payload.name)
+    code = normalize_module_code(payload.code or payload.key)
     assert_unique_slug(db, None, workspace_id, project_id, parent.id if parent else None, slug)
+    assert_unique_code(db, None, workspace_id, project_id, code)
     module = ProjectModule(
         workspace_id=workspace_id,
         project_id=project_id,
         parent_id=parent.id if parent else None,
         name=payload.name,
         slug=slug,
-        code=payload.code or payload.key,
+        code=code,
         path=slug,
         path_label=payload.name,
         depth=0,
         sort_order=payload.sort_order,
         description=payload.description,
         owner=payload.owner,
+        keywords=clean_keywords(payload.keywords),
     )
     db.add(module)
     db.flush()
@@ -528,11 +700,13 @@ def update_module(
     if payload.name is not None:
         module.name = payload.name
     if payload.code is not None:
-        module.code = payload.code
+        module.code = normalize_module_code(payload.code)
     if payload.description is not None:
         module.description = payload.description
     if payload.owner is not None:
         module.owner = payload.owner
+    if payload.keywords is not None:
+        module.keywords = clean_keywords(payload.keywords)
     if payload.sort_order is not None:
         module.sort_order = payload.sort_order
     if payload.status is not None:
@@ -542,6 +716,7 @@ def update_module(
             target.updated_at = now_utc()
 
     assert_unique_slug(db, module, workspace_id, project_id, module.parent_id, module.slug)
+    assert_unique_code(db, module, workspace_id, project_id, module.code)
     recalc_module_paths(db, module)
     try:
         db.flush()
@@ -574,8 +749,9 @@ def delete_module(workspace_id: str, project_id: str, module_id: str, db: DbSess
     references = module_reference_count(db, module.id)
     if references:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Referenced modules can only be archived")
-    before = {**module_snapshot(module), "mapping_rule_count": len(rules_for_module(db, module_id)), "reference_count": references}
-    for rule in rules_for_module(db, module_id):
+    module_rules = rules_for_module(db, module_id, "all")
+    before = {**module_snapshot(module), "mapping_rule_count": len(module_rules), "reference_count": references}
+    for rule in module_rules:
         db.delete(rule)
     db.delete(module)
     audit(
@@ -602,15 +778,27 @@ def create_mapping_rule(
     actor_email: ActorEmail,
 ) -> MappingRuleResponse:
     module = get_module_or_404(db, workspace_id, project_id, module_id)
+    assert_repository_scope(db, workspace_id, project_id, payload.repository_id)
     rule = ModuleMappingRule(
         workspace_id=workspace_id,
         project_id=project_id,
         module_id=module.id,
+        repository_id=payload.repository_id,
         rule_type=payload.rule_type.value,
         pattern=payload.pattern,
+        relationship=payload.relationship.value,
+        status=payload.status.value,
         source=payload.source.value,
         description=payload.description,
+        ai_confidence=payload.ai_confidence,
         confidence=payload.confidence,
+        evidence_refs=payload.evidence_refs,
+        accepted_from_output_id=payload.accepted_from_output_id,
+        verified_by=payload.verified_by or actor_email,
+        verified_at=payload.verified_at or now_utc(),
+        stale_reason=payload.stale_reason,
+        conditions=payload.conditions,
+        case_sensitive=payload.case_sensitive,
     )
     db.add(rule)
     try:
@@ -648,8 +836,14 @@ def update_mapping_rule(
     rule = get_rule_or_404(db, workspace_id, project_id, module_id, rule_id)
     before = rule_snapshot(rule)
     update_data = payload.model_dump(exclude_unset=True)
+    if "repository_id" in update_data:
+        assert_repository_scope(db, workspace_id, project_id, update_data["repository_id"])
     for field, value in update_data.items():
         setattr(rule, field, value.value if isinstance(value, StrEnum) else value)
+    if "verified_by" not in update_data:
+        rule.verified_by = actor_email
+    if "verified_at" not in update_data:
+        rule.verified_at = now_utc()
     rule.updated_at = now_utc()
     try:
         db.flush()

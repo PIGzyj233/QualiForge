@@ -576,10 +576,24 @@ export type MappingRuleType =
   | "file"
   | "api"
   | "service"
+  | "command"
+  | "library_api"
+  | "symbol"
+  | "package"
+  | "build_target"
   | "config_key"
   | "database_migration"
+  | "protocol"
+  | "transport"
+  | "format"
+  | "codec"
+  | "media_pipeline"
+  | "asset_fixture"
   | "keyword";
 
+export type MappingRelationship = "primary" | "related" | "dependency" | "evidence";
+export type MappingStatus = "active" | "stale" | "archived";
+export type MappingStatusFilter = MappingStatus | "all";
 export type MappingSource = "manual" | "ai_repository" | "ai_history" | "diff_confirmation";
 
 export type ModuleMappingRuleRecord = {
@@ -587,11 +601,22 @@ export type ModuleMappingRuleRecord = {
   workspace_id: string;
   project_id: string;
   module_id: string;
+  repository_id: string | null;
   rule_type: MappingRuleType;
   pattern: string;
+  relationship: MappingRelationship;
+  status: MappingStatus;
   source: MappingSource;
   description: string;
+  ai_confidence: number;
   confidence: number;
+  evidence_refs: Record<string, unknown>[];
+  accepted_from_output_id: string | null;
+  verified_by: string;
+  verified_at: string | null;
+  stale_reason: string;
+  conditions: Record<string, unknown>;
+  case_sensitive: boolean | null;
   created_at: string;
   updated_at: string;
 };
@@ -612,6 +637,7 @@ export type ProjectModuleRecord = {
   status: "active" | "archived";
   description: string;
   owner: string;
+  keywords: string[];
   reference_count: number;
   mapping_rules: ModuleMappingRuleRecord[];
   created_at: string;
@@ -1484,13 +1510,29 @@ export async function exportReleaseReportMarkdown(workspaceId: string, projectId
   return response.text();
 }
 
-export function listModules(workspaceId: string, projectId: string, includeArchived = false): Promise<ProjectModuleRecord[]> {
-  const suffix = includeArchived ? "?include_archived_modules=true" : "";
+export function listModules(
+  workspaceId: string,
+  projectId: string,
+  includeArchived = false,
+  mappingRuleStatus?: MappingStatusFilter
+): Promise<ProjectModuleRecord[]> {
+  const params = new URLSearchParams();
+  if (includeArchived) params.set("include_archived_modules", "true");
+  if (mappingRuleStatus) params.set("mapping_rule_status", mappingRuleStatus);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
   return requestJson<ProjectModuleRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/modules${suffix}`);
 }
 
-export function listModuleTree(workspaceId: string, projectId: string, includeArchived = false): Promise<ModuleTreeNode[]> {
-  const suffix = includeArchived ? "?include_archived_modules=true" : "";
+export function listModuleTree(
+  workspaceId: string,
+  projectId: string,
+  includeArchived = false,
+  mappingRuleStatus?: MappingStatusFilter
+): Promise<ModuleTreeNode[]> {
+  const params = new URLSearchParams();
+  if (includeArchived) params.set("include_archived_modules", "true");
+  if (mappingRuleStatus) params.set("mapping_rule_status", mappingRuleStatus);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
   return requestJson<ModuleTreeNode[]>(`/workspaces/${workspaceId}/projects/${projectId}/modules/tree${suffix}`);
 }
 
@@ -1498,7 +1540,7 @@ export function createModule(
   workspaceId: string,
   projectId: string,
   actorEmail: string,
-  payload: { key?: string; code?: string; name: string; slug?: string; parent_id?: string | null; description: string; owner: string; sort_order?: number }
+  payload: { key?: string; code?: string; name: string; slug?: string; parent_id?: string | null; description: string; owner: string; keywords?: string[]; sort_order?: number }
 ): Promise<ProjectModuleRecord> {
   return requestJson<ProjectModuleRecord>(
     `/workspaces/${workspaceId}/projects/${projectId}/modules?actor_email=${encodeURIComponent(actorEmail)}`,
@@ -1514,7 +1556,7 @@ export function updateModule(
   projectId: string,
   moduleId: string,
   actorEmail: string,
-  payload: { name?: string; slug?: string; code?: string; parent_id?: string | null; description?: string; owner?: string; sort_order?: number; status?: "active" | "archived" }
+  payload: { name?: string; slug?: string; code?: string; parent_id?: string | null; description?: string; owner?: string; keywords?: string[]; sort_order?: number; status?: "active" | "archived" }
 ): Promise<ProjectModuleRecord> {
   return requestJson<ProjectModuleRecord>(
     `/workspaces/${workspaceId}/projects/${projectId}/modules/${moduleId}?actor_email=${encodeURIComponent(actorEmail)}`,
@@ -1535,11 +1577,21 @@ export function deleteModule(workspaceId: string, projectId: string, moduleId: s
 export function listMappingRules(
   workspaceId: string,
   projectId: string,
-  filters?: { moduleId?: string; ruleType?: MappingRuleType; source?: MappingSource }
+  filters?: {
+    moduleId?: string;
+    repositoryId?: string;
+    ruleType?: MappingRuleType;
+    relationship?: MappingRelationship;
+    status?: MappingStatusFilter;
+    source?: MappingSource;
+  }
 ): Promise<ModuleMappingRuleRecord[]> {
   const params = new URLSearchParams();
   if (filters?.moduleId) params.set("module_id", filters.moduleId);
+  if (filters?.repositoryId) params.set("repository_id", filters.repositoryId);
   if (filters?.ruleType) params.set("rule_type", filters.ruleType);
+  if (filters?.relationship) params.set("relationship", filters.relationship);
+  if (filters?.status) params.set("status", filters.status);
   if (filters?.source) params.set("source", filters.source);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   return requestJson<ModuleMappingRuleRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/mapping-rules${suffix}`);
@@ -1551,11 +1603,20 @@ export function createMappingRule(
   moduleId: string,
   actorEmail: string,
   payload: {
+    repository_id?: string | null;
     rule_type: MappingRuleType;
     pattern: string;
+    relationship?: MappingRelationship;
+    status?: MappingStatus;
     source: MappingSource;
     description: string;
+    ai_confidence?: number;
     confidence: number;
+    evidence_refs?: Record<string, unknown>[];
+    accepted_from_output_id?: string | null;
+    stale_reason?: string;
+    conditions?: Record<string, unknown>;
+    case_sensitive?: boolean | null;
   }
 ): Promise<ModuleMappingRuleRecord> {
   return requestJson<ModuleMappingRuleRecord>(
@@ -1574,11 +1635,20 @@ export function updateMappingRule(
   ruleId: string,
   actorEmail: string,
   payload: {
+    repository_id?: string | null;
     rule_type?: MappingRuleType;
     pattern?: string;
+    relationship?: MappingRelationship;
+    status?: MappingStatus;
     source?: MappingSource;
     description?: string;
+    ai_confidence?: number;
     confidence?: number;
+    evidence_refs?: Record<string, unknown>[];
+    accepted_from_output_id?: string | null;
+    stale_reason?: string;
+    conditions?: Record<string, unknown>;
+    case_sensitive?: boolean | null;
   }
 ): Promise<ModuleMappingRuleRecord> {
   return requestJson<ModuleMappingRuleRecord>(

@@ -8,6 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.git.models import WorkspaceGitLabCredential
+from app.git.sandbox import git_auth_env, git_command_for_log
 from app.gitlab import ensure_safe_sandbox_path
 from app.main import create_app
 
@@ -99,6 +101,84 @@ def test_gitlab_token_can_be_saved_by_owner_but_never_returned_plaintext(tmp_pat
     assert "glpat-owner-secret" not in str(fetched)
     audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()
     assert "glpat-owner-secret" not in str(audit_logs)
+
+
+def test_git_auth_env_uses_basic_auth_for_git_over_https_and_scopes_to_gitlab_base_url() -> None:
+    credential = WorkspaceGitLabCredential(
+        workspace_id="workspace",
+        gitlab_base_url="https://gitlab.example.com",
+        token_secret="glpat-owner-secret",
+        updated_by="owner@qualiforge.local",
+    )
+
+    auth_env = git_auth_env(credential, "https://gitlab.example.com/team/checkout-api.git")
+
+    assert auth_env["GIT_CONFIG_COUNT"] == "1"
+    assert auth_env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+    assert auth_env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic b2F1dGgyOmdscGF0LW93bmVyLXNlY3JldA=="
+    assert "glpat-owner-secret" not in str(auth_env)
+    assert git_auth_env(credential, "https://gitlab.example.com.evil/team/checkout-api.git") == {}
+
+
+def test_git_command_for_log_redacts_auth_headers() -> None:
+    logged = git_command_for_log(["git", "-c", "http.extraHeader=Authorization: Basic secret", "clone"])
+
+    assert logged == "git -c <redacted-git-header> clone"
+
+
+def test_existing_mirror_sync_fetches_with_basic_auth_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = make_client(tmp_path)
+    workspace = create_workspace(client)
+    project = create_project(client, workspace["id"])
+    saved = client.put(
+        f"/api/workspaces/{workspace['id']}/gitlab-token?actor_email=owner@qualiforge.local",
+        json={"gitlab_base_url": "https://gitlab.example.com", "token": "glpat-owner-secret"},
+    )
+    assert saved.status_code == 200
+    repository_response = client.post(
+        f"/api/workspaces/{workspace['id']}/repositories?actor_email=owner@qualiforge.local",
+        json={
+            "project_id": project["id"],
+            "name": "Checkout API",
+            "remote_url": "https://gitlab.example.com/team/checkout-api.git",
+            "default_branch": "main",
+        },
+    )
+    assert repository_response.status_code == 201
+    repository = repository_response.json()
+    Path(repository["mirror_path"]).mkdir(parents=True)
+    calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+    def fake_run_git(
+        command: list[str],
+        timeout_seconds: int,
+        key_logs: list[str],
+        env_overrides: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((command, env_overrides))
+        key_logs.append("$ " + " ".join(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("app.git.sandbox.run_git", fake_run_git)
+
+    queued = client.post(
+        f"/api/workspaces/{workspace['id']}/repositories/{repository['id']}/sync?actor_email=owner@qualiforge.local"
+    )
+
+    assert queued.status_code == 202
+    assert calls[0] == (
+        ["git", "-C", repository["mirror_path"], "remote", "set-url", "origin", "https://gitlab.example.com/team/checkout-api.git"],
+        None,
+    )
+    assert calls[1][0] == ["git", "-C", repository["mirror_path"], "remote", "update", "--prune"]
+    assert calls[1][1] == {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.extraHeader",
+        "GIT_CONFIG_VALUE_0": "Authorization: Basic b2F1dGgyOmdscGF0LW93bmVyLXNlY3JldA==",
+    }
+    jobs = client.get(f"/api/workspaces/{workspace['id']}/jobs?repository_id={repository['id']}").json()
+    assert jobs[0]["status"] == "succeeded", jobs[0]
+    assert "glpat-owner-secret" not in str(jobs[0]["key_logs"])
 
 
 def test_project_can_bind_multiple_repositories_with_system_generated_sandbox_paths(tmp_path: Path) -> None:

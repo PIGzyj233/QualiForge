@@ -3,7 +3,6 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import re
-import shutil
 import subprocess
 import time
 from collections import Counter
@@ -61,7 +60,7 @@ from app.agents.graph_types import (
 from app.cases.imports import ImportBatch, ImportCaseDraft
 from app.cases.step_models import steps_expected_text
 from app.git.models import GitRepository, RepositoryStatus
-from app.git.sandbox import ensure_safe_sandbox_path
+from app.git.sandbox import ensure_safe_sandbox_path, remove_tree_readonly
 from app.platform.config import Settings
 from app.platform.telemetry import (
     AGENT_MODEL_CALLS_TOTAL,
@@ -1200,7 +1199,7 @@ class AgentGraphExecutor:
         root = Path(self.settings.git_sandbox_root).expanduser()
         worktree_path = ensure_safe_sandbox_path(
             root,
-            root / run.workspace_id[:12] / repository.project_id[:12] / "agent-worktrees" / run.id / repository.id,
+            root / run.workspace_id[:8] / repository.project_id[:8] / "agent-worktrees" / run.id[:12] / repository.id[:12],
         )
         sandbox = self.db.scalar(
             select(AgentRepositorySandbox).where(
@@ -1232,7 +1231,7 @@ class AgentGraphExecutor:
             resolved_ref = self._resolve_ref(mirror_path, requested_ref, repository.sync_timeout_seconds)
             worktree_path.parent.mkdir(parents=True, exist_ok=True)
             if worktree_path.exists():
-                shutil.rmtree(worktree_path)
+                remove_tree_readonly(worktree_path)
             self._run_git(["git", "clone", "--shared", "--no-checkout", "--", str(mirror_path), str(worktree_path)], repository.sync_timeout_seconds)
             self._run_git(["git", "-C", str(worktree_path), "checkout", "--detach", resolved_ref], repository.sync_timeout_seconds)
             self._mark_files_readonly(worktree_path)

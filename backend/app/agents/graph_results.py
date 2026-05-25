@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -15,6 +14,7 @@ from app.agents import (
     AgentToolCall,
 )
 from app.agents.graph_types import AgentRunExecutionResult
+from app.git.sandbox import remove_tree_readonly
 from app.workspace.routes import now_utc
 
 
@@ -75,7 +75,7 @@ def cleanup_agent_sandboxes(db: Session, *, run_id: str, repository_id: str) -> 
             sandbox.error_summary = f"cleanup_anomaly: dirty worktree retained: {dirty[:500]}"
             continue
         try:
-            shutil.rmtree(worktree)
+            remove_tree_readonly(worktree)
         except OSError as exc:
             sandbox.status = AgentRepositorySandboxStatus.failed.value
             sandbox.error_summary = f"cleanup_failed: {str(exc)[:500]}"

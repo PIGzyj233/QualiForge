@@ -1,4 +1,4 @@
-import type { AIDataPolicy, AIPurpose, MappingRuleType, MappingSource, PlanItemRecord } from "../api";
+import type { AIDataPolicy, AIPurpose, MappingRelationship, MappingRuleType, MappingSource, MappingStatus, PlanItemRecord } from "../api";
 
 export const statusLabel: Record<string, string> = {
   done: "已完成",
@@ -103,9 +103,33 @@ export const mappingRuleTypeLabel: Record<MappingRuleType, string> = {
   file: "文件",
   api: "接口",
   service: "服务",
+  command: "命令",
+  library_api: "库 API",
+  symbol: "符号",
+  package: "包",
+  build_target: "构建目标",
   config_key: "配置 Key",
   database_migration: "数据库迁移",
+  protocol: "协议",
+  transport: "传输",
+  format: "格式",
+  codec: "编解码",
+  media_pipeline: "媒体链路",
+  asset_fixture: "资产/Fixture",
   keyword: "关键词"
+};
+
+export const mappingRelationshipLabel: Record<MappingRelationship, string> = {
+  primary: "主归属",
+  related: "相关",
+  dependency: "依赖",
+  evidence: "证据"
+};
+
+export const mappingStatusLabel: Record<MappingStatus, string> = {
+  active: "活跃",
+  stale: "待复核",
+  archived: "归档"
 };
 
 export const mappingSourceLabel: Record<MappingSource, string> = {

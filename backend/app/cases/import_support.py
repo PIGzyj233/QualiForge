@@ -19,7 +19,7 @@ from app.cases.import_models import (
     ImportCaseDraft,
     ImportDraftStatus,
 )
-from app.cases.modules import ModuleMappingRule, ProjectModule
+from app.cases.modules import MappingRelationship, MappingRuleStatus, ModuleMappingRule, ProjectModule
 from app.cases.step_models import normalize_steps_with_legacy
 from app.git.models import Job, JobStatus
 from app.platform.database import Database
@@ -177,7 +177,12 @@ def load_modules_and_rules(db: Session, workspace_id: str, project_id: str) -> t
     ).all()
     rules = db.scalars(
         select(ModuleMappingRule)
-        .where(ModuleMappingRule.workspace_id == workspace_id, ModuleMappingRule.project_id == project_id)
+        .where(
+            ModuleMappingRule.workspace_id == workspace_id,
+            ModuleMappingRule.project_id == project_id,
+            ModuleMappingRule.status == MappingRuleStatus.active.value,
+            ModuleMappingRule.relationship != MappingRelationship.evidence.value,
+        )
         .order_by(ModuleMappingRule.rule_type, ModuleMappingRule.pattern)
     ).all()
     return list(modules), list(rules)

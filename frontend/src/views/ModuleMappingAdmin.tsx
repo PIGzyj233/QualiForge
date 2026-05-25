@@ -6,12 +6,16 @@ import {
   createModule,
   deleteMappingRule,
   deleteModule,
+  GitRepositoryRecord,
   listMappingRules,
   listModuleTree,
   listProjects,
+  listRepositories,
   listWorkspaces,
+  MappingRelationship,
   MappingRuleType,
   MappingSource,
+  MappingStatus,
   ModuleMappingRuleRecord,
   ModuleTreeNode,
   ProjectModuleRecord,
@@ -21,7 +25,7 @@ import {
   updateModule,
   WorkspaceRecord
 } from "../api";
-import { mappingRuleTypeLabel, mappingSourceLabel } from "../lib/labels";
+import { mappingRelationshipLabel, mappingRuleTypeLabel, mappingSourceLabel, mappingStatusLabel } from "../lib/labels";
 import { pickExistingId } from "../lib/selection";
 
 type DialogMode = { kind: "create"; parentId: string | null } | { kind: "edit"; module: ProjectModuleRecord } | null;
@@ -32,6 +36,43 @@ function flattenTree(nodes: ModuleTreeNode[], acc: ProjectModuleRecord[] = []): 
     flattenTree(node.children, acc);
   }
   return acc;
+}
+
+function splitTextList(value: string): string[] {
+  const seen = new Set<string>();
+  return value
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (!item || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function parseJsonObjectList(value: string): Record<string, unknown>[] {
+  const parsed = JSON.parse(value.trim() || "[]") as unknown;
+  if (!Array.isArray(parsed) || parsed.some((item) => !item || typeof item !== "object" || Array.isArray(item))) {
+    throw new Error("证据引用必须是 JSON 对象数组");
+  }
+  return parsed as Record<string, unknown>[];
+}
+
+function resetRuleDefaults() {
+  return {
+    repositoryId: "",
+    type: "directory" as MappingRuleType,
+    pattern: "",
+    relationship: "primary" as MappingRelationship,
+    status: "active" as MappingStatus,
+    source: "manual" as MappingSource,
+    description: "",
+    aiConfidence: "0",
+    confidence: "90",
+    evidenceRefs: "[]",
+    staleReason: ""
+  };
 }
 
 function TreeNode({
@@ -105,6 +146,7 @@ function ModuleDialog({
     slug: string;
     description: string;
     owner: string;
+    keywords: string[];
     status: "active" | "archived";
   }) => Promise<void>;
 }) {
@@ -115,6 +157,7 @@ function ModuleDialog({
   const [slug, setSlug] = useState(module?.slug ?? "");
   const [description, setDescription] = useState(module?.description ?? "");
   const [owner, setOwner] = useState(module?.owner ?? "");
+  const [keywords, setKeywords] = useState((module?.keywords ?? []).join(", "));
   const [status, setStatus] = useState<"active" | "archived">(module?.status ?? "active");
 
   useEffect(() => {
@@ -124,6 +167,7 @@ function ModuleDialog({
       setSlug(mode.module.slug);
       setDescription(mode.module.description);
       setOwner(mode.module.owner);
+      setKeywords(mode.module.keywords.join(", "));
       setStatus(mode.module.status);
     } else if (mode?.kind === "create") {
       setName("");
@@ -131,6 +175,7 @@ function ModuleDialog({
       setSlug("");
       setDescription("");
       setOwner("");
+      setKeywords("");
       setStatus("active");
     }
   }, [mode]);
@@ -139,7 +184,7 @@ function ModuleDialog({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await onSubmit({ name, code, slug, description, owner, status });
+    await onSubmit({ name, code, slug, description, owner, keywords: splitTextList(keywords), status });
   }
 
   return (
@@ -164,6 +209,10 @@ function ModuleDialog({
         <label>
           描述
           <input value={description} onChange={(e) => setDescription(e.target.value)} />
+        </label>
+        <label>
+          关键词
+          <input value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="payment, refund" />
         </label>
         <div className="form-row">
           <label>
@@ -199,6 +248,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [repositories, setRepositories] = useState<GitRepositoryRecord[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [tree, setTree] = useState<ModuleTreeNode[]>([]);
   const [mappingRules, setMappingRules] = useState<ModuleMappingRuleRecord[]>([]);
@@ -206,11 +256,17 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
   const [dialog, setDialog] = useState<DialogMode>(null);
 
   // Rule editor state
-  const [ruleType, setRuleType] = useState<MappingRuleType>("directory");
-  const [rulePattern, setRulePattern] = useState("backend/app/payments/**");
-  const [ruleSource, setRuleSource] = useState<MappingSource>("manual");
-  const [ruleDescription, setRuleDescription] = useState("Payment implementation surface");
-  const [ruleConfidence, setRuleConfidence] = useState("90");
+  const [ruleRepositoryId, setRuleRepositoryId] = useState(resetRuleDefaults().repositoryId);
+  const [ruleType, setRuleType] = useState<MappingRuleType>(resetRuleDefaults().type);
+  const [rulePattern, setRulePattern] = useState(resetRuleDefaults().pattern);
+  const [ruleRelationship, setRuleRelationship] = useState<MappingRelationship>(resetRuleDefaults().relationship);
+  const [ruleStatus, setRuleStatus] = useState<MappingStatus>(resetRuleDefaults().status);
+  const [ruleSource, setRuleSource] = useState<MappingSource>(resetRuleDefaults().source);
+  const [ruleDescription, setRuleDescription] = useState(resetRuleDefaults().description);
+  const [ruleAiConfidence, setRuleAiConfidence] = useState(resetRuleDefaults().aiConfidence);
+  const [ruleConfidence, setRuleConfidence] = useState(resetRuleDefaults().confidence);
+  const [ruleEvidenceRefs, setRuleEvidenceRefs] = useState(resetRuleDefaults().evidenceRefs);
+  const [ruleStaleReason, setRuleStaleReason] = useState(resetRuleDefaults().staleReason);
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
@@ -220,13 +276,31 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
   const selectedModule = allModules.find((m) => m.id === selectedModuleId) ?? null;
   const ruleList = useMemo(() => mappingRules.filter((r) => r.module_id === selectedModuleId), [mappingRules, selectedModuleId]);
 
+  function resetRuleForm() {
+    const defaults = resetRuleDefaults();
+    setRuleRepositoryId(defaults.repositoryId);
+    setRuleType(defaults.type);
+    setRulePattern(defaults.pattern);
+    setRuleRelationship(defaults.relationship);
+    setRuleStatus(defaults.status);
+    setRuleSource(defaults.source);
+    setRuleDescription(defaults.description);
+    setRuleAiConfidence(defaults.aiConfidence);
+    setRuleConfidence(defaults.confidence);
+    setRuleEvidenceRefs(defaults.evidenceRefs);
+    setRuleStaleReason(defaults.staleReason);
+    setEditingRuleId(null);
+  }
+
   async function refreshProjectModules(workspaceId: string, projectId: string) {
-    const [nextTree, nextRules] = await Promise.all([
-      listModuleTree(workspaceId, projectId),
-      listMappingRules(workspaceId, projectId)
+    const [nextTree, nextRules, nextRepositories] = await Promise.all([
+      listModuleTree(workspaceId, projectId, false, "all"),
+      listMappingRules(workspaceId, projectId, { status: "all" }),
+      listRepositories(workspaceId, projectId)
     ]);
     setTree(nextTree);
     setMappingRules(nextRules);
+    setRepositories(nextRepositories);
     const flattened = flattenTree(nextTree);
     if (!flattened.some((m) => m.id === selectedModuleId)) {
       setSelectedModuleId(flattened[0]?.id ?? "");
@@ -243,6 +317,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
       setSelectedWorkspaceId(wid);
       if (!wid) {
         setProjects([]);
+        setRepositories([]);
         setTree([]);
         setMappingRules([]);
         return;
@@ -295,6 +370,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
     slug: string;
     description: string;
     owner: string;
+    keywords: string[];
     status: "active" | "archived";
   }) {
     if (!selectedWorkspaceId || !selectedProjectId || !dialog) return;
@@ -308,6 +384,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
           slug: payload.slug || undefined,
           description: payload.description,
           owner: payload.owner,
+          keywords: payload.keywords,
           status: payload.status
         });
         setMessage(`已更新模块 ${payload.name}`);
@@ -318,7 +395,8 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
           slug: payload.slug || undefined,
           parent_id: dialog.parentId,
           description: payload.description,
-          owner: payload.owner
+          owner: payload.owner,
+          keywords: payload.keywords
         });
         setMessage(`已创建模块 ${payload.name}`);
         setSelectedModuleId(created.id);
@@ -353,28 +431,28 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
     setBusy(true);
     setMessage(null);
     try {
+      const evidenceRefs = parseJsonObjectList(ruleEvidenceRefs);
+      const payload = {
+        repository_id: ruleRepositoryId || null,
+        rule_type: ruleType,
+        pattern: rulePattern,
+        relationship: ruleRelationship,
+        status: ruleStatus,
+        source: ruleSource,
+        description: ruleDescription,
+        ai_confidence: Number(ruleAiConfidence || 0),
+        confidence: Number(ruleConfidence || 0),
+        evidence_refs: evidenceRefs,
+        stale_reason: ruleStatus === "stale" ? ruleStaleReason : ""
+      };
       if (editingRuleId) {
-        await updateMappingRule(selectedWorkspaceId, selectedProjectId, selectedModuleId, editingRuleId, actorEmail, {
-          rule_type: ruleType,
-          pattern: rulePattern,
-          source: ruleSource,
-          description: ruleDescription,
-          confidence: Number(ruleConfidence)
-        });
+        await updateMappingRule(selectedWorkspaceId, selectedProjectId, selectedModuleId, editingRuleId, actorEmail, payload);
         setMessage("已更新映射规则");
       } else {
-        await createMappingRule(selectedWorkspaceId, selectedProjectId, selectedModuleId, actorEmail, {
-          rule_type: ruleType,
-          pattern: rulePattern,
-          source: ruleSource,
-          description: ruleDescription,
-          confidence: Number(ruleConfidence)
-        });
+        await createMappingRule(selectedWorkspaceId, selectedProjectId, selectedModuleId, actorEmail, payload);
         setMessage("已新增映射规则");
       }
-      setEditingRuleId(null);
-      setRulePattern("");
-      setRuleDescription("");
+      resetRuleForm();
       await refreshProjectModules(selectedWorkspaceId, selectedProjectId);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "映射规则保存失败");
@@ -385,11 +463,17 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
 
   function editRule(rule: ModuleMappingRuleRecord) {
     setEditingRuleId(rule.id);
+    setRuleRepositoryId(rule.repository_id ?? "");
     setRuleType(rule.rule_type);
     setRulePattern(rule.pattern);
+    setRuleRelationship(rule.relationship);
+    setRuleStatus(rule.status);
     setRuleSource(rule.source);
     setRuleDescription(rule.description);
+    setRuleAiConfidence(String(rule.ai_confidence));
     setRuleConfidence(String(rule.confidence));
+    setRuleEvidenceRefs(JSON.stringify(rule.evidence_refs ?? [], null, 2));
+    setRuleStaleReason(rule.stale_reason);
   }
 
   async function deleteRule(rule: ModuleMappingRuleRecord) {
@@ -412,7 +496,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
         <div>
           <span className="eyebrow">Modules</span>
           <h2>模块目录与代码映射</h2>
-          <p className="panel-sub">维护功能模块层级，并在每个模块上绑定代码路径、API、配置等映射规则。</p>
+          <p className="panel-sub">维护人类确认的功能/能力树，并把代码路径、API、配置、协议、符号等证据绑定到模块。</p>
         </div>
         <Network size={20} aria-hidden="true" />
       </header>
@@ -484,6 +568,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
                   <span className="eyebrow">已选模块</span>
                   <h3>{selectedModule.path_label}</h3>
                   <p>{selectedModule.description || "暂无描述"} · Owner {selectedModule.owner || "未指定"}</p>
+                  {selectedModule.keywords.length ? <p>关键词 {selectedModule.keywords.join(" · ")}</p> : null}
                 </div>
                 <div className="module-detail-actions">
                   <button className="ghost-button small" type="button" onClick={() => setDialog({ kind: "create", parentId: selectedModule.id })} disabled={busy}>
@@ -506,11 +591,44 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
                 <form className="card-form" onSubmit={handleRuleSubmit}>
                   <div className="form-row">
                     <label>
+                      仓库
+                      <select value={ruleRepositoryId} onChange={(e) => setRuleRepositoryId(e.target.value)}>
+                        <option value="">项目通用</option>
+                        {repositories.map((repository) => (
+                          <option key={repository.id} value={repository.id}>
+                            {repository.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
                       类型
                       <select value={ruleType} onChange={(e) => setRuleType(e.target.value as MappingRuleType)}>
                         {(Object.keys(mappingRuleTypeLabel) as MappingRuleType[]).map((type) => (
                           <option key={type} value={type}>
                             {mappingRuleTypeLabel[type]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="form-row">
+                    <label>
+                      关系
+                      <select value={ruleRelationship} onChange={(e) => setRuleRelationship(e.target.value as MappingRelationship)}>
+                        {(Object.keys(mappingRelationshipLabel) as MappingRelationship[]).map((relationship) => (
+                          <option key={relationship} value={relationship}>
+                            {mappingRelationshipLabel[relationship]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      状态
+                      <select value={ruleStatus} onChange={(e) => setRuleStatus(e.target.value as MappingStatus)}>
+                        {(Object.keys(mappingStatusLabel) as MappingStatus[]).map((item) => (
+                          <option key={item} value={item}>
+                            {mappingStatusLabel[item]}
                           </option>
                         ))}
                       </select>
@@ -526,26 +644,40 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
                       </select>
                     </label>
                   </div>
-                  <label>
-                    Pattern
-                    <input value={rulePattern} onChange={(e) => setRulePattern(e.target.value)} required />
-                  </label>
                   <div className="form-row">
                     <label>
-                      说明
-                      <input value={ruleDescription} onChange={(e) => setRuleDescription(e.target.value)} />
+                      Pattern
+                      <input value={rulePattern} onChange={(e) => setRulePattern(e.target.value)} required />
                     </label>
                     <label>
-                      置信度
+                      AI 置信度
+                      <input type="number" min="0" max="100" value={ruleAiConfidence} onChange={(e) => setRuleAiConfidence(e.target.value)} />
+                    </label>
+                    <label>
+                      当前置信度
                       <input type="number" min="0" max="100" value={ruleConfidence} onChange={(e) => setRuleConfidence(e.target.value)} />
                     </label>
                   </div>
+                  <label>
+                    说明
+                    <input value={ruleDescription} onChange={(e) => setRuleDescription(e.target.value)} />
+                  </label>
+                  {ruleStatus === "stale" ? (
+                    <label>
+                      复核原因
+                      <input value={ruleStaleReason} onChange={(e) => setRuleStaleReason(e.target.value)} />
+                    </label>
+                  ) : null}
+                  <label>
+                    Evidence refs JSON
+                    <textarea value={ruleEvidenceRefs} onChange={(e) => setRuleEvidenceRefs(e.target.value)} rows={4} />
+                  </label>
                   <div className="form-row compact">
                     <button type="submit" className="primary-button small" disabled={busy}>
                       {editingRuleId ? "保存规则" : "新增规则"}
                     </button>
                     {editingRuleId ? (
-                      <button type="button" className="ghost-button small" onClick={() => setEditingRuleId(null)}>
+                      <button type="button" className="ghost-button small" onClick={resetRuleForm}>
                         取消
                       </button>
                     ) : null}
@@ -560,8 +692,13 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
                           {mappingRuleTypeLabel[rule.rule_type]} · {rule.pattern}
                         </strong>
                         <span>
-                          {mappingSourceLabel[rule.source]} · 置信度 {rule.confidence}%
+                          {mappingRelationshipLabel[rule.relationship]} · {mappingStatusLabel[rule.status]} · {mappingSourceLabel[rule.source]}
                         </span>
+                        <span>
+                          {rule.repository_id ? repositories.find((repo) => repo.id === rule.repository_id)?.name ?? "已绑定仓库" : "项目通用"} · AI {rule.ai_confidence}% · 当前 {rule.confidence}%
+                        </span>
+                        {rule.evidence_refs.length ? <small>证据 {rule.evidence_refs.length} 条</small> : null}
+                        {rule.stale_reason ? <small>复核原因：{rule.stale_reason}</small> : null}
                         <small>{rule.description || "无说明"}</small>
                       </div>
                       <div className="member-card-actions">

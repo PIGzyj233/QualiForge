@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.cases.diff_models import ChangeType, DiffAnalysis, DiffAnalysisResponse, DiffAnalysisStatus, RiskLevel
-from app.cases.modules import ModuleMappingRule, ProjectModule
+from app.cases.modules import MappingRelationship, MappingRuleStatus, ModuleMappingRule, ProjectModule
 from app.git.models import GitRepository, Job, JobStatus
 from app.git.sandbox import ensure_safe_sandbox_path, run_git
 from app.workspace.routes import now_utc
@@ -214,7 +214,7 @@ def parse_numstat(output: str) -> dict[str, dict[str, int]]:
     return stats
 
 
-def load_modules_and_rules(db: Session, workspace_id: str, project_id: str) -> tuple[list[ProjectModule], list[ModuleMappingRule]]:
+def load_modules_and_rules(db: Session, workspace_id: str, project_id: str, repository_id: str) -> tuple[list[ProjectModule], list[ModuleMappingRule]]:
     modules = db.scalars(
         select(ProjectModule)
         .where(ProjectModule.workspace_id == workspace_id, ProjectModule.project_id == project_id)
@@ -222,7 +222,12 @@ def load_modules_and_rules(db: Session, workspace_id: str, project_id: str) -> t
     ).all()
     rules = db.scalars(
         select(ModuleMappingRule)
-        .where(ModuleMappingRule.workspace_id == workspace_id, ModuleMappingRule.project_id == project_id)
+        .where(
+            ModuleMappingRule.workspace_id == workspace_id,
+            ModuleMappingRule.project_id == project_id,
+            ModuleMappingRule.status != MappingRuleStatus.archived.value,
+            (ModuleMappingRule.repository_id.is_(None) | (ModuleMappingRule.repository_id == repository_id)),
+        )
         .order_by(ModuleMappingRule.confidence.desc(), ModuleMappingRule.rule_type)
     ).all()
     return list(modules), list(rules)
@@ -235,37 +240,50 @@ def match_module(
     modules_by_id: dict[str, ProjectModule],
     rules: list[ModuleMappingRule],
 ) -> tuple[ProjectModule | None, int, list[str]]:
-    normalized = normalize_path(path).lower()
-    content_lower = content.lower()
-    structure_names = " ".join(str(item.get("name", "")) for item in structures).lower()
+    normalized_path = normalize_path(path)
+    structure_names_raw = " ".join(str(item.get("name", "")) for item in structures)
     best_module: ProjectModule | None = None
-    best_confidence = 0
+    best_score = 0
     evidence: list[str] = []
+    relationship_weight = {
+        MappingRelationship.primary.value: 1.0,
+        MappingRelationship.related.value: 0.75,
+        MappingRelationship.dependency.value: 0.55,
+    }
 
     for rule in rules:
-        pattern = normalize_path(rule.pattern).lower()
+        if rule.relationship == MappingRelationship.evidence.value:
+            continue
+        case_sensitive = rule.case_sensitive if rule.case_sensitive is not None else rule.rule_type in {"directory", "file"}
+        normalized = normalized_path if case_sensitive else normalized_path.lower()
+        content_text = content if case_sensitive else content.lower()
+        structure_names = structure_names_raw if case_sensitive else structure_names_raw.lower()
+        pattern = normalize_path(rule.pattern) if case_sensitive else normalize_path(rule.pattern).lower()
         matched = False
         if rule.rule_type == "directory":
-            matched = normalized.startswith(pattern.rstrip("/") + "/") or normalized == pattern.rstrip("/")
-        elif rule.rule_type == "file":
+            matched = fnmatch.fnmatch(normalized, pattern) or normalized.startswith(pattern.rstrip("/") + "/") or normalized == pattern.rstrip("/")
+        elif rule.rule_type in {"file", "package", "build_target", "asset_fixture"}:
             matched = fnmatch.fnmatch(normalized, pattern) or normalized.endswith(pattern)
         elif rule.rule_type == "api":
-            matched = pattern in structure_names or pattern in content_lower
-        elif rule.rule_type == "service":
-            matched = pattern in normalized or pattern in content_lower
+            matched = pattern in structure_names or pattern in content_text
         elif rule.rule_type == "config_key":
-            matched = pattern in structure_names or pattern in content_lower
+            matched = pattern in structure_names or pattern in content_text
         elif rule.rule_type == "database_migration":
             matched = pattern in normalized or any(item.get("type") == "database_migration" for item in structures)
         elif rule.rule_type == "keyword":
-            matched = pattern in normalized or pattern in content_lower
+            matched = pattern in normalized or pattern in content_text
+        else:
+            matched = pattern in normalized or pattern in content_text or pattern in structure_names
 
-        if matched and rule.confidence >= best_confidence:
+        status_weight = 0.5 if rule.status == MappingRuleStatus.stale.value else 1.0
+        score = int(rule.confidence * relationship_weight.get(rule.relationship, 0.6) * status_weight)
+        if matched and score >= best_score:
             best_module = modules_by_id.get(rule.module_id)
-            best_confidence = rule.confidence
-            evidence = [f"{rule.rule_type}:{rule.pattern}"]
+            best_score = score
+            status_note = f", {rule.status}" if rule.status != MappingRuleStatus.active.value else ""
+            evidence = [f"{rule.relationship} {rule.rule_type}:{rule.pattern}{status_note}"]
 
-    return best_module, best_confidence, evidence
+    return best_module, best_score, evidence
 
 
 def file_risk(change_type: str, path: str, structures: list[dict[str, str]], additions: int, deletions: int) -> str:
@@ -384,7 +402,7 @@ def run_analysis(
         numstat = run_git(["git", "-C", str(worktree_path), "diff", "--numstat", "-M", base_sha, target_sha, "--"], repository.sync_timeout_seconds, key_logs)
         stats = parse_numstat(numstat.stdout) if numstat.returncode == 0 else {}
 
-        modules, rules = load_modules_and_rules(db, repository.workspace_id, repository.project_id)
+        modules, rules = load_modules_and_rules(db, repository.workspace_id, repository.project_id, repository.id)
         modules_by_id = {module.id: module for module in modules}
         file_changes: list[dict[str, Any]] = []
         for raw in raw_changes:

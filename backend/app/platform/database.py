@@ -63,6 +63,30 @@ TEST_CASE_INDEX_UPGRADES = (
     ("ix_test_cases_source_type", "source_type"),
 )
 
+PROJECT_MODULE_COLUMN_UPGRADES = (
+    ("keywords", "JSON", "'[]'"),
+)
+
+MODULE_MAPPING_RULE_COLUMN_UPGRADES = (
+    ("repository_id", "VARCHAR(32)", None),
+    ("relationship", "VARCHAR(32)", "'primary'"),
+    ("status", "VARCHAR(32)", "'active'"),
+    ("ai_confidence", "INTEGER", "0"),
+    ("evidence_refs", "JSON", "'[]'"),
+    ("accepted_from_output_id", "VARCHAR(32)", None),
+    ("verified_by", "VARCHAR(254)", "''"),
+    ("verified_at", "TIMESTAMP", None),
+    ("stale_reason", "VARCHAR(500)", "''"),
+    ("conditions", "JSON", "'{}'"),
+    ("case_sensitive", "BOOLEAN", None),
+)
+
+MODULE_MAPPING_RULE_INDEX_UPGRADES = (
+    ("ix_module_mapping_rules_repository_id", "repository_id"),
+    ("ix_module_mapping_rules_relationship", "relationship"),
+    ("ix_module_mapping_rules_status", "status"),
+)
+
 
 def normalize_database_url(database_url: str) -> str:
     if database_url.startswith("postgresql://"):
@@ -151,6 +175,24 @@ def run_schema_upgrades(engine) -> None:
                 indexes=TEST_CASE_INDEX_UPGRADES,
             )
             _backfill_legacy_test_case_columns(connection, existing_columns)
+        if "project_modules" in table_names:
+            _upgrade_table(
+                connection,
+                inspector,
+                dialect_name=dialect_name,
+                table_name="project_modules",
+                columns=PROJECT_MODULE_COLUMN_UPGRADES,
+                indexes=(),
+            )
+        if "module_mapping_rules" in table_names:
+            _upgrade_table(
+                connection,
+                inspector,
+                dialect_name=dialect_name,
+                table_name="module_mapping_rules",
+                columns=MODULE_MAPPING_RULE_COLUMN_UPGRADES,
+                indexes=MODULE_MAPPING_RULE_INDEX_UPGRADES,
+            )
 
 
 def _upgrade_table(connection, inspector, *, dialect_name: str, table_name: str, columns, indexes) -> None:
@@ -173,8 +215,8 @@ def _upgrade_table(connection, inspector, *, dialect_name: str, table_name: str,
 
 
 def json_default_sql(dialect_name: str, column_name: str, default_sql: str) -> str:
-    if default_sql == "'{}'" and dialect_name == "postgresql":
-        return "'{}'::json"
+    if default_sql in {"'{}'", "'[]'"} and dialect_name == "postgresql":
+        return f"{default_sql}::json"
     return default_sql
 
 
