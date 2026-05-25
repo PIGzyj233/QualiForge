@@ -236,17 +236,16 @@ def build_candidate_payload(impact: dict[str, Any], files: list[dict[str, Any]],
     config_keys = structure_names(files, "config_key")
     focus = interfaces[0] if interfaces else code_paths[0] if code_paths else module_key
     steps = [
-        f"Deploy or checkout target ref {analysis.target_ref}",
-        f"Exercise changed surface {focus}",
-        "Verify impacted module behavior and rollback-safe side effects",
+        {"action": f"Deploy or checkout target ref {analysis.target_ref}", "expected": "Target ref is available in the test environment"},
+        {"action": f"Exercise changed surface {focus}", "expected": f"{focus} responds as designed under the new revision"},
+        {"action": "Verify impacted module behavior and rollback-safe side effects", "expected": f"{module_key} behaves correctly without regressions"},
     ]
     if config_keys:
-        steps.append(f"Validate config keys: {', '.join(config_keys[:3])}")
+        steps.append({"action": f"Validate config keys: {', '.join(config_keys[:3])}", "expected": "Config-driven behavior matches documented values"})
     return {
         "module_id": impact.get("module_id"),
         "title": f"Validate {module_key} changes from {analysis.base_ref} to {analysis.target_ref}",
         "steps": steps,
-        "expected_result": f"{module_key} behaves correctly on changed paths without regressions.",
         "priority": "P1" if high_signal == "high" else "P2",
         "risk": high_signal,
         "tags": ["ai-diff", module_key.lower()],
@@ -449,8 +448,8 @@ def create_candidate_from_ai_suggestion(
         test_case_id=test_case.id,
         module_id=payload.module_id,
         title=payload.title,
-        steps=payload.steps,
-        expected_result=payload.expected_result,
+        steps=[step.model_dump() for step in payload.steps],
+        expected_result="",
         priority=payload.priority,
         risk=payload.risk,
         tags=payload.tags,

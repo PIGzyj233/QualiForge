@@ -9,6 +9,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.cases.domain import CaseDraftSource
+from app.cases.step_models import CaseStep, StepValidatorMixin
 from app.platform.database import Base
 from app.workspace.routes import new_id, now_utc
 
@@ -55,11 +56,10 @@ class ReviewSettingsResponse(BaseModel):
     updated_at: datetime
 
 
-class TestCaseCreate(BaseModel):
+class TestCaseCreate(StepValidatorMixin, BaseModel):
     module_id: str | None = None
     title: str = Field(min_length=1, max_length=300)
-    steps: list[str] = Field(default_factory=list, max_length=100)
-    expected_result: str = Field(default="", max_length=2000)
+    steps: list[CaseStep] = Field(default_factory=list, max_length=100)
     priority: str = Field(default="P2", max_length=32)
     risk: str = Field(default="medium", max_length=80)
     tags: list[str] = Field(default_factory=list, max_length=50)
@@ -68,11 +68,10 @@ class TestCaseCreate(BaseModel):
     source_ref: dict[str, Any] = Field(default_factory=dict)
 
 
-class CaseDraftUpdate(BaseModel):
+class CaseDraftUpdate(StepValidatorMixin, BaseModel):
     module_id: str | None = None
     title: str | None = Field(default=None, min_length=1, max_length=300)
-    steps: list[str] | None = Field(default=None, max_length=100)
-    expected_result: str | None = Field(default=None, max_length=2000)
+    steps: list[CaseStep] | None = Field(default=None, max_length=100)
     priority: str | None = Field(default=None, max_length=32)
     risk: str | None = Field(default=None, max_length=80)
     tags: list[str] | None = Field(default=None, max_length=50)

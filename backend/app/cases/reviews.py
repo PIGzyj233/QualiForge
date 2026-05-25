@@ -264,8 +264,8 @@ def create_active_edit_draft(workspace_id: str, project_id: str, case_id: str, d
         base_revision_id=revision.id,
         module_id=str(snapshot.get("module_id") or "") or None,
         title=str(snapshot.get("title") or "Untitled case"),
-        steps=[str(item) for item in snapshot.get("steps", [])],
-        expected_result=str(snapshot.get("expected_result") or ""),
+        steps=list(snapshot.get("steps") or []),
+        expected_result="",
         priority=str(snapshot.get("priority") or "P2"),
         risk=str(snapshot.get("risk") or "medium"),
         tags=[str(item) for item in snapshot.get("tags", [])],
@@ -611,7 +611,7 @@ def direct_revision(
     test_case = get_case_or_404(db, workspace_id, project_id, case_id)
     if test_case.lifecycle_status != TestCaseLifecycle.active.value:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only active cases can use direct revision")
-    high_impact = {"module_id", "steps", "expected_result"}
+    high_impact = {"module_id", "steps"}
     requested = set(payload.model_dump(exclude_unset=True)) - {"change_summary"}
     if requested & high_impact:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="High-impact changes must go through review")
@@ -629,8 +629,8 @@ def direct_revision(
         base_revision_id=revision.id,
         module_id=str(snapshot.get("module_id") or "") or None,
         title=str(snapshot.get("title") or "Untitled case"),
-        steps=[str(item) for item in snapshot.get("steps", [])],
-        expected_result=str(snapshot.get("expected_result") or ""),
+        steps=list(snapshot.get("steps") or []),
+        expected_result="",
         priority=str(snapshot.get("priority") or "P2"),
         risk=str(snapshot.get("risk") or "medium"),
         tags=[str(item) for item in snapshot.get("tags", [])],

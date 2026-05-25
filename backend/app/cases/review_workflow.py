@@ -136,7 +136,6 @@ def draft_content_snapshot(draft: CaseDraft, test_case_id: str | None = None) ->
         "module_id": draft.module_id,
         "title": draft.title,
         "steps": draft.steps,
-        "expected_result": draft.expected_result,
         "priority": draft.priority,
         "risk": draft.risk,
         "tags": draft.tags,
@@ -151,7 +150,7 @@ def apply_draft_update(db: Session, workspace_id: str, project_id: str, draft: C
     if "module_id" in update_data and update_data["module_id"]:
         get_module_or_404(db, workspace_id, project_id, update_data["module_id"])
     for field, value in update_data.items():
-        if field in {"steps", "tags"} and value is not None:
+        if field == "tags" and value is not None:
             value = [item.strip() for item in value if item.strip()]
         setattr(draft, field, value)
     draft.updated_by = actor_email
@@ -179,8 +178,8 @@ def create_case_draft(
         base_revision_id=base_revision_id,
         module_id=data.get("module_id"),
         title=str(data.get("title") or "Untitled case"),
-        steps=[step.strip() for step in data.get("steps", []) if step.strip()],
-        expected_result=str(data.get("expected_result") or ""),
+        steps=data.get("steps", []),
+        expected_result="",
         priority=str(data.get("priority") or "P2"),
         risk=str(data.get("risk") or "medium"),
         tags=[tag.strip() for tag in data.get("tags", []) if tag.strip()],

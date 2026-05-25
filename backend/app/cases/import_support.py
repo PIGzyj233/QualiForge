@@ -204,8 +204,13 @@ def convert_rows_to_drafts(rows: list[dict], modules: list[ProjectModule], rules
     known_fields = {"title", "steps", "expected_result", "priority", "risk", "tags", "module"}
     for index, row in enumerate(rows, start=1):
         title = str(row.get("title") or row.get("测试点") or f"Imported case #{index}").strip()
-        steps = split_steps(str(row.get("steps") or ""))
+        raw_steps = split_steps(str(row.get("steps") or ""))
         expected_result = str(row.get("expected_result") or "").strip()
+        steps = [{"action": step, "expected": ""} for step in raw_steps]
+        if expected_result and steps:
+            steps[-1]["expected"] = expected_result[:1000]
+        elif expected_result and not steps:
+            steps = [{"action": title, "expected": expected_result[:1000]}]
         tags = split_tags(str(row.get("tags") or ""))
         custom_fields = {key: value for key, value in row.items() if key not in known_fields and str(value).strip()}
         confidence = 90 if title and steps and expected_result else 70
@@ -215,7 +220,6 @@ def convert_rows_to_drafts(rows: list[dict], modules: list[ProjectModule], rules
                 "module_id": infer_module_id(row, modules, rules),
                 "title": title[:300],
                 "steps": steps,
-                "expected_result": expected_result[:2000],
                 "priority": str(row.get("priority") or "P2").strip()[:32],
                 "risk": str(row.get("risk") or "medium").strip()[:80],
                 "tags": tags,
@@ -262,7 +266,6 @@ def draft_to_response(draft: ImportCaseDraft) -> DraftResponse:
         review_cycle_id=draft.review_cycle_id,
         title=draft.title,
         steps=draft.steps,
-        expected_result=draft.expected_result,
         priority=draft.priority,
         risk=draft.risk,
         tags=draft.tags,
@@ -331,7 +334,6 @@ def run_import_conversion(database: Database, batch_id: str) -> None:
                         module_id=item["module_id"],
                         title=item["title"],
                         steps=item["steps"],
-                        expected_result=item["expected_result"],
                         priority=item["priority"],
                         risk=item["risk"],
                         tags=item["tags"],

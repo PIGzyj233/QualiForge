@@ -154,7 +154,9 @@ def apply_draft_update(draft: ImportCaseDraft, payload: DraftUpdate) -> dict:
     update_data = payload.model_dump(exclude_unset=True)
     update_data.pop("draft_ids", None)
     for field, value in update_data.items():
-        setattr(draft, field, [item.strip() for item in value if item.strip()] if field in {"steps", "tags"} and value else value)
+        if field == "tags" and value is not None:
+            value = [item.strip() for item in value if item.strip()]
+        setattr(draft, field, value)
     draft.updated_at = now_utc()
     return update_data
 
@@ -182,7 +184,7 @@ def create_review_case_from_import_draft(db: Session, batch: ImportBatch, draft:
         module_id=draft.module_id,
         title=draft.title,
         steps=draft.steps,
-        expected_result=draft.expected_result,
+        expected_result="",
         priority=draft.priority,
         risk=draft.risk,
         tags=draft.tags,

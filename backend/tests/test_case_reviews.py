@@ -61,8 +61,10 @@ def create_case(
         json={
             "module_id": module_id,
             "title": "Checkout payment succeeds",
-            "steps": ["Open checkout", "Pay order"],
-            "expected_result": "Order is paid",
+            "steps": [
+                {"action": "Open checkout", "expected": "Checkout page loads"},
+                {"action": "Pay order", "expected": "Order is paid"},
+            ],
             "priority": "P1",
             "risk": "high",
             "tags": ["checkout"],
@@ -159,13 +161,18 @@ def test_changes_requested_requires_comment_and_addressing_returns_to_queue_then
     draft_id = detail["active_draft"]["id"]
     updated = client.patch(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/case-drafts/{draft_id}?actor_email=author@qualiforge.local",
-        json={"expected_result": "Order is paid and receipt is visible"},
+        json={
+            "steps": [
+                {"action": "Open checkout", "expected": "Checkout page loads"},
+                {"action": "Pay order", "expected": "Order is paid and receipt is visible"},
+            ]
+        },
     )
     assert updated.status_code == 200
 
     addressed = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/review-cycles/{cycle_id}/address-changes?actor_email=author@qualiforge.local",
-        json={"comment": "Added receipt expectation", "diff_summary": {"expected_result": "updated"}},
+        json={"comment": "Added receipt expectation", "diff_summary": {"steps": "updated"}},
     )
     assert addressed.status_code == 201
     assert addressed.json()["action"] == "changes_addressed"

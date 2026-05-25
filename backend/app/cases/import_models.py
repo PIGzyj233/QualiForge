@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.cases.step_models import CaseStep, StepValidatorMixin
 from app.platform.database import Base
 from app.workspace.routes import new_id, now_utc
 
@@ -106,8 +107,7 @@ class DraftResponse(BaseModel):
     case_draft_id: str | None
     review_cycle_id: str | None
     title: str
-    steps: list[str]
-    expected_result: str
+    steps: list[CaseStep]
     priority: str
     risk: str
     tags: list[str]
@@ -120,11 +120,10 @@ class DraftResponse(BaseModel):
     updated_at: datetime
 
 
-class DraftUpdate(BaseModel):
+class DraftUpdate(StepValidatorMixin, BaseModel):
     module_id: str | None = None
     title: str | None = Field(default=None, min_length=1, max_length=300)
-    steps: list[str] | None = Field(default=None, max_length=100)
-    expected_result: str | None = Field(default=None, max_length=2000)
+    steps: list[CaseStep] | None = Field(default=None, max_length=100)
     priority: str | None = Field(default=None, max_length=32)
     risk: str | None = Field(default=None, max_length=80)
     tags: list[str] | None = Field(default=None, max_length=50)

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.cases.step_models import CaseStep
 from app.platform.database import Base
 from app.workspace.routes import new_id, now_utc
 
@@ -158,8 +159,7 @@ class CaseDraftResponse(BaseModel):
     base_revision_id: str | None
     module_id: str | None
     title: str
-    steps: list[str]
-    expected_result: str
+    steps: list[CaseStep]
     priority: str
     risk: str
     tags: list[str]
@@ -255,8 +255,7 @@ def draft_to_response(draft: CaseDraft) -> CaseDraftResponse:
         base_revision_id=draft.base_revision_id,
         module_id=draft.module_id,
         title=draft.title,
-        steps=draft.steps,
-        expected_result=draft.expected_result,
+        steps=[CaseStep.model_validate(step) if not isinstance(step, CaseStep) else step for step in (draft.steps or [])],
         priority=draft.priority,
         risk=draft.risk,
         tags=draft.tags,

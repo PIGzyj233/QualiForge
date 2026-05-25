@@ -98,8 +98,10 @@ def test_csv_upload_creates_import_batch_job_preserved_file_and_ai_drafts(tmp_pa
     drafts = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/imports/{batch['id']}/drafts").json()
     assert len(drafts) == 1
     assert drafts[0]["module_id"] == module["id"]
-    assert drafts[0]["steps"] == ["pay order", "request refund"]
-    assert drafts[0]["expected_result"] == "Refund succeeds"
+    assert drafts[0]["steps"] == [
+        {"action": "pay order", "expected": ""},
+        {"action": "request refund", "expected": "Refund succeeds"},
+    ]
     assert drafts[0]["tags"] == ["checkout", "refund"]
 
     jobs = client.get(f"/api/workspaces/{workspace['id']}/jobs").json()
