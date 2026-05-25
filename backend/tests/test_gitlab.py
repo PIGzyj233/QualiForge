@@ -126,7 +126,7 @@ def test_git_command_for_log_redacts_auth_headers() -> None:
     assert logged == "git -c <redacted-git-header> clone"
 
 
-def test_existing_mirror_sync_fetches_with_basic_auth_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_existing_checkout_sync_fetches_with_basic_auth_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = make_client(tmp_path)
     workspace = create_workspace(client)
     project = create_project(client, workspace["id"])
@@ -147,6 +147,7 @@ def test_existing_mirror_sync_fetches_with_basic_auth_env(tmp_path: Path, monkey
     assert repository_response.status_code == 201
     repository = repository_response.json()
     Path(repository["mirror_path"]).mkdir(parents=True)
+    Path(repository["mirror_path"], ".git").mkdir()
     calls: list[tuple[list[str], dict[str, str] | None]] = []
 
     def fake_run_git(
@@ -170,12 +171,14 @@ def test_existing_mirror_sync_fetches_with_basic_auth_env(tmp_path: Path, monkey
         ["git", "-C", repository["mirror_path"], "remote", "set-url", "origin", "https://gitlab.example.com/team/checkout-api.git"],
         None,
     )
-    assert calls[1][0] == ["git", "-C", repository["mirror_path"], "remote", "update", "--prune"]
+    assert calls[1][0] == ["git", "-C", repository["mirror_path"], "fetch", "--prune", "--tags", "origin"]
     assert calls[1][1] == {
         "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_KEY_0": "http.extraHeader",
         "GIT_CONFIG_VALUE_0": "Authorization: Basic b2F1dGgyOmdscGF0LW93bmVyLXNlY3JldA==",
     }
+    assert calls[2][0] == ["git", "-C", repository["mirror_path"], "checkout", "-B", "main", "origin/main"]
+    assert calls[3][0] == ["git", "-C", repository["mirror_path"], "reset", "--hard", "origin/main"]
     jobs = client.get(f"/api/workspaces/{workspace['id']}/jobs?repository_id={repository['id']}").json()
     assert jobs[0]["status"] == "succeeded", jobs[0]
     assert "glpat-owner-secret" not in str(jobs[0]["key_logs"])
@@ -250,8 +253,9 @@ def test_repository_sync_runs_job_and_records_status_logs_and_mirror(tmp_path: P
     jobs = client.get(f"/api/workspaces/{workspace['id']}/jobs?repository_id={repository['id']}").json()
     assert jobs[0]["status"] == "succeeded", jobs[0]
     assert jobs[0]["error_summary"] == ""
-    assert any("git clone --mirror" in entry for entry in jobs[0]["key_logs"])
+    assert any("git clone --no-single-branch" in entry for entry in jobs[0]["key_logs"])
     assert Path(repository["mirror_path"]).exists()
+    assert Path(repository["mirror_path"], ".git").exists()
 
     repositories = client.get(f"/api/workspaces/{workspace['id']}/repositories?project_id={project['id']}").json()
     assert repositories[0]["status"] == "synced"

@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { FileText, FolderKanban, GitCommitHorizontal, History, Network, ShieldAlert } from "lucide-react";
+import { ChevronDown, ChevronRight, Code2, FileText, FolderKanban, GitCommitHorizontal, History, Network, ShieldAlert } from "lucide-react";
 import { useParams } from "react-router-dom";
 import {
   createDiffAnalysis,
@@ -16,6 +16,14 @@ import {
 import { statusLabel, riskLabel, changeTypeLabel } from "../lib/labels";
 import { pickExistingId } from "../lib/selection";
 
+function diffLineClass(line: string) {
+  if (line.startsWith("+")) return "added";
+  if (line.startsWith("-")) return "removed";
+  if (line.startsWith("@@")) return "header";
+  if (line.startsWith("\\")) return "note";
+  return "context";
+}
+
 export function DiffAnalysisAdmin({ session }: { session: Session }) {
   const actorEmail = session.user.email;
   const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
@@ -31,6 +39,11 @@ export function DiffAnalysisAdmin({ session }: { session: Session }) {
   const [targetRef, setTargetRef] = useState("v2");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [expandedDiffPaths, setExpandedDiffPaths] = useState<string[]>([]);
+
+  function toggleDiffPath(pathKey: string) {
+    setExpandedDiffPaths((current) => (current.includes(pathKey) ? current.filter((item) => item !== pathKey) : [...current, pathKey]));
+  }
 
   async function refreshDiffProject(workspaceId: string, projectId: string, preferredRepositoryId?: string, preferredAnalysisId?: string) {
     const [nextRepositories, nextAnalyses] = await Promise.all([
@@ -267,17 +280,48 @@ export function DiffAnalysisAdmin({ session }: { session: Session }) {
             <FileText size={18} aria-hidden="true" />
           </div>
           <div className="data-list">
-            {selectedAnalysis?.file_changes.map((file) => (
-              <div className="data-row wide" key={`${file.change_type}-${file.path}`}>
-                <div>
-                  <strong>{changeTypeLabel[file.change_type]} · {file.path}</strong>
-                  <span>{file.module_key ?? "UNMAPPED"} · {file.language} · {file.directory} · +{file.additions} -{file.deletions}</span>
-                  <small>
-                    {file.structure_changes.slice(0, 5).map((item) => `${item.type}:${item.name}`).join(" · ") || file.evidence.join(" · ")}
-                  </small>
+            {selectedAnalysis?.file_changes.map((file) => {
+              const pathKey = `${file.change_type}-${file.path}`;
+              const hunks = file.diff_hunks ?? [];
+              const expanded = expandedDiffPaths.includes(pathKey);
+              return (
+                <div className="data-row wide diff-file-row" key={pathKey}>
+                  <div className="diff-file-head">
+                    <div>
+                      <strong>{changeTypeLabel[file.change_type]} · {file.path}</strong>
+                      <span>{file.module_key ?? "UNMAPPED"} · {file.language} · {file.directory} · +{file.additions} -{file.deletions}</span>
+                      <small>
+                        {file.structure_changes.slice(0, 5).map((item) => `${item.type}:${item.name}`).join(" · ") || file.evidence.join(" · ")}
+                      </small>
+                    </div>
+                    {hunks.length ? (
+                      <button className="ghost-button small icon-label" type="button" onClick={() => toggleDiffPath(pathKey)}>
+                        {expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+                        <Code2 size={14} aria-hidden="true" />
+                        <span>{expanded ? "收起 diff" : "查看 diff"}</span>
+                      </button>
+                    ) : null}
+                  </div>
+                  {expanded ? (
+                    <div className="diff-hunk-list">
+                      {hunks.map((hunk, index) => (
+                        <section className="diff-hunk" key={`${hunk.header}-${index}`}>
+                          <div className="diff-hunk-header">{hunk.header}</div>
+                          <pre>
+                            {hunk.lines.map((line, lineIndex) => (
+                              <span className={`diff-line ${diffLineClass(line)}`} key={`${lineIndex}-${line}`}>
+                                {line || " "}
+                              </span>
+                            ))}
+                          </pre>
+                        </section>
+                      ))}
+                      {file.patch_truncated ? <small className="diff-truncated">Diff 内容已按长度截断。</small> : null}
+                    </div>
+                  ) : null}
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {!selectedAnalysis || selectedAnalysis.file_changes.length === 0 ? <p className="empty-state">暂无文件证据</p> : null}
           </div>
         </section>

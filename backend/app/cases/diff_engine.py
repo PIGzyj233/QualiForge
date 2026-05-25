@@ -20,6 +20,10 @@ from app.workspace.routes import now_utc
 
 
 RISK_ORDER = {RiskLevel.low.value: 1, RiskLevel.medium.value: 2, RiskLevel.high.value: 3}
+HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_lines>\d+))? @@(?P<context>.*)$")
+MAX_DIFF_HUNKS_PER_FILE = 8
+MAX_DIFF_LINES_PER_FILE = 220
+MAX_DIFF_LINE_CHARS = 500
 
 
 def analysis_to_response(analysis: DiffAnalysis) -> DiffAnalysisResponse:
@@ -107,6 +111,69 @@ def read_git_file(worktree_path: Path, ref_sha: str, relative_path: str, timeout
     if result.returncode != 0:
         return ""
     return result.stdout
+
+
+def read_diff_patch(
+    worktree_path: Path,
+    base_sha: str,
+    target_sha: str,
+    relative_path: str,
+    timeout_seconds: int,
+    key_logs: list[str],
+) -> str:
+    result = run_git(
+        [
+            "git",
+            "-C",
+            str(worktree_path),
+            "diff",
+            "--unified=5",
+            "--no-color",
+            "--no-ext-diff",
+            base_sha,
+            target_sha,
+            "--",
+            normalize_path(relative_path),
+        ],
+        timeout_seconds,
+        key_logs,
+    )
+    return result.stdout if result.returncode == 0 else ""
+
+
+def parse_diff_hunks(patch: str) -> tuple[list[dict[str, Any]], bool]:
+    hunks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    total_lines = 0
+    truncated = False
+    for line in patch.splitlines():
+        header_match = HUNK_HEADER_RE.match(line)
+        if header_match:
+            if len(hunks) >= MAX_DIFF_HUNKS_PER_FILE:
+                truncated = True
+                current = None
+                continue
+            current = {
+                "header": line[:MAX_DIFF_LINE_CHARS],
+                "old_start": int(header_match.group("old_start")),
+                "old_lines": int(header_match.group("old_lines") or "1"),
+                "new_start": int(header_match.group("new_start")),
+                "new_lines": int(header_match.group("new_lines") or "1"),
+                "context": header_match.group("context").strip()[:160],
+                "lines": [],
+            }
+            hunks.append(current)
+            continue
+        if current is None:
+            continue
+        if line.startswith(("diff --git ", "index ", "--- ", "+++ ")):
+            continue
+        if total_lines >= MAX_DIFF_LINES_PER_FILE:
+            truncated = True
+            continue
+        current["lines"].append(line[:MAX_DIFF_LINE_CHARS])
+        total_lines += 1
+    return hunks, truncated
 
 
 def named_matches(pattern: str, content: str) -> set[str]:
@@ -366,12 +433,12 @@ def run_analysis(
 ) -> None:
     key_logs = [f"Diff analysis started for {repository.name}", f"Sandbox root: {settings_root}"]
     root = settings_root.expanduser()
-    mirror_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
-    if not mirror_path.exists():
-        raise RuntimeError("Repository mirror does not exist; sync repository first")
+    repository_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
+    if not repository_path.exists():
+        raise RuntimeError("Repository checkout does not exist; sync repository first")
 
-    base_result = run_git(["git", "--git-dir", str(mirror_path), "rev-parse", "--verify", f"{analysis.base_ref}^{{commit}}"], repository.sync_timeout_seconds, key_logs)
-    target_result = run_git(["git", "--git-dir", str(mirror_path), "rev-parse", "--verify", f"{analysis.target_ref}^{{commit}}"], repository.sync_timeout_seconds, key_logs)
+    base_result = run_git(["git", "-C", str(repository_path), "rev-parse", "--verify", f"{analysis.base_ref}^{{commit}}"], repository.sync_timeout_seconds, key_logs)
+    target_result = run_git(["git", "-C", str(repository_path), "rev-parse", "--verify", f"{analysis.target_ref}^{{commit}}"], repository.sync_timeout_seconds, key_logs)
     if base_result.returncode != 0:
         raise RuntimeError(f"Base ref not found: {analysis.base_ref}")
     if target_result.returncode != 0:
@@ -385,7 +452,7 @@ def run_analysis(
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        clone = run_git(["git", "clone", "--shared", "--no-checkout", "--", str(mirror_path), str(worktree_path)], repository.sync_timeout_seconds, key_logs)
+        clone = run_git(["git", "clone", "--shared", "--no-checkout", "--", str(repository_path), str(worktree_path)], repository.sync_timeout_seconds, key_logs)
         if clone.returncode != 0:
             raise RuntimeError(clone.stderr.strip()[:500] or "Failed to create temporary worktree")
         checkout = run_git(["git", "-C", str(worktree_path), "checkout", "--detach", target_sha], repository.sync_timeout_seconds, key_logs)
@@ -415,6 +482,8 @@ def run_analysis(
             module, confidence, match_evidence = match_module(path, target_content or base_content, structures, modules_by_id, rules)
             stat = stats.get(path, {"additions": 0, "deletions": 0})
             risk = file_risk(change_type, path, structures, int(stat["additions"]), int(stat["deletions"]))
+            patch = read_diff_patch(worktree_path, base_sha, target_sha, path, repository.sync_timeout_seconds, key_logs)
+            diff_hunks, patch_truncated = parse_diff_hunks(patch)
 
             file_changes.append(
                 {
@@ -434,6 +503,8 @@ def run_analysis(
                     "risk_level": risk,
                     "confidence": confidence or 55,
                     "evidence": match_evidence or [f"{detect_language(path)} {change_type}"],
+                    "diff_hunks": diff_hunks,
+                    "patch_truncated": patch_truncated,
                 }
             )
 

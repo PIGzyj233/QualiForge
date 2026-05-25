@@ -86,7 +86,7 @@ def job_to_response(job: Job) -> JobResponse:
 
 def sandbox_path(settings: Settings, workspace_id: str, project_id: str, repository_id: str) -> Path:
     root = Path(settings.git_sandbox_root).expanduser()
-    return root / workspace_id[:12] / project_id[:12] / f"{repository_id[:12]}.git"
+    return root / workspace_id[:12] / project_id[:12] / repository_id[:12]
 
 
 def ensure_safe_sandbox_path(root: Path, target: Path) -> Path:
@@ -123,6 +123,38 @@ def directory_size_mb(path: Path) -> float:
         if item.is_file() and not item.is_symlink():
             total += item.stat().st_size
     return total / 1024 / 1024
+
+
+def is_full_checkout(path: Path) -> bool:
+    return (path / ".git").exists()
+
+
+def checkout_default_branch(
+    repository_path: Path,
+    default_branch: str,
+    timeout_seconds: int,
+    key_logs: list[str],
+) -> None:
+    checkout = run_git(
+        ["git", "-C", str(repository_path), "checkout", "-B", default_branch, f"origin/{default_branch}"],
+        timeout_seconds,
+        key_logs,
+    )
+    if checkout.returncode == 0:
+        reset = run_git(
+            ["git", "-C", str(repository_path), "reset", "--hard", f"origin/{default_branch}"],
+            timeout_seconds,
+            key_logs,
+        )
+        if reset.returncode != 0:
+            stderr = reset.stderr.strip()[:500] or f"git exited with {reset.returncode}"
+            raise RuntimeError(stderr)
+        return
+
+    fallback = run_git(["git", "-C", str(repository_path), "checkout", default_branch], timeout_seconds, key_logs)
+    if fallback.returncode != 0:
+        stderr = (fallback.stderr or checkout.stderr).strip()[:500] or f"git exited with {fallback.returncode}"
+        raise RuntimeError(stderr)
 
 
 def get_repository_or_404(db: Session, workspace_id: str, repository_id: str) -> GitRepository:
@@ -202,41 +234,54 @@ def run_repository_sync(database: Database, settings: Settings, job_id: str) -> 
 
         try:
             root = Path(settings.git_sandbox_root).expanduser()
-            mirror_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
-            mirror_path.parent.mkdir(parents=True, exist_ok=True)
+            repository_path = ensure_safe_sandbox_path(
+                root,
+                sandbox_path(settings, repository.workspace_id, repository.project_id, repository.id),
+            )
+            previous_path = None
+            if repository.mirror_path and repository.mirror_path != "pending":
+                previous_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
+            repository_path.parent.mkdir(parents=True, exist_ok=True)
 
             credential = get_gitlab_credential(db, repository.workspace_id)
             auth_env = git_auth_env(credential, repository.remote_url)
 
-            if mirror_path.exists():
+            if repository_path.exists() and is_full_checkout(repository_path):
                 set_url = run_git(
-                    ["git", "-C", str(mirror_path), "remote", "set-url", "origin", repository.remote_url],
+                    ["git", "-C", str(repository_path), "remote", "set-url", "origin", repository.remote_url],
                     repository.sync_timeout_seconds,
                     job.key_logs,
                 )
                 if set_url.returncode != 0:
                     stderr = set_url.stderr.strip()[:500] or f"git exited with {set_url.returncode}"
                     raise RuntimeError(stderr)
-                command = ["git", "-C", str(mirror_path), "remote", "update", "--prune"]
+                command = ["git", "-C", str(repository_path), "fetch", "--prune", "--tags", "origin"]
+                result = run_git(command, repository.sync_timeout_seconds, job.key_logs, env_overrides=auth_env)
             else:
-                command = ["git", "clone", "--mirror", "--", repository.remote_url, str(mirror_path)]
-            result = run_git(command, repository.sync_timeout_seconds, job.key_logs, env_overrides=auth_env)
+                if repository_path.exists():
+                    remove_tree_readonly(repository_path)
+                command = ["git", "clone", "--no-single-branch", "--", repository.remote_url, str(repository_path)]
+                result = run_git(command, repository.sync_timeout_seconds, job.key_logs, env_overrides=auth_env)
             if result.stdout.strip():
                 job.key_logs = [*job.key_logs, result.stdout.strip()[:1000]]
             if result.returncode != 0:
                 stderr = result.stderr.strip()[:500] or f"git exited with {result.returncode}"
                 raise RuntimeError(stderr)
+            checkout_default_branch(repository_path, repository.default_branch, repository.sync_timeout_seconds, job.key_logs)
 
-            size_mb = directory_size_mb(mirror_path)
-            job.key_logs = [*job.key_logs, f"Mirror size: {size_mb:.2f} MB"]
+            size_mb = directory_size_mb(repository_path)
+            job.key_logs = [*job.key_logs, f"Repository checkout size: {size_mb:.2f} MB"]
             if size_mb > repository.repo_size_limit_mb:
-                raise RuntimeError(f"Repository mirror exceeds {repository.repo_size_limit_mb} MB limit")
+                raise RuntimeError(f"Repository checkout exceeds {repository.repo_size_limit_mb} MB limit")
 
+            if previous_path is not None and previous_path != repository_path and previous_path.exists():
+                remove_tree_readonly(previous_path)
+            repository.mirror_path = str(repository_path)
             repository.status = RepositoryStatus.synced.value
             repository.last_synced_at = now_utc()
             repository.updated_at = now_utc()
             job.status = JobStatus.succeeded.value
-            job.output_summary = f"Repository mirror synced to {mirror_path}"
+            job.output_summary = f"Repository checkout synced to {repository_path}"
         except subprocess.TimeoutExpired:
             repository.status = RepositoryStatus.sync_failed.value
             job.status = JobStatus.failed.value

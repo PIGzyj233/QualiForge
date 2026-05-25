@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,16 +16,27 @@ from app.main import create_app
 OWNER = "owner@qualiforge.local"
 
 
-def make_client(tmp_path: Path) -> TestClient:
-    settings = Settings(
-        database_url="sqlite+pysqlite:///:memory:",
-        redis_url="redis://localhost:6379/15",
-        git_sandbox_root=str(tmp_path / "sandbox"),
-        git_sync_timeout_seconds=30,
-        git_repo_size_limit_mb=128,
-        git_diff_file_limit=250,
-    )
-    return TestClient(create_app(settings))
+def make_client(
+    tmp_path: Path,
+    model_gateway_transport: Callable[[str, dict[str, str], dict[str, Any], float], dict[str, Any]] | None = None,
+    settings_overrides: dict[str, Any] | None = None,
+) -> TestClient:
+    settings_values: dict[str, Any] = {
+        "database_url": "sqlite+pysqlite:///:memory:",
+        "redis_url": "redis://localhost:6379/15",
+        "git_sandbox_root": str(tmp_path / "sandbox"),
+        "git_sync_timeout_seconds": 30,
+        "git_repo_size_limit_mb": 128,
+        "git_diff_file_limit": 250,
+        "model_gateway_api_base_url": "",
+        "model_gateway_api_key": "",
+        "model_gateway_default_model": "deepseek-v4-pro",
+    }
+    settings_values.update(settings_overrides or {})
+    app = create_app(Settings(**settings_values))
+    if model_gateway_transport is not None:
+        app.state.model_gateway_transport = model_gateway_transport
+    return TestClient(app)
 
 
 def create_workspace_project(client: TestClient) -> tuple[dict, dict]:
@@ -183,6 +196,9 @@ def test_diff_analysis_creates_job_and_testing_decision_view(tmp_path: Path) -> 
     assert by_path["src/payment/checkout.py"]["module_key"] == "PAYMENT"
     checkout_structures = {item["type"] for item in by_path["src/payment/checkout.py"]["structure_changes"]}
     assert {"function", "api_route"} <= checkout_structures
+    checkout_hunks = by_path["src/payment/checkout.py"]["diff_hunks"]
+    assert checkout_hunks
+    assert any("+@router.post('/checkout/refund')" in line for hunk in checkout_hunks for line in hunk["lines"])
     assert by_path["migrations/002_add_refunds.sql"]["is_migration"] is True
     assert by_path["migrations/002_add_refunds.sql"]["risk_level"] == "high"
     assert by_path["tests/test_checkout.py"]["is_test_file"] is True

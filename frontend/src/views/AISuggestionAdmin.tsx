@@ -42,6 +42,16 @@ export function AISuggestionAdmin(_: { session: Session }) {
   const relatedCases = selectedSuggestion
     ? approvedCases.filter((c) => selectedSuggestion.related_case_ids.includes(c.id))
     : [];
+  const selectedCandidateSteps =
+    selectedSuggestion && Array.isArray(selectedSuggestion.candidate_payload.steps) ? selectedSuggestion.candidate_payload.steps : [];
+  const selectedEvidence = selectedSuggestion ? selectedSuggestion.mapping_evidence.slice(0, 6) : [];
+  const llmUsed = Boolean(selectedSuggestion?.source_diff?.llm_used);
+  const toolObservationCount = Number(selectedSuggestion?.source_diff?.tool_observation_count ?? 0);
+  const sourceLabel = llmUsed
+    ? toolObservationCount > 0
+      ? `模型生成 · 已调用仓库只读工具探索 ${toolObservationCount} 条证据`
+      : "模型生成 · 基于 Diff 证据和已有用例上下文"
+    : "规则建议 · 未调用模型";
 
   async function loadProjectData() {
     if (!wid || !pid) {
@@ -102,7 +112,7 @@ export function AISuggestionAdmin(_: { session: Session }) {
     setBusy(true);
     setMessage(null);
     try {
-      const next = await generateAISuggestions(wid, pid, selectedAnalysisId, actorEmail);
+      const next = await generateAISuggestions(wid, pid, selectedAnalysisId, actorEmail, { force: suggestions.length > 0 });
       setMessage(`已生成 ${next.length} 条建议`);
       await loadSuggestions(selectedAnalysisId);
     } catch (err) {
@@ -276,6 +286,30 @@ export function AISuggestionAdmin(_: { session: Session }) {
                         <small>接口：{selectedSuggestion.interfaces.slice(0, 5).join(" · ")}</small>
                       </p>
                     ) : null}
+                    {selectedEvidence.length ? (
+                      <div className="suggestion-evidence">
+                        <small>证据</small>
+                        <ul>
+                          {selectedEvidence.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {selectedSuggestion.suggestion_type === "case_candidate" && selectedCandidateSteps.length ? (
+                      <div className="suggestion-evidence">
+                        <small>候选步骤</small>
+                        <ol>
+                          {selectedCandidateSteps.slice(0, 5).map((step, index) => (
+                            <li key={`${index}-${step.action}`}>
+                              <strong>{step.action}</strong>
+                              <span>{step.expected}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      </div>
+                    ) : null}
+                    <small>{sourceLabel}</small>
                     <label>
                       反馈意见（可选）
                       <textarea

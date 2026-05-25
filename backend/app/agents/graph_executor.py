@@ -1227,12 +1227,12 @@ class AgentGraphExecutor:
         self.db.commit()
 
         try:
-            mirror_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
-            resolved_ref = self._resolve_ref(mirror_path, requested_ref, repository.sync_timeout_seconds)
+            repository_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
+            resolved_ref = self._resolve_ref(repository_path, requested_ref, repository.sync_timeout_seconds)
             worktree_path.parent.mkdir(parents=True, exist_ok=True)
             if worktree_path.exists():
                 remove_tree_readonly(worktree_path)
-            self._run_git(["git", "clone", "--shared", "--no-checkout", "--", str(mirror_path), str(worktree_path)], repository.sync_timeout_seconds)
+            self._run_git(["git", "clone", "--shared", "--no-checkout", "--", str(repository_path), str(worktree_path)], repository.sync_timeout_seconds)
             self._run_git(["git", "-C", str(worktree_path), "checkout", "--detach", resolved_ref], repository.sync_timeout_seconds)
             self._mark_files_readonly(worktree_path)
             sandbox.resolved_ref = resolved_ref
@@ -1247,9 +1247,9 @@ class AgentGraphExecutor:
             raise
 
     @staticmethod
-    def _resolve_ref(mirror_path: Path, requested_ref: str, timeout_seconds: int) -> str:
+    def _resolve_ref(repository_path: Path, requested_ref: str, timeout_seconds: int) -> str:
         result = subprocess.run(
-            ["git", "--git-dir", str(mirror_path), "rev-parse", "--verify", f"{requested_ref}^{{commit}}"],
+            ["git", "-C", str(repository_path), "rev-parse", "--verify", f"{requested_ref}^{{commit}}"],
             capture_output=True,
             check=False,
             text=True,

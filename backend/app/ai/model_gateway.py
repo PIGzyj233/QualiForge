@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -50,6 +51,8 @@ class ModelGatewayResponse:
     provider: str
     model: str
     content: str
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    reasoning_content: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     latency_ms: int = 0
     attempts: int = 1
@@ -120,6 +123,8 @@ def urllib_transport(url: str, headers: dict[str, str], payload: dict[str, Any],
         raise NonRetryableModelGatewayError(f"Model gateway HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RetryableModelGatewayError(f"Model gateway connection failed: {exc.reason}") from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise RetryableModelGatewayError("Model gateway request timed out") from exc
     try:
         return json.loads(body)
     except json.JSONDecodeError as exc:
@@ -155,6 +160,8 @@ def urllib_stream_transport(
         raise NonRetryableModelGatewayError(f"Model gateway HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RetryableModelGatewayError(f"Model gateway connection failed: {exc.reason}") from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise RetryableModelGatewayError("Model gateway stream timed out") from exc
 
 
 class OpenAICompatibleModelGateway:
@@ -183,12 +190,15 @@ class OpenAICompatibleModelGateway:
 
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         model: str | None = None,
         temperature: float = 0,
         max_tokens: int = 256,
         reasoning_effort: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
         invocation_logger: InvocationLogger | None = None,
     ) -> ModelGatewayResponse:
         selected_model = model or self.default_model
@@ -200,6 +210,9 @@ class OpenAICompatibleModelGateway:
             temperature=temperature,
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
         )
         headers = self._headers()
         url = f"{self.api_base_url}/chat/completions"
@@ -214,6 +227,12 @@ class OpenAICompatibleModelGateway:
                     provider=self.provider,
                     model=str(raw.get("model") or selected_model),
                     content=content,
+                    tool_calls=[
+                        item
+                        for item in (message.get("tool_calls") or [])
+                        if isinstance(item, dict)
+                    ],
+                    reasoning_content=str(message.get("reasoning_content") or ""),
                     usage=dict(raw.get("usage") or {}),
                     latency_ms=int((time.monotonic() - started) * 1000),
                     attempts=attempt,
@@ -339,12 +358,15 @@ class OpenAICompatibleModelGateway:
 
     def _chat_payload(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         selected_model: str,
         temperature: float,
         max_tokens: int,
         reasoning_effort: str | None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "model": selected_model,
@@ -355,6 +377,12 @@ class OpenAICompatibleModelGateway:
         selected_reasoning_effort = reasoning_effort if reasoning_effort is not None else self.default_reasoning_effort
         if selected_reasoning_effort:
             payload["reasoning_effort"] = selected_reasoning_effort
+        if tools:
+            payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        if response_format is not None:
+            payload["response_format"] = response_format
         return payload
 
     def _validate_config(

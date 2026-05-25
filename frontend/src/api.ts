@@ -438,6 +438,16 @@ export type DiffFileChange = {
   risk_level: "low" | "medium" | "high";
   confidence: number;
   evidence: string[];
+  diff_hunks?: Array<{
+    header: string;
+    old_start: number;
+    old_lines: number;
+    new_start: number;
+    new_lines: number;
+    context?: string;
+    lines: string[];
+  }>;
+  patch_truncated?: boolean;
 };
 
 export type DiffModuleImpact = {
@@ -1337,9 +1347,16 @@ export function getDiffAnalysis(workspaceId: string, projectId: string, analysis
   return requestJson<DiffAnalysisRecord>(`/workspaces/${workspaceId}/projects/${projectId}/diff-analyses/${analysisId}`);
 }
 
-export function generateAISuggestions(workspaceId: string, projectId: string, analysisId: string, actorEmail: string): Promise<AISuggestionRecord[]> {
+export function generateAISuggestions(
+  workspaceId: string,
+  projectId: string,
+  analysisId: string,
+  actorEmail: string,
+  options: { force?: boolean } = {}
+): Promise<AISuggestionRecord[]> {
+  const forceSuffix = options.force ? "&force=true" : "";
   return requestJson<AISuggestionRecord[]>(
-    `/workspaces/${workspaceId}/projects/${projectId}/diff-analyses/${analysisId}/ai-suggestions?actor_email=${encodeURIComponent(actorEmail)}`,
+    `/workspaces/${workspaceId}/projects/${projectId}/diff-analyses/${analysisId}/ai-suggestions?actor_email=${encodeURIComponent(actorEmail)}${forceSuffix}`,
     { method: "POST" }
   );
 }

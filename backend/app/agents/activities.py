@@ -142,18 +142,18 @@ def _scan_repository_child_task(payload: dict[str, Any], *, settings: Settings) 
 
         try:
             root = Path(settings.git_sandbox_root).expanduser()
-            mirror_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
+            repository_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
         except ValueError as exc:
             return _child_activity_failure(payload, str(exc))
-        if not mirror_path.exists():
-            return _child_activity_failure(payload, "Repository mirror is missing")
+        if not repository_path.exists():
+            return _child_activity_failure(payload, "Repository checkout is missing")
 
         task_payload = _child_payload_map(payload)
         requested_ref = str(payload.get("ref") or task_payload.get("ref") or repository.default_branch)
         timeout_seconds = _child_timeout_seconds(task_payload.get("timeout_seconds"), min(repository.sync_timeout_seconds, 60))
         try:
             rev_parse = _run_child_git(
-                ["git", "--git-dir", str(mirror_path), "rev-parse", "--verify", f"{requested_ref}^{{commit}}"],
+                ["git", "-C", str(repository_path), "rev-parse", "--verify", f"{requested_ref}^{{commit}}"],
                 timeout_seconds,
             )
             if rev_parse.returncode != 0:
@@ -163,7 +163,7 @@ def _scan_repository_child_task(payload: dict[str, Any], *, settings: Settings) 
             if activity.in_activity():
                 activity.heartbeat({"phase": "child_repo_scan_resolved_ref", "ref": requested_ref})
             ls_tree = _run_child_git(
-                ["git", "--git-dir", str(mirror_path), "ls-tree", "-r", "--name-only", resolved_ref],
+                ["git", "-C", str(repository_path), "ls-tree", "-r", "--name-only", resolved_ref],
                 timeout_seconds,
             )
             if ls_tree.returncode != 0:

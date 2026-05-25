@@ -291,8 +291,8 @@ export function GitLabSandboxAdmin({ session }: { session: Session }) {
         <section className="audit-pane" aria-label="Git Repository 列表">
           <div className="pane-heading">
             <div>
-              <span className="eyebrow">Sandbox Mirrors</span>
-              <h3>仓库镜像</h3>
+              <span className="eyebrow">Sandbox Checkouts</span>
+              <h3>仓库工作副本</h3>
             </div>
             <GitCommitHorizontal size={18} aria-hidden="true" />
           </div>
