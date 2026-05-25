@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { FolderPlus, GitBranch, Network, PencilLine, Plus, Trash2 } from "lucide-react";
+import { useParams } from "react-router-dom";
 import {
   createMappingRule,
   createModule,
@@ -21,6 +22,7 @@ import {
   WorkspaceRecord
 } from "../api";
 import { mappingRuleTypeLabel, mappingSourceLabel } from "../lib/labels";
+import { pickExistingId } from "../lib/selection";
 
 type DialogMode = { kind: "create"; parentId: string | null } | { kind: "edit"; module: ProjectModuleRecord } | null;
 
@@ -193,6 +195,7 @@ function ModuleDialog({
 
 export function ModuleMappingAdmin({ session }: { session: Session }) {
   const actorEmail = session.user.email;
+  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -236,7 +239,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
     try {
       const ws = await listWorkspaces(actorEmail);
       setWorkspaces(ws);
-      const wid = preferredWorkspaceId || selectedWorkspaceId || ws[0]?.id || "";
+      const wid = pickExistingId(ws, preferredWorkspaceId, selectedWorkspaceId);
       setSelectedWorkspaceId(wid);
       if (!wid) {
         setProjects([]);
@@ -246,7 +249,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
       }
       const ps = await listProjects(wid);
       setProjects(ps);
-      const pid = preferredProjectId || selectedProjectId || ps[0]?.id || "";
+      const pid = pickExistingId(ps, preferredProjectId, selectedProjectId);
       setSelectedProjectId(pid);
       if (pid) await refreshProjectModules(wid, pid);
     } catch (err) {
@@ -257,9 +260,9 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
   }
 
   useEffect(() => {
-    void refreshWorkspaces();
+    void refreshWorkspaces(routeWorkspaceId || undefined, routeProjectId || undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [routeWorkspaceId, routeProjectId]);
 
   async function handleProjectSwitch(pid: string) {
     setSelectedProjectId(pid);

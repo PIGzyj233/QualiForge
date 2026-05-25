@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { ClipboardCheck, FileText, PencilLine } from "lucide-react";
+import { useParams } from "react-router-dom";
 import {
   bulkImportTestCases,
   bulkUpdateImportDrafts,
@@ -24,9 +25,11 @@ import { Pagination } from "../components/Pagination";
 import { StepsEditor } from "../components/StepsEditor";
 import { usePagination } from "../hooks/usePagination";
 import { statusLabel } from "../lib/labels";
+import { pickExistingId } from "../lib/selection";
 
 export function CaseImportAdmin({ session }: { session: Session }) {
   const actorEmail = session.user.email;
+  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -57,7 +60,7 @@ export function CaseImportAdmin({ session }: { session: Session }) {
     setModules(nextModules);
     setBatches(nextBatches);
     setTestCases(nextTestCases);
-    const nextBatchId = preferredBatchId || selectedBatchId || nextBatches[0]?.id || "";
+      const nextBatchId = pickExistingId(nextBatches, preferredBatchId, selectedBatchId);
     setSelectedBatchId(nextBatchId);
     setDrafts(nextBatchId ? await listImportDrafts(workspaceId, projectId, nextBatchId) : []);
     if (!bulkModuleId && nextModules[0]) {
@@ -71,12 +74,12 @@ export function CaseImportAdmin({ session }: { session: Session }) {
     try {
       const nextWorkspaces = await listWorkspaces(actorEmail);
       setWorkspaces(nextWorkspaces);
-      const nextWorkspaceId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      const nextWorkspaceId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
       setSelectedWorkspaceId(nextWorkspaceId);
       if (!nextWorkspaceId) return;
       const nextProjects = await listProjects(nextWorkspaceId);
       setProjects(nextProjects);
-      const nextProjectId = preferredProjectId || selectedProjectId || nextProjects[0]?.id || "";
+      const nextProjectId = pickExistingId(nextProjects, preferredProjectId, selectedProjectId);
       setSelectedProjectId(nextProjectId);
       if (nextProjectId) {
         await refreshImportProject(nextWorkspaceId, nextProjectId, preferredBatchId);
@@ -89,8 +92,9 @@ export function CaseImportAdmin({ session }: { session: Session }) {
   }
 
   useEffect(() => {
-    void refreshImportWorkspaces();
-  }, []);
+    void refreshImportWorkspaces(routeWorkspaceId || undefined, routeProjectId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeWorkspaceId, routeProjectId]);
 
   async function handleWorkspaceSwitch(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);

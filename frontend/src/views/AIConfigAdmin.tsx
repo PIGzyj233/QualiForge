@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { BrainCircuit, KeyRound, Settings2, ShieldAlert } from "lucide-react";
+import { useParams } from "react-router-dom";
 import {
   AIDataPolicy,
   AIInvocationRecord,
@@ -23,9 +24,11 @@ import {
 import { Pagination } from "../components/Pagination";
 import { usePagination } from "../hooks/usePagination";
 import { statusLabel, purposeLabel, policyLabel } from "../lib/labels";
+import { pickExistingId } from "../lib/selection";
 
 export function AIConfigAdmin({ session }: { session: Session }) {
   const actorEmail = session.user.email;
+  const { wid: routeWorkspaceId = "" } = useParams<{ wid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [settings, setSettings] = useState<AISettingsRecord | null>(null);
@@ -57,7 +60,7 @@ export function AIConfigAdmin({ session }: { session: Session }) {
     try {
       const nextWorkspaces = await listWorkspaces(actorEmail);
       setWorkspaces(nextWorkspaces);
-      const nextSelectedId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      const nextSelectedId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
       setSelectedWorkspaceId(nextSelectedId);
       if (nextSelectedId) {
         await refreshAIConfig(nextSelectedId);
@@ -87,8 +90,9 @@ export function AIConfigAdmin({ session }: { session: Session }) {
   }
 
   useEffect(() => {
-    void refreshAIWorkspaces();
-  }, []);
+    void refreshAIWorkspaces(routeWorkspaceId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeWorkspaceId]);
 
   async function handleWorkspaceSwitch(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);

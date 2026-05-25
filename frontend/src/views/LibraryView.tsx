@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Archive, FilePlus2, GitCompareArrows, History, RefreshCcw } from "lucide-react";
+import { useParams } from "react-router-dom";
 import {
   addressReviewChanges,
   CaseDraftRecord,
@@ -28,6 +29,7 @@ import { ModuleTree } from "../components/ModuleTree";
 import { ReviewStatusBadge } from "../components/ReviewStatusBadge";
 import { StepsEditor } from "../components/StepsEditor";
 import { statusLabel } from "../lib/labels";
+import { pickExistingId } from "../lib/selection";
 
 const detailTabs = ["基本信息", "草稿/正式", "对比", "评审记录", "版本历史", "来源血缘"] as const;
 
@@ -56,6 +58,7 @@ function draftOrRevision(caseRecord: TestCaseRecord) {
 
 export function LibraryView({ session }: { session: Session }) {
   const actorEmail = session.user.email;
+  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -105,7 +108,7 @@ export function LibraryView({ session }: { session: Session }) {
     setModuleTree(nextTree);
     setCases(nextCases);
     if (!newModuleId && nextModules[0]) setNewModuleId(nextModules[0].id);
-    const nextCaseId = preferredCaseId || selectedCaseId || nextCases[0]?.id || "";
+    const nextCaseId = pickExistingId(nextCases, preferredCaseId, selectedCaseId);
     setSelectedCaseId(nextCaseId);
     await refreshCaseDetail(workspaceId, projectId, nextCaseId);
   }
@@ -116,12 +119,12 @@ export function LibraryView({ session }: { session: Session }) {
     try {
       const nextWorkspaces = await listWorkspaces(actorEmail);
       setWorkspaces(nextWorkspaces);
-      const workspaceId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      const workspaceId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
       setSelectedWorkspaceId(workspaceId);
       if (!workspaceId) return;
       const nextProjects = await listProjects(workspaceId);
       setProjects(nextProjects);
-      const projectId = preferredProjectId || selectedProjectId || nextProjects[0]?.id || "";
+      const projectId = pickExistingId(nextProjects, preferredProjectId, selectedProjectId);
       setSelectedProjectId(projectId);
       if (projectId) await refreshCases(workspaceId, projectId, preferredCaseId);
     } catch (err) {
@@ -132,8 +135,9 @@ export function LibraryView({ session }: { session: Session }) {
   }
 
   useEffect(() => {
-    void refreshWorkspace();
-  }, []);
+    void refreshWorkspace(routeWorkspaceId || undefined, routeProjectId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeWorkspaceId, routeProjectId]);
 
   async function handleWorkspaceSwitch(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);

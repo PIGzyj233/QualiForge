@@ -59,6 +59,7 @@ from app.agents.graph_types import (
     SUBAGENT_REGISTRY,
 )
 from app.cases.imports import ImportBatch, ImportCaseDraft
+from app.cases.step_models import steps_expected_text
 from app.git.models import GitRepository, RepositoryStatus
 from app.git.sandbox import ensure_safe_sandbox_path
 from app.platform.config import Settings
@@ -1350,7 +1351,7 @@ class AgentGraphExecutor:
         average_confidence = round(sum(confidence_values) / len(confidence_values), 1) if confidence_values else 0
         unmapped_count = sum(1 for draft in drafts if not draft.module_id)
         missing_steps_count = sum(1 for draft in drafts if not draft.steps)
-        missing_expected_count = sum(1 for draft in drafts if not draft.expected_result.strip())
+        missing_expected_count = sum(1 for draft in drafts if not (draft.expected_result or "").strip() and not steps_expected_text(draft.steps))
         return {
             "source": "database",
             "import_context_available": bool(batches or drafts),

@@ -60,6 +60,7 @@ class TestCaseCreate(StepValidatorMixin, BaseModel):
     module_id: str | None = None
     title: str = Field(min_length=1, max_length=300)
     steps: list[CaseStep] = Field(default_factory=list, max_length=100)
+    expected_result: str | None = Field(default=None, max_length=2000)
     priority: str = Field(default="P2", max_length=32)
     risk: str = Field(default="medium", max_length=80)
     tags: list[str] = Field(default_factory=list, max_length=50)
@@ -72,6 +73,7 @@ class CaseDraftUpdate(StepValidatorMixin, BaseModel):
     module_id: str | None = None
     title: str | None = Field(default=None, min_length=1, max_length=300)
     steps: list[CaseStep] | None = Field(default=None, max_length=100)
+    expected_result: str | None = Field(default=None, max_length=2000)
     priority: str | None = Field(default=None, max_length=32)
     risk: str | None = Field(default=None, max_length=80)
     tags: list[str] | None = Field(default=None, max_length=50)

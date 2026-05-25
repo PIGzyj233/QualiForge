@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class CaseStep(BaseModel):
@@ -24,6 +24,8 @@ def normalize_steps_payload(value: Any) -> list[dict[str, str]]:
     """
     if not value:
         return []
+    if isinstance(value, str):
+        value = [value]
     out: list[dict[str, str]] = []
     for item in value:
         if isinstance(item, CaseStep):
@@ -57,6 +59,17 @@ def fold_legacy_expected(steps: list[dict[str, str]], expected_result: str | Non
     return steps
 
 
+def normalize_steps_with_legacy(value: Any, expected_result: str | None = None) -> list[dict[str, str]]:
+    """Normalize canonical or legacy step payloads and preserve legacy expected text."""
+    return fold_legacy_expected(normalize_steps_payload(value), expected_result)
+
+
+def steps_expected_text(steps: Any) -> str:
+    """Return all step-level expected results as a compact legacy-compatible string."""
+    normalized = normalize_steps_payload(steps)
+    return "\n".join(step["expected"] for step in normalized if step.get("expected"))
+
+
 def stringify_steps(steps: list[Any]) -> list[str]:
     """Compatibility: legacy callers that only know list[str]. Used in tests for assertions."""
     out: list[str] = []
@@ -73,7 +86,15 @@ def stringify_steps(steps: list[Any]) -> list[str]:
 class StepValidatorMixin:
     """Pydantic mixin that auto-normalizes `steps` and folds legacy `expected_result`."""
 
-    @field_validator("steps", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _normalize_steps(cls, value: Any) -> Any:
-        return normalize_steps_payload(value)
+    def _normalize_step_payload(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "steps" in data:
+            data["steps"] = normalize_steps_with_legacy(
+                data.get("steps"),
+                str(data.get("expected_result") or "") or None,
+            )
+        return data

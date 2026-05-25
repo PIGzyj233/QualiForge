@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, FileSearch, MessageSquareWarning, XCircle } from "lucide-react";
+import { useParams } from "react-router-dom";
 import {
   approveReviewCycle,
   getTestCase,
@@ -17,9 +18,11 @@ import {
 } from "../api";
 import { CaseRevisionViewer } from "../components/CaseRevisionViewer";
 import { ReviewStatusBadge } from "../components/ReviewStatusBadge";
+import { pickExistingId } from "../lib/selection";
 
 export function ReviewQueueView({ session }: { session: Session }) {
   const actorEmail = session.user.email;
+  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -44,7 +47,7 @@ export function ReviewQueueView({ session }: { session: Session }) {
     const [nextModules, nextQueue] = await Promise.all([listModules(workspaceId, projectId), listReviewQueue(workspaceId, projectId)]);
     setModules(nextModules);
     setQueue(nextQueue);
-    const caseId = preferredCaseId || selectedCaseId || nextQueue[0]?.id || "";
+    const caseId = pickExistingId(nextQueue, preferredCaseId, selectedCaseId);
     setSelectedCaseId(caseId);
     await refreshDetail(workspaceId, projectId, caseId);
   }
@@ -55,12 +58,12 @@ export function ReviewQueueView({ session }: { session: Session }) {
     try {
       const nextWorkspaces = await listWorkspaces(actorEmail);
       setWorkspaces(nextWorkspaces);
-      const workspaceId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      const workspaceId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
       setSelectedWorkspaceId(workspaceId);
       if (!workspaceId) return;
       const nextProjects = await listProjects(workspaceId);
       setProjects(nextProjects);
-      const projectId = preferredProjectId || selectedProjectId || nextProjects[0]?.id || "";
+      const projectId = pickExistingId(nextProjects, preferredProjectId, selectedProjectId);
       setSelectedProjectId(projectId);
       if (projectId) await refreshQueue(workspaceId, projectId);
     } catch (err) {
@@ -71,8 +74,9 @@ export function ReviewQueueView({ session }: { session: Session }) {
   }
 
   useEffect(() => {
-    void refreshWorkspace();
-  }, []);
+    void refreshWorkspace(routeWorkspaceId || undefined, routeProjectId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeWorkspaceId, routeProjectId]);
 
   async function handleAction(action: "approve" | "changes" | "reject") {
     if (!selectedWorkspaceId || !selectedProjectId || !selectedCase?.open_cycle) return;

@@ -928,8 +928,8 @@ export function updateProject(
   );
 }
 
-export function listAuditLogs(workspaceId: string): Promise<AuditLogRecord[]> {
-  return requestJson<AuditLogRecord[]>(`/workspaces/${workspaceId}/audit-logs`);
+export function listAuditLogs(workspaceId: string, actorEmail: string): Promise<AuditLogRecord[]> {
+  return requestJson<AuditLogRecord[]>(`/workspaces/${workspaceId}/audit-logs?actor_email=${encodeURIComponent(actorEmail)}`);
 }
 
 export function getAISettings(workspaceId: string): Promise<AISettingsRecord> {

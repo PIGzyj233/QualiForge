@@ -347,6 +347,7 @@ def get_current_member(workspace_id: str, db: DbSession, actor_email: ActorEmail
 @router.post("/workspaces/{workspace_id}/members", response_model=MemberResponse, status_code=status.HTTP_201_CREATED)
 def add_member(workspace_id: str, payload: MemberCreate, db: DbSession, actor_email: ActorEmail) -> MemberResponse:
     get_workspace_or_404(db, workspace_id)
+    require_workspace_owner(db, workspace_id, actor_email)
     member = WorkspaceMember(
         workspace_id=workspace_id,
         email=payload.email,
@@ -378,6 +379,7 @@ def add_member(workspace_id: str, payload: MemberCreate, db: DbSession, actor_em
 @router.delete("/workspaces/{workspace_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_member(workspace_id: str, member_id: str, db: DbSession, actor_email: ActorEmail) -> Response:
     get_workspace_or_404(db, workspace_id)
+    require_workspace_owner(db, workspace_id, actor_email)
     member = db.scalar(
         select(WorkspaceMember).where(WorkspaceMember.id == member_id, WorkspaceMember.workspace_id == workspace_id)
     )
@@ -412,6 +414,7 @@ def list_projects(workspace_id: str, db: DbSession) -> list[ProjectResponse]:
 @router.post("/workspaces/{workspace_id}/projects", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 def create_project(workspace_id: str, payload: ProjectCreate, db: DbSession, actor_email: ActorEmail) -> ProjectResponse:
     get_workspace_or_404(db, workspace_id)
+    require_workspace_owner(db, workspace_id, actor_email)
     project = Project(
         workspace_id=workspace_id,
         name=payload.name,
@@ -448,6 +451,7 @@ def update_project(
     db: DbSession,
     actor_email: ActorEmail,
 ) -> ProjectResponse:
+    require_workspace_owner(db, workspace_id, actor_email)
     project = get_project_or_404(db, workspace_id, project_id)
     before = {
         "name": project.name,
@@ -483,8 +487,9 @@ def update_project(
 
 
 @router.get("/workspaces/{workspace_id}/audit-logs", response_model=list[AuditLogResponse])
-def list_audit_logs(workspace_id: str, db: DbSession, limit: int = Query(default=50, ge=1, le=200)) -> list[AuditLogResponse]:
+def list_audit_logs(workspace_id: str, db: DbSession, actor_email: ActorEmail, limit: int = Query(default=50, ge=1, le=200)) -> list[AuditLogResponse]:
     get_workspace_or_404(db, workspace_id)
+    require_workspace_owner(db, workspace_id, actor_email)
     logs = db.scalars(
         select(AuditLog)
         .where(AuditLog.workspace_id == workspace_id)

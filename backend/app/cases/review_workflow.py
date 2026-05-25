@@ -32,6 +32,7 @@ from app.cases.review_models import (
     TestCaseCreate,
     WorkspaceReviewSettings,
 )
+from app.cases.step_models import steps_expected_text
 from app.workspace.routes import now_utc
 
 
@@ -136,6 +137,7 @@ def draft_content_snapshot(draft: CaseDraft, test_case_id: str | None = None) ->
         "module_id": draft.module_id,
         "title": draft.title,
         "steps": draft.steps,
+        "expected_result": steps_expected_text(draft.steps) or draft.expected_result,
         "priority": draft.priority,
         "risk": draft.risk,
         "tags": draft.tags,
@@ -179,7 +181,7 @@ def create_case_draft(
         module_id=data.get("module_id"),
         title=str(data.get("title") or "Untitled case"),
         steps=data.get("steps", []),
-        expected_result="",
+        expected_result=str(data.get("expected_result") or ""),
         priority=str(data.get("priority") or "P2"),
         risk=str(data.get("risk") or "medium"),
         tags=[tag.strip() for tag in data.get("tags", []) if tag.strip()],

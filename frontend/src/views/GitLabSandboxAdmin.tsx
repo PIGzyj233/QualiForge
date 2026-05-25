@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Database, GitBranch, GitCommitHorizontal, KeyRound } from "lucide-react";
+import { useParams } from "react-router-dom";
 import {
   bindRepository,
   getGitLabToken,
@@ -19,9 +20,11 @@ import {
 import { Pagination } from "../components/Pagination";
 import { usePagination } from "../hooks/usePagination";
 import { statusLabel } from "../lib/labels";
+import { pickExistingId } from "../lib/selection";
 
 export function GitLabSandboxAdmin({ session }: { session: Session }) {
   const actorEmail = session.user.email;
+  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -41,16 +44,16 @@ export function GitLabSandboxAdmin({ session }: { session: Session }) {
   const [message, setMessage] = useState<string | null>(null);
   const jobsPagination = usePagination(jobs, 8);
 
-  async function refreshGitWorkspaces(preferredWorkspaceId?: string) {
+  async function refreshGitWorkspaces(preferredWorkspaceId?: string, preferredProjectId?: string) {
     setBusy(true);
     setMessage(null);
     try {
       const nextWorkspaces = await listWorkspaces(actorEmail);
       setWorkspaces(nextWorkspaces);
-      const nextSelectedId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      const nextSelectedId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
       setSelectedWorkspaceId(nextSelectedId);
       if (nextSelectedId) {
-        await refreshGitConfig(nextSelectedId);
+        await refreshGitConfig(nextSelectedId, preferredProjectId);
       }
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "GitLab 配置加载失败");
@@ -59,7 +62,7 @@ export function GitLabSandboxAdmin({ session }: { session: Session }) {
     }
   }
 
-  async function refreshGitConfig(workspaceId: string) {
+  async function refreshGitConfig(workspaceId: string, preferredProjectId?: string) {
     const [nextToken, nextProjects, nextRepositories, nextJobs] = await Promise.all([
       getGitLabToken(workspaceId),
       listProjects(workspaceId),
@@ -73,14 +76,13 @@ export function GitLabSandboxAdmin({ session }: { session: Session }) {
     setProjects(nextProjects);
     setRepositories(nextRepositories);
     setJobs(nextJobs);
-    if (!projectId && nextProjects[0]) {
-      setProjectId(nextProjects[0].id);
-    }
+    setProjectId(pickExistingId(nextProjects, preferredProjectId, projectId));
   }
 
   useEffect(() => {
-    void refreshGitWorkspaces();
-  }, []);
+    void refreshGitWorkspaces(routeWorkspaceId || undefined, routeProjectId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeWorkspaceId, routeProjectId]);
 
   async function handleWorkspaceSwitch(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);

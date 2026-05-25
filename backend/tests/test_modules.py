@@ -78,7 +78,7 @@ def test_project_modules_can_be_created_edited_listed_deleted_and_audited() -> N
     assert deleted.status_code == 204
     assert client.get(f"/api/workspaces/{first_workspace['id']}/projects/{project['id']}/modules").json() == []
 
-    audit_logs = client.get(f"/api/workspaces/{first_workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{first_workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()
     actions = [entry["action"] for entry in audit_logs]
     assert "module.created" in actions
     assert "module.updated" in actions
@@ -151,7 +151,7 @@ def test_module_mapping_rules_cover_supported_targets_sources_filters_and_audit(
     rules_after_delete = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/mapping-rules").json()
     assert len(rules_after_delete) == 6
 
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()
     actions = [entry["action"] for entry in audit_logs]
     assert "mapping_rule.created" in actions
     assert "mapping_rule.updated" in actions

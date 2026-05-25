@@ -19,6 +19,7 @@ from app.agents import (
 from app.platform.config import Settings
 from app.platform.database import Database
 from app.platform.telemetry import agent_span
+from app.cases.step_models import steps_expected_text
 from app.workspace.routes import audit
 
 
@@ -239,7 +240,7 @@ def _analyze_import_child_task(payload: dict[str, Any], *, settings: Settings) -
     average_confidence = round(sum(confidence_values) / len(confidence_values), 1) if confidence_values else 0
     unmapped_count = sum(1 for draft in drafts if not draft.module_id)
     missing_steps_count = sum(1 for draft in drafts if not draft.steps)
-    missing_expected_count = sum(1 for draft in drafts if not draft.expected_result.strip())
+    missing_expected_count = sum(1 for draft in drafts if not (draft.expected_result or "").strip() and not steps_expected_text(draft.steps))
     status_counts = {item["value"]: item["count"] for item in _top_counts([batch.status for batch in batches])}
     file_type_counts = {item["value"]: item["count"] for item in _top_counts([batch.file_type for batch in batches])}
     risk_counts = {item["value"]: item["count"] for item in _top_counts([draft.risk for draft in drafts])}

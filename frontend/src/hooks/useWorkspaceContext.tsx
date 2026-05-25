@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 import { getCurrentMember, listProjects, listWorkspaces, MemberRecord, ProjectRecord, Session, WorkspaceRecord } from "../api";
 
 export type WorkspaceContextValue = {
@@ -22,7 +23,17 @@ export type WorkspaceContextValue = {
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
+function pickId<T extends { id: string }>(items: T[], preferred: string, current: string) {
+  if (preferred && items.some((item) => item.id === preferred)) return preferred;
+  if (current && items.some((item) => item.id === current)) return current;
+  return items[0]?.id ?? "";
+}
+
 export function WorkspaceProvider({ session, children }: { session: Session; children: ReactNode }) {
+  const location = useLocation();
+  const routeMatch = location.pathname.match(/^\/w\/([^/]+)(?:\/p\/([^/]+))?/);
+  const routeWorkspaceId = routeMatch?.[1] ?? "";
+  const routeProjectId = routeMatch?.[2] ?? "";
   const actorEmail = session.user.email;
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string>("");
@@ -38,16 +49,12 @@ export function WorkspaceProvider({ session, children }: { session: Session; chi
     try {
       const list = await listWorkspaces(actorEmail);
       setWorkspaces(list);
-      const nextWid = currentWorkspaceId && list.some((w) => w.id === currentWorkspaceId)
-        ? currentWorkspaceId
-        : list[0]?.id ?? "";
+      const nextWid = pickId(list, routeWorkspaceId, currentWorkspaceId);
       setCurrentWorkspaceId(nextWid);
       if (nextWid) {
         const ps = await listProjects(nextWid);
         setProjects(ps);
-        const nextPid = currentProjectId && ps.some((p) => p.id === currentProjectId)
-          ? currentProjectId
-          : ps[0]?.id ?? "";
+        const nextPid = pickId(ps, routeProjectId, currentProjectId);
         setCurrentProjectId(nextPid);
       } else {
         setProjects([]);
@@ -58,12 +65,12 @@ export function WorkspaceProvider({ session, children }: { session: Session; chi
     } finally {
       setBusy(false);
     }
-  }, [actorEmail, currentWorkspaceId, currentProjectId]);
+  }, [actorEmail, routeWorkspaceId, routeProjectId, currentWorkspaceId, currentProjectId]);
 
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actorEmail]);
+  }, [actorEmail, routeWorkspaceId, routeProjectId]);
 
   useEffect(() => {
     if (!currentWorkspaceId) {
@@ -100,12 +107,12 @@ export function WorkspaceProvider({ session, children }: { session: Session; chi
       void listProjects(id)
         .then((ps) => {
           setProjects(ps);
-          setCurrentProjectId(ps[0]?.id ?? "");
+          setCurrentProjectId(pickId(ps, routeProjectId, ""));
         })
         .catch((err) => setError(err instanceof Error ? err.message : "项目加载失败"))
         .finally(() => setBusy(false));
     },
-    [currentWorkspaceId]
+    [currentWorkspaceId, routeProjectId]
   );
 
   const selectProject = useCallback((id: string) => {

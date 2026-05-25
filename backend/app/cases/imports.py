@@ -39,6 +39,7 @@ from app.cases.import_support import (
     safe_filename,
 )
 from app.cases.modules import get_module_or_404
+from app.cases.step_models import normalize_steps_with_legacy
 from app.git.models import Job, JobStatus
 from app.git.sandbox import job_to_response
 from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc, require_workspace_owner
@@ -183,8 +184,8 @@ def create_review_case_from_import_draft(db: Session, batch: ImportBatch, draft:
         test_case_id=test_case.id,
         module_id=draft.module_id,
         title=draft.title,
-        steps=draft.steps,
-        expected_result="",
+        steps=normalize_steps_with_legacy(draft.steps, draft.expected_result),
+        expected_result=draft.expected_result,
         priority=draft.priority,
         risk=draft.risk,
         tags=draft.tags,

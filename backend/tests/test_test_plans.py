@@ -89,7 +89,7 @@ def test_test_plan_types_items_snapshots_and_audit(tmp_path: Path) -> None:
     assert items[1]["snapshot"]["steps"] == ["Open dashboard", "Verify payment metrics"]
     assert items[2]["snapshot"]["interfaces"] == ["/checkout/refund"]
 
-    audit_actions = [entry["action"] for entry in client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()]
+    audit_actions = [entry["action"] for entry in client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()]
     assert "test_plan.created" in audit_actions
     assert audit_actions.count("plan_item.added") >= 3
 
@@ -198,6 +198,6 @@ def test_plan_item_execution_result_evidence_and_filters(tmp_path: Path) -> None
     updated_plan = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/plans").json()[0]
     assert updated_plan["status"] == "in_progress"
 
-    audit_actions = [entry["action"] for entry in client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()]
+    audit_actions = [entry["action"] for entry in client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()]
     assert "plan_item.execution_updated" in audit_actions
     assert "plan_item.evidence_uploaded" in audit_actions

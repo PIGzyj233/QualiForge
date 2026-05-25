@@ -19,6 +19,7 @@ from app.agents.graph_types import GeneratedCaseCandidate, SUBAGENT_REGISTRY
 from app.cases.ai_suggestions import AISuggestion, AISuggestionType
 from app.cases.domain import CaseDraft, CaseRevision, TestCase, TestCaseLifecycle
 from app.cases.modules import ProjectModule
+from app.cases.step_models import steps_expected_text, stringify_steps
 
 
 def normalize_text(value: str) -> str:
@@ -296,8 +297,9 @@ def collect_coverage_records(
         )
         snapshot = revision.content_snapshot if revision else {}
         title = str((draft.title if draft else "") or snapshot.get("title") or "")
-        steps = [str(step) for step in ((draft.steps if draft else None) or snapshot.get("steps", []))]
-        expected = str((draft.expected_result if draft else "") or snapshot.get("expected_result") or "")
+        raw_steps = (draft.steps if draft else None) or snapshot.get("steps") or []
+        steps = stringify_steps(list(raw_steps))
+        expected = str((draft.expected_result if draft else "") or snapshot.get("expected_result") or steps_expected_text(raw_steps) or "")
         module_id = (draft.module_id if draft else None) or test_case.current_module_id or str(snapshot.get("module_id") or "") or None
         append(
             {

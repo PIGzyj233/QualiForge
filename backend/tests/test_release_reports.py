@@ -76,6 +76,6 @@ def test_release_report_draft_decision_markdown_and_audit(tmp_path: Path) -> Non
     assert "## Release Decision" in markdown.text
     assert "Do not release until QUALI-42 is fixed." in markdown.text
 
-    audit_actions = [entry["action"] for entry in client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()]
+    audit_actions = [entry["action"] for entry in client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()]
     assert "release_report.draft_generated" in audit_actions
     assert "release_report.decision_confirmed" in audit_actions

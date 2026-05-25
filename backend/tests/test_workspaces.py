@@ -60,7 +60,7 @@ def test_workspace_members_can_be_added_removed_and_audited() -> None:
     )
     assert removed.status_code == 204
 
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()
     actions = [entry["action"] for entry in audit_logs]
     assert "member.added" in actions
     assert "member.removed" in actions
@@ -97,8 +97,40 @@ def test_projects_are_workspace_scoped_and_audited() -> None:
     assert [item["id"] for item in first_projects] == [project["id"]]
     assert second_projects == []
 
-    audit_logs = client.get(f"/api/workspaces/{first_workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{first_workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()
     assert [entry["action"] for entry in audit_logs[:2]] == ["project.updated", "project.created"]
+
+
+def test_workspace_admin_mutations_require_owner() -> None:
+    client = make_client()
+    workspace = create_workspace(client)
+    added = client.post(
+        f"/api/workspaces/{workspace['id']}/members?actor_email=owner@qualiforge.local",
+        json={
+            "email": "tester@qualiforge.local",
+            "display_name": "Tester",
+            "role": "WorkspaceMember",
+        },
+    )
+    assert added.status_code == 201
+
+    member_create = client.post(
+        f"/api/workspaces/{workspace['id']}/members?actor_email=tester@qualiforge.local",
+        json={
+            "email": "other@qualiforge.local",
+            "display_name": "Other",
+            "role": "WorkspaceMember",
+        },
+    )
+    project_create = client.post(
+        f"/api/workspaces/{workspace['id']}/projects?actor_email=tester@qualiforge.local",
+        json={"name": "Checkout", "key": "CHECKOUT", "description": "Checkout regression surface"},
+    )
+    audit_read = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email=tester@qualiforge.local")
+
+    assert member_create.status_code == 403
+    assert project_create.status_code == 403
+    assert audit_read.status_code == 403
 
 
 

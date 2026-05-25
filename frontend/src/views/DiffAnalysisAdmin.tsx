@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { FileText, FolderKanban, GitCommitHorizontal, History, Network, ShieldAlert } from "lucide-react";
+import { useParams } from "react-router-dom";
 import {
   createDiffAnalysis,
   DiffAnalysisRecord,
@@ -13,9 +14,11 @@ import {
   WorkspaceRecord
 } from "../api";
 import { statusLabel, riskLabel, changeTypeLabel } from "../lib/labels";
+import { pickExistingId } from "../lib/selection";
 
 export function DiffAnalysisAdmin({ session }: { session: Session }) {
   const actorEmail = session.user.email;
+  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -37,8 +40,8 @@ export function DiffAnalysisAdmin({ session }: { session: Session }) {
     setRepositories(nextRepositories);
     setAnalyses(nextAnalyses);
     const syncedRepository = nextRepositories.find((repository) => repository.status === "synced");
-    const nextRepositoryId = preferredRepositoryId || selectedRepositoryId || syncedRepository?.id || nextRepositories[0]?.id || "";
-    const nextAnalysisId = preferredAnalysisId || selectedAnalysisId || nextAnalyses[0]?.id || "";
+    const nextRepositoryId = pickExistingId(nextRepositories, preferredRepositoryId || syncedRepository?.id, selectedRepositoryId);
+    const nextAnalysisId = pickExistingId(nextAnalyses, preferredAnalysisId, selectedAnalysisId);
     setSelectedRepositoryId(nextRepositoryId);
     setSelectedAnalysisId(nextAnalysisId);
   }
@@ -49,12 +52,12 @@ export function DiffAnalysisAdmin({ session }: { session: Session }) {
     try {
       const nextWorkspaces = await listWorkspaces(actorEmail);
       setWorkspaces(nextWorkspaces);
-      const nextWorkspaceId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      const nextWorkspaceId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
       setSelectedWorkspaceId(nextWorkspaceId);
       if (!nextWorkspaceId) return;
       const nextProjects = await listProjects(nextWorkspaceId);
       setProjects(nextProjects);
-      const nextProjectId = preferredProjectId || selectedProjectId || nextProjects[0]?.id || "";
+      const nextProjectId = pickExistingId(nextProjects, preferredProjectId, selectedProjectId);
       setSelectedProjectId(nextProjectId);
       if (nextProjectId) {
         await refreshDiffProject(nextWorkspaceId, nextProjectId, undefined, preferredAnalysisId);
@@ -67,8 +70,9 @@ export function DiffAnalysisAdmin({ session }: { session: Session }) {
   }
 
   useEffect(() => {
-    void refreshDiffWorkspaces();
-  }, []);
+    void refreshDiffWorkspaces(routeWorkspaceId || undefined, routeProjectId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeWorkspaceId, routeProjectId]);
 
   async function handleWorkspaceSwitch(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);

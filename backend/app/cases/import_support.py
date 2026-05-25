@@ -20,6 +20,7 @@ from app.cases.import_models import (
     ImportDraftStatus,
 )
 from app.cases.modules import ModuleMappingRule, ProjectModule
+from app.cases.step_models import normalize_steps_with_legacy
 from app.git.models import Job, JobStatus
 from app.platform.database import Database
 from app.workspace.routes import now_utc
@@ -220,6 +221,7 @@ def convert_rows_to_drafts(rows: list[dict], modules: list[ProjectModule], rules
                 "module_id": infer_module_id(row, modules, rules),
                 "title": title[:300],
                 "steps": steps,
+                "expected_result": expected_result[:2000],
                 "priority": str(row.get("priority") or "P2").strip()[:32],
                 "risk": str(row.get("risk") or "medium").strip()[:80],
                 "tags": tags,
@@ -265,7 +267,7 @@ def draft_to_response(draft: ImportCaseDraft) -> DraftResponse:
         case_draft_id=draft.case_draft_id,
         review_cycle_id=draft.review_cycle_id,
         title=draft.title,
-        steps=draft.steps,
+        steps=normalize_steps_with_legacy(draft.steps, draft.expected_result),
         priority=draft.priority,
         risk=draft.risk,
         tags=draft.tags,
@@ -334,6 +336,7 @@ def run_import_conversion(database: Database, batch_id: str) -> None:
                         module_id=item["module_id"],
                         title=item["title"],
                         steps=item["steps"],
+                        expected_result=item["expected_result"],
                         priority=item["priority"],
                         risk=item["risk"],
                         tags=item["tags"],

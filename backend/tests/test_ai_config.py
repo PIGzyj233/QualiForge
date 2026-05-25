@@ -73,7 +73,7 @@ def test_provider_masks_api_key_and_records_audit() -> None:
     assert provider["has_api_key"] is True
     assert provider["default_headers"] == {"X-Team": "qa"}
     assert "api_key" not in provider
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()
     assert "llm_provider.created" in [entry["action"] for entry in audit_logs]
     assert "sk-test-secret" not in str(audit_logs)
 

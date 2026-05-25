@@ -93,6 +93,7 @@ def test_csv_upload_creates_import_batch_job_preserved_file_and_ai_drafts(tmp_pa
     assert batch["row_count"] == 1
     assert batch["raw_rows"][0]["title"] == "Refund after payment"
     assert batch["ai_conversion_result"][0]["custom_fields"] == {"Legacy ID": "TC-9"}
+    assert batch["ai_conversion_result"][0]["expected_result"] == "Refund succeeds"
     assert Path(batch["original_file_path"]).exists()
 
     drafts = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/imports/{batch['id']}/drafts").json()
@@ -162,6 +163,7 @@ def test_preview_bulk_update_review_submission_and_owner_bulk_import(tmp_path: P
     assert test_cases[0]["review_status"] == "pending_review"
     assert test_cases[0]["active_draft"]["priority"] == "P0"
     assert test_cases[0]["active_draft"]["tags"] == ["checkout", "release"]
+    assert test_cases[0]["active_draft"]["steps"][-1]["expected"] == "order paid"
     cycle_id = test_cases[0]["open_cycle"]["id"]
 
     settings = client.put(
@@ -194,6 +196,7 @@ def test_preview_bulk_update_review_submission_and_owner_bulk_import(tmp_path: P
     assert active_cases[0]["review_status"] is None
     assert active_cases[0]["current_revision"]["content_snapshot"]["priority"] == "P0"
     assert active_cases[0]["current_revision"]["content_snapshot"]["tags"] == ["checkout", "release"]
+    assert active_cases[0]["current_revision"]["content_snapshot"]["expected_result"] == "order paid"
 
     repeated = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/imports/{batch['id']}/bulk-import?actor_email=owner@qualiforge.local"
@@ -205,7 +208,7 @@ def test_preview_bulk_update_review_submission_and_owner_bulk_import(tmp_path: P
     )
     assert resubmitted.status_code == 409
 
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()
     actions = [entry["action"] for entry in audit_logs]
     assert "import_batch.uploaded" in actions
     assert "import_draft.bulk_updated" in actions

@@ -6,7 +6,7 @@ import { usePagination } from "../../hooks/usePagination";
 import { useWorkspaceContext } from "../../hooks/useWorkspaceContext";
 
 export function WorkspaceAuditPanel() {
-  const { currentWorkspace } = useWorkspaceContext();
+  const { actorEmail, currentWorkspace } = useWorkspaceContext();
   const [logs, setLogs] = useState<AuditLogRecord[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -16,11 +16,11 @@ export function WorkspaceAuditPanel() {
     if (!currentWorkspace) return;
     setBusy(true);
     setError(null);
-    listAuditLogs(currentWorkspace.id)
+    listAuditLogs(currentWorkspace.id, actorEmail)
       .then(setLogs)
       .catch((err) => setError(err instanceof Error ? err.message : "审计日志加载失败"))
       .finally(() => setBusy(false));
-  }, [currentWorkspace?.id]);
+  }, [actorEmail, currentWorkspace?.id]);
 
   return (
     <section className="panel">

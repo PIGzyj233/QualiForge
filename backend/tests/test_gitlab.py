@@ -97,7 +97,7 @@ def test_gitlab_token_can_be_saved_by_owner_but_never_returned_plaintext(tmp_pat
     fetched = client.get(f"/api/workspaces/{workspace['id']}/gitlab-token").json()
     assert fetched["token_masked"] == "glpa...cret"
     assert "glpat-owner-secret" not in str(fetched)
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email=owner@qualiforge.local").json()
     assert "glpat-owner-secret" not in str(audit_logs)
 
 

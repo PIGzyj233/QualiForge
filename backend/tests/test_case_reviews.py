@@ -225,3 +225,31 @@ def test_active_edit_draft_does_not_overwrite_current_revision_until_approved() 
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{owner_case['id']}/revisions"
     ).json()
     assert [revision["revision_number"] for revision in revisions] == [2, 1]
+
+
+def test_legacy_steps_and_expected_result_are_returned_as_paired_steps() -> None:
+    client = make_client()
+    workspace = create_workspace(client)
+    project = create_project(client, workspace["id"])
+    module = create_module(client, workspace["id"], project["id"])
+
+    created = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases?actor_email=owner@qualiforge.local",
+        json={
+            "module_id": module["id"],
+            "title": "Legacy checkout import",
+            "steps": ["Open checkout", "Pay order"],
+            "expected_result": "Order is paid",
+            "priority": "P1",
+            "risk": "high",
+            "tags": ["legacy"],
+            "custom_fields": {},
+        },
+    )
+
+    assert created.status_code == 201, created.text
+    steps = created.json()["active_draft"]["steps"]
+    assert steps == [
+        {"action": "Open checkout", "expected": ""},
+        {"action": "Pay order", "expected": "Order is paid"},
+    ]

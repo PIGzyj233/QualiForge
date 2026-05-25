@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, ClipboardCheck, FileText, History, Plus } from "lucide-react";
+import { useParams } from "react-router-dom";
 import {
   createPlanItem,
   createTestPlan,
@@ -20,9 +21,11 @@ import {
 import { Pagination } from "../components/Pagination";
 import { usePagination } from "../hooks/usePagination";
 import { statusLabel, executionStatuses, ExecutionStatus } from "../lib/labels";
+import { pickExistingId } from "../lib/selection";
 
 export function TestPlanAdmin({ session }: { session: Session }) {
   const actorEmail = session.user.email;
+  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -89,7 +92,7 @@ export function TestPlanAdmin({ session }: { session: Session }) {
     ]);
     setPlans(nextPlans);
     setApprovedCases(nextCases);
-    const nextPlanId = preferredPlanId || selectedPlanId || nextPlans[0]?.id || "";
+    const nextPlanId = pickExistingId(nextPlans, preferredPlanId, selectedPlanId);
     setSelectedPlanId(nextPlanId);
     if (!selectedCaseId && nextCases[0]) {
       setSelectedCaseId(nextCases[0].id);
@@ -103,12 +106,12 @@ export function TestPlanAdmin({ session }: { session: Session }) {
     try {
       const nextWorkspaces = await listWorkspaces(actorEmail);
       setWorkspaces(nextWorkspaces);
-      const nextWorkspaceId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      const nextWorkspaceId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
       setSelectedWorkspaceId(nextWorkspaceId);
       if (!nextWorkspaceId) return;
       const nextProjects = await listProjects(nextWorkspaceId);
       setProjects(nextProjects);
-      const nextProjectId = preferredProjectId || selectedProjectId || nextProjects[0]?.id || "";
+      const nextProjectId = pickExistingId(nextProjects, preferredProjectId, selectedProjectId);
       setSelectedProjectId(nextProjectId);
       if (nextProjectId) {
         await refreshPlanProject(nextWorkspaceId, nextProjectId);
@@ -121,8 +124,9 @@ export function TestPlanAdmin({ session }: { session: Session }) {
   }
 
   useEffect(() => {
-    void refreshPlanWorkspaces();
-  }, []);
+    void refreshPlanWorkspaces(routeWorkspaceId || undefined, routeProjectId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeWorkspaceId, routeProjectId]);
 
   async function handleWorkspaceSwitch(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);

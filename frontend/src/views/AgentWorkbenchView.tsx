@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, Boxes, Check, CircleStop, ClipboardCheck, FileSearch, GitBranch, ListChecks, Play, RefreshCcw, RotateCcw, Save, Search, X } from "lucide-react";
+import { useParams } from "react-router-dom";
 import {
   AgentExecutionDetailRecord,
   AgentMemoryFileRecord,
@@ -34,6 +35,7 @@ import { Pagination } from "../components/Pagination";
 import { StatusPill } from "../components/StatusPill";
 import { usePagination } from "../hooks/usePagination";
 import { statusLabel } from "../lib/labels";
+import { pickExistingId } from "../lib/selection";
 
 const runStatuses: Array<AgentRunStatus | "all"> = ["all", "queued", "running", "waiting_for_user", "succeeded", "failed", "cancelled"];
 
@@ -80,6 +82,7 @@ function childWorkflowStats(item: Record<string, unknown>) {
 
 export function AgentWorkbenchView({ session }: { session: Session }) {
   const actorEmail = session.user.email;
+  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -191,7 +194,7 @@ export function AgentWorkbenchView({ session }: { session: Session }) {
       status: statusFilter === "all" ? undefined : statusFilter
     });
     setRuns(nextRuns);
-    const nextRunId = preferredRunId || selectedRunId || nextRuns[0]?.id || "";
+    const nextRunId = pickExistingId(nextRuns, preferredRunId, selectedRunId);
     setSelectedRunId(nextRunId);
     if (nextRunId) {
       setDetail(await getAgentExecutionDetail(workspaceId, nextRunId));
@@ -203,7 +206,7 @@ export function AgentWorkbenchView({ session }: { session: Session }) {
   async function refreshProject(workspaceId: string, projectId: string, preferredRunId?: string) {
     const [nextRepositories] = await Promise.all([listRepositories(workspaceId, projectId || undefined)]);
     setRepositories(nextRepositories);
-    setSelectedRepositoryId((current) => current || nextRepositories[0]?.id || "");
+    setSelectedRepositoryId((current) => pickExistingId(nextRepositories, current, ""));
     await refreshRuns(workspaceId, projectId, preferredRunId);
   }
 
@@ -213,12 +216,12 @@ export function AgentWorkbenchView({ session }: { session: Session }) {
     try {
       const nextWorkspaces = await listWorkspaces(actorEmail);
       setWorkspaces(nextWorkspaces);
-      const workspaceId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      const workspaceId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
       setSelectedWorkspaceId(workspaceId);
       if (!workspaceId) return;
       const nextProjects = await listProjects(workspaceId);
       setProjects(nextProjects);
-      const projectId = preferredProjectId || selectedProjectId || nextProjects[0]?.id || "";
+      const projectId = pickExistingId(nextProjects, preferredProjectId, selectedProjectId);
       setSelectedProjectId(projectId);
       await refreshProject(workspaceId, projectId, preferredRunId);
     } catch (err) {
@@ -229,8 +232,9 @@ export function AgentWorkbenchView({ session }: { session: Session }) {
   }
 
   useEffect(() => {
-    void refreshAll();
-  }, []);
+    void refreshAll(routeWorkspaceId || undefined, routeProjectId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeWorkspaceId, routeProjectId]);
 
   async function handleWorkspaceSwitch(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);

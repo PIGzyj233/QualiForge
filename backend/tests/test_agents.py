@@ -322,7 +322,7 @@ def test_agent_conversation_run_staged_output_and_coverage_flow() -> None:
     coverage = coverage_response.json()
     assert [entry["behavior_summary"] for entry in coverage] == ["Refund audit trail is visible and attributable."]
 
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email={OWNER}").json()
     actions = [entry["action"] for entry in audit_logs]
     assert "agent_conversation.created" in actions
     assert "agent_run.created" in actions
@@ -808,8 +808,11 @@ def test_agent_subagent_plan_can_request_import_and_report_subagents(tmp_path: P
                     batch_id=batch.id,
                     module_id="module-checkout",
                     title="Refund imported case",
-                    steps=["Create order", "Refund order"],
-                    expected_result="refund.created audit event is recorded",
+                    steps=[
+                        {"action": "Create order", "expected": ""},
+                        {"action": "Refund order", "expected": "refund.created audit event is recorded"},
+                    ],
+                    expected_result="",
                     priority="P1",
                     risk="high",
                     source_row_index=1,
@@ -1094,7 +1097,7 @@ def test_agent_resume_from_model_budget_waiting_succeeds_and_audits_override(tmp
     assert len(model_calls) == 1
     assert payload["run"]["budget_snapshot"]["max_model_calls"] == 5
     assert payload["run"]["budget_snapshot"]["usage"]["model_calls"] == 1
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email={OWNER}").json()
     actions = [entry["action"] for entry in audit_logs]
     assert "agent_run.budget_overridden" in actions
 
@@ -1267,7 +1270,7 @@ def test_temporal_workflow_starter_includes_budget_child_tasks(tmp_path: Path, m
         {"task_kind": "large_import_analysis", "summary": "Analyze imported rows", "payload": {}},
     ]
     assert captured["kwargs"]["id"] == f"agent-run-{run['id']}"
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email={OWNER}").json()
     started = [entry for entry in audit_logs if entry["action"] == "agent_run.workflow_started"]
     assert started[-1]["after"]["child_task_count"] == 2
 
@@ -1699,7 +1702,7 @@ def test_successful_agent_run_writes_searchable_daily_memory(tmp_path: Path) -> 
     search = client.get(
         f"/api/workspaces/{workspace['id']}/agent/memory/search?project_id={project['id']}&query=refund%20audit"
     )
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email={OWNER}").json()
 
     assert executed.status_code == 200, executed.json()
     assert files.status_code == 200, files.json()
@@ -1797,7 +1800,7 @@ def test_agent_memory_curator_search_versions_rollback_and_secret_rejection(tmp_
             "content": "api key test-model-key should never be stored",
         },
     )
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email={OWNER}").json()
 
     assert created.status_code == 200, created.json()
     assert updated.status_code == 200, updated.json()
@@ -1956,7 +1959,7 @@ def test_agent_tool_calls_and_approvals_are_audited() -> None:
     )
     assert second_decision.status_code == 409
 
-    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs").json()
+    audit_logs = client.get(f"/api/workspaces/{workspace['id']}/audit-logs?actor_email={OWNER}").json()
     actions = [entry["action"] for entry in audit_logs]
     assert "agent_tool_call.recorded" in actions
     assert "agent_approval.requested" in actions

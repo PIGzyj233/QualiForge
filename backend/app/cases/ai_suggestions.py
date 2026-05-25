@@ -12,6 +12,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from app.cases.domain import CaseDraft, CaseDraftSource, TestCase, TestCaseLifecycle
 from app.cases.review_models import TestCaseCreate
 from app.cases.review_workflow import build_case_response
+from app.cases.step_models import steps_expected_text
 from app.platform.database import Base
 from app.cases.diff_models import DiffAnalysis, DiffAnalysisStatus
 from app.planning.test_plans import (
@@ -449,7 +450,7 @@ def create_candidate_from_ai_suggestion(
         module_id=payload.module_id,
         title=payload.title,
         steps=[step.model_dump() for step in payload.steps],
-        expected_result="",
+        expected_result=payload.expected_result or steps_expected_text([step.model_dump() for step in payload.steps]),
         priority=payload.priority,
         risk=payload.risk,
         tags=payload.tags,

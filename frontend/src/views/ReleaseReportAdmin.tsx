@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { FileText, History, ShieldCheck, Sparkles } from "lucide-react";
+import { useParams } from "react-router-dom";
 import {
   confirmReleaseReportDecision,
   createReleaseReportDraft,
@@ -15,9 +16,11 @@ import {
   WorkspaceRecord
 } from "../api";
 import { statusLabel } from "../lib/labels";
+import { pickExistingId } from "../lib/selection";
 
 export function ReleaseReportAdmin({ session }: { session: Session }) {
   const actorEmail = session.user.email;
+  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
@@ -52,7 +55,7 @@ export function ReleaseReportAdmin({ session }: { session: Session }) {
   async function refreshReportProject(workspaceId: string, projectId: string, preferredPlanId?: string, preferredReportId?: string) {
     const nextPlans = await listTestPlans(workspaceId, projectId);
     setPlans(nextPlans);
-    const nextPlanId = preferredPlanId || selectedPlanId || nextPlans[0]?.id || "";
+    const nextPlanId = pickExistingId(nextPlans, preferredPlanId, selectedPlanId);
     setSelectedPlanId(nextPlanId);
     await refreshReports(workspaceId, projectId, nextPlanId, preferredReportId);
   }
@@ -63,12 +66,12 @@ export function ReleaseReportAdmin({ session }: { session: Session }) {
     try {
       const nextWorkspaces = await listWorkspaces(actorEmail);
       setWorkspaces(nextWorkspaces);
-      const nextWorkspaceId = preferredWorkspaceId || selectedWorkspaceId || nextWorkspaces[0]?.id || "";
+      const nextWorkspaceId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
       setSelectedWorkspaceId(nextWorkspaceId);
       if (!nextWorkspaceId) return;
       const nextProjects = await listProjects(nextWorkspaceId);
       setProjects(nextProjects);
-      const nextProjectId = preferredProjectId || selectedProjectId || nextProjects[0]?.id || "";
+      const nextProjectId = pickExistingId(nextProjects, preferredProjectId, selectedProjectId);
       setSelectedProjectId(nextProjectId);
       if (nextProjectId) {
         await refreshReportProject(nextWorkspaceId, nextProjectId);
@@ -81,8 +84,9 @@ export function ReleaseReportAdmin({ session }: { session: Session }) {
   }
 
   useEffect(() => {
-    void refreshReportWorkspaces();
-  }, []);
+    void refreshReportWorkspaces(routeWorkspaceId || undefined, routeProjectId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeWorkspaceId, routeProjectId]);
 
   async function handleWorkspaceSwitch(workspaceId: string) {
     setSelectedWorkspaceId(workspaceId);
