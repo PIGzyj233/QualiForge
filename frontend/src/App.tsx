@@ -1,7 +1,8 @@
 import { useState } from "react";
+import { BrowserRouter } from "react-router-dom";
 import type { Session } from "./api";
+import { AppRouter } from "./routes/AppRouter";
 import { LoginView } from "./views/LoginView";
-import { Workbench } from "./views/Workbench";
 
 const SESSION_KEY = "qualiforge.session";
 
@@ -11,9 +12,14 @@ export function App() {
     return stored ? (JSON.parse(stored) as Session) : null;
   });
 
-  const handleSession = (nextSession: Session) => {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
-    setSession(nextSession);
+  const handleSession = (next: Session) => {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+    setSession(next);
+  };
+
+  const handleSignOut = () => {
+    localStorage.removeItem(SESSION_KEY);
+    setSession(null);
   };
 
   if (!session) {
@@ -21,12 +27,8 @@ export function App() {
   }
 
   return (
-    <Workbench
-      session={session}
-      onSignOut={() => {
-        localStorage.removeItem(SESSION_KEY);
-        setSession(null);
-      }}
-    />
+    <BrowserRouter>
+      <AppRouter session={session} onSignOut={handleSignOut} />
+    </BrowserRouter>
   );
 }
