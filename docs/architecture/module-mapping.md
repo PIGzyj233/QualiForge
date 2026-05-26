@@ -1,7 +1,7 @@
 # 模块映射
 
 模块树与映射规则是 QualiForge 把人类测试资产与代码证据连接起来的中枢。
-设计依据见 [ADR 0002](../adr/0002-human-confirmed-module-mapping.md)。
+设计依据见 [ADR 0002](../adr/0002-human-confirmed-module-mapping.md) 与 [ADR 0003](../adr/0003-centralize-module-mapping-rule-evaluation.md)。
 本文档跟踪当前实现状态与后续阶段。
 
 ## 1. 现状概览
@@ -72,6 +72,8 @@ asset_fixture  keyword
 `media_pipeline` 故意保持高层粒度，覆盖编解码 / 滤镜 / 转码 / 同步 / 缓冲等媒体处理链，避免每个子系统都拆成独立规则类型。
 
 ## 4. 匹配语义
+
+> ADR 0003 已决定：匹配语义应集中到一个 ModuleMapping rule evaluation Module。当前代码仍有部分调用方本地实现，后续应迁移到统一 `evaluate_mapping(...)` / `preflight_rule(...)` Interface。
 
 - 路径类规则使用 glob；支持 `!pattern` 排除（排除胜出）。
 - 匹配是**加权**的，不是布尔：diff 分析 / 确认时综合考虑 `relationship` 权重、`confidence`、verification 状态、specificity、`status`。

@@ -115,6 +115,27 @@ def test_module_mapping_rules_cover_supported_targets_sources_filters_and_audit(
     assert repository.status_code == 201
     repository_id = repository.json()["id"]
 
+    preflight = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/mapping-rules/preflight",
+        json={
+            "module_id": module["id"],
+            "rule_type": "directory",
+            "pattern": "backend/app/payments/**",
+            "source": "manual",
+            "status": "stale",
+        },
+    )
+    assert preflight.status_code == 200
+    preflight_body = preflight.json()
+    assert preflight_body["passed"] is True
+    assert {"stale_reason_missing", "unscoped_path_rule"} <= {issue["code"] for issue in preflight_body["issues"]}
+
+    malformed_rule = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules/{module['id']}/mapping-rules?actor_email=owner@qualiforge.local",
+        json={"rule_type": "directory", "pattern": "!", "source": "manual"},
+    )
+    assert malformed_rule.status_code == 422
+
     examples = [
         ("directory", "backend/app/payments/**", "manual"),
         ("file", "frontend/src/payments/Checkout.tsx", "ai_repository"),

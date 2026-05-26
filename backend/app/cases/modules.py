@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -23,6 +24,14 @@ from app.agents.models import (
 from app.agents.serializers import run_to_response, staged_output_to_response
 from app.agents.schemas import AgentRunExecuteResponse, AgentStagedOutputResponse
 from app.cases.domain import CaseDraft, CaseRevision, TestCase
+from app.cases.mapping_evaluator import (
+    PATH_RULE_TYPES,
+    MappingRuleSet,
+    ModuleSnapshot,
+    RuleSnapshot,
+    normalize_path,
+    preflight_rule,
+)
 from app.git.models import GitRepository, RepositoryStatus
 from app.platform.database import Base
 from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc, require_workspace_owner
@@ -217,6 +226,29 @@ class MappingRuleResponse(BaseModel):
     updated_at: datetime
 
 
+class MappingRulePreflightIssueResponse(BaseModel):
+    severity: str
+    code: str
+    reason: str
+    rule_id: str | None = None
+    module_id: str | None = None
+    path: str | None = None
+
+
+class MappingRulePreflightRequest(MappingRuleCreate):
+    module_id: str = Field(min_length=1, max_length=32)
+    rule_id: str | None = Field(default=None, max_length=32)
+
+
+class MappingRulePreflightResponse(BaseModel):
+    passed: bool
+    blocker_count: int
+    warning_count: int
+    issues: list[MappingRulePreflightIssueResponse]
+    matched_sample_count: int = 0
+    sample_paths: list[str] = Field(default_factory=list)
+
+
 class ModuleResponse(BaseModel):
     id: str
     workspace_id: str
@@ -341,6 +373,121 @@ def assert_repository_scope(db: Session, workspace_id: str, project_id: str, rep
     )
     if repository is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+
+
+def module_evaluator_snapshot(module: ProjectModule) -> ModuleSnapshot:
+    return ModuleSnapshot(
+        id=module.id,
+        name=module.name,
+        slug=module.slug,
+        code=module.code,
+        path=module.path,
+        path_label=module.path_label,
+        status=module.status,
+    )
+
+
+def rule_evaluator_snapshot(rule: ModuleMappingRule) -> RuleSnapshot:
+    return RuleSnapshot(
+        id=rule.id,
+        module_id=rule.module_id,
+        repository_id=rule.repository_id,
+        rule_type=rule.rule_type,
+        pattern=rule.pattern,
+        relationship=rule.relationship,
+        status=rule.status,
+        confidence=rule.confidence,
+        case_sensitive=rule.case_sensitive,
+        conditions=rule.conditions or {},
+        stale_reason=rule.stale_reason,
+        source=rule.source,
+        ai_confidence=rule.ai_confidence,
+    )
+
+
+def project_rule_set(db: Session, workspace_id: str, project_id: str) -> MappingRuleSet:
+    modules = db.scalars(
+        select(ProjectModule)
+        .where(ProjectModule.workspace_id == workspace_id, ProjectModule.project_id == project_id)
+        .order_by(ProjectModule.path)
+    ).all()
+    rules = db.scalars(
+        select(ModuleMappingRule)
+        .where(ModuleMappingRule.workspace_id == workspace_id, ModuleMappingRule.project_id == project_id)
+        .order_by(ModuleMappingRule.rule_type, ModuleMappingRule.pattern, ModuleMappingRule.id)
+    ).all()
+    return MappingRuleSet(
+        modules=tuple(module_evaluator_snapshot(module) for module in modules),
+        rules=tuple(rule_evaluator_snapshot(rule) for rule in rules),
+    )
+
+
+def candidate_rule_snapshot(module_id: str, data: dict[str, Any], rule_id: str = "") -> RuleSnapshot:
+    return RuleSnapshot(
+        id=rule_id,
+        module_id=module_id,
+        repository_id=data.get("repository_id") or None,
+        rule_type=str(data.get("rule_type") or MappingRuleType.keyword.value),
+        pattern=str(data.get("pattern") or ""),
+        relationship=str(data.get("relationship") or MappingRelationship.primary.value),
+        status=str(data.get("status") or MappingRuleStatus.active.value),
+        confidence=int(data.get("confidence") if data.get("confidence") is not None else 100),
+        case_sensitive=data.get("case_sensitive") if isinstance(data.get("case_sensitive"), bool) else None,
+        conditions=data.get("conditions") if isinstance(data.get("conditions"), dict) else {},
+        stale_reason=str(data.get("stale_reason") or ""),
+        source=str(data.get("source") or ""),
+        ai_confidence=int(data.get("ai_confidence") if data.get("ai_confidence") is not None else 0),
+    )
+
+
+def repository_sample_inventory(db: Session, workspace_id: str, project_id: str, repository_id: str | None, limit: int = 2000) -> list[str]:
+    if not repository_id:
+        return []
+    repository = db.scalar(
+        select(GitRepository).where(
+            GitRepository.id == repository_id,
+            GitRepository.workspace_id == workspace_id,
+            GitRepository.project_id == project_id,
+        )
+    )
+    if repository is None or repository.status != RepositoryStatus.synced.value or not Path(repository.mirror_path).exists():
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(Path(repository.mirror_path)), "ls-files"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=repository.sync_timeout_seconds,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [normalize_path(line) for line in result.stdout.splitlines() if line.strip()][:limit]
+
+
+def mapping_rule_preflight(
+    db: Session,
+    workspace_id: str,
+    project_id: str,
+    candidate: RuleSnapshot,
+) -> MappingRulePreflightResponse:
+    sample_inventory = repository_sample_inventory(db, workspace_id, project_id, candidate.repository_id) if candidate.rule_type in PATH_RULE_TYPES else []
+    result = preflight_rule(candidate, project_rule_set(db, workspace_id, project_id), sample_inventory)
+    return MappingRulePreflightResponse(**result.to_dict())
+
+
+def raise_for_preflight_blockers(preflight: MappingRulePreflightResponse) -> None:
+    if preflight.blocker_count == 0:
+        return
+    blocker_codes = {issue.code for issue in preflight.issues if issue.severity == "blocker"}
+    if blocker_codes == {"duplicate_rule"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Mapping rule already exists")
+    raise HTTPException(
+        status_code=422,
+        detail={"message": "Mapping rule preflight failed", "issues": [issue.model_dump(exclude_none=True) for issue in preflight.issues]},
+    )
 
 
 def serialize_rule(rule: ModuleMappingRule) -> MappingRuleResponse:
@@ -671,6 +818,179 @@ def accept_module_tree_draft_output(db: Session, *, output: AgentStagedOutput, a
     }
 
 
+def bounded_int(value: Any, default: int = 0) -> int:
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def resolve_module_for_mapping_suggestion(item: dict[str, Any], modules: list[ProjectModule]) -> ProjectModule | None:
+    module_id = str(item.get("module_id") or "").strip()
+    if module_id:
+        return next((module for module in modules if module.id == module_id), None)
+    module_key = str(item.get("module_key") or item.get("target_module") or item.get("target_module_key") or "").strip().lower()
+    if not module_key:
+        return None
+    for module in modules:
+        aliases = {module.id.lower(), module.name.lower(), module.slug.lower(), module.path.lower(), module.path_label.lower()}
+        if module.code:
+            aliases.add(module.code.lower())
+        if module_key in aliases:
+            return module
+    return None
+
+
+def suggestion_issue(index: int, code: str, reason: str, severity: str = "blocker") -> dict[str, Any]:
+    return {"item_index": index, "severity": severity, "code": code, "reason": reason}
+
+
+def accept_module_mapping_suggestions_output(db: Session, *, output: AgentStagedOutput, actor_email: str) -> dict[str, Any]:
+    if output.output_type != AgentStagedOutputType.module_mapping_suggestions.value:
+        raise HTTPException(status_code=422, detail="Staged output is not a module mapping suggestion set")
+    if not output.project_id:
+        raise HTTPException(status_code=422, detail="Module mapping suggestions are not scoped to a project")
+    payload = dict(output.payload or {})
+    raw_items = payload.get("items") or payload.get("suggestions") or []
+    items = [item for item in raw_items if isinstance(item, dict)]
+    if not items:
+        raise HTTPException(status_code=422, detail="Module mapping suggestions have no items")
+
+    modules = list(
+        db.scalars(
+            select(ProjectModule)
+            .where(ProjectModule.workspace_id == output.workspace_id, ProjectModule.project_id == output.project_id)
+            .order_by(ProjectModule.path)
+        ).all()
+    )
+    repositories = {
+        repository.id: repository
+        for repository in db.scalars(
+            select(GitRepository).where(GitRepository.workspace_id == output.workspace_id, GitRepository.project_id == output.project_id)
+        ).all()
+    }
+    rule_set = project_rule_set(db, output.workspace_id, output.project_id)
+    seen_rules = {(rule.module_id, rule.rule_type, normalize_path(rule.pattern)) for rule in rule_set.rules}
+    pending: list[tuple[dict[str, Any], RuleSnapshot]] = []
+    skipped: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+
+    for index, item in enumerate(items):
+        module = resolve_module_for_mapping_suggestion(item, modules)
+        if module is None:
+            issues.append(suggestion_issue(index, "unresolved_module", "Suggestion target module could not be resolved."))
+            continue
+        repository_id = str(item.get("repository_id") or "").strip() or None
+        if repository_id and repository_id not in repositories:
+            issues.append(suggestion_issue(index, "repository_scope_mismatch", "Suggestion repository is not part of this project."))
+            continue
+        rule_type = str(item.get("rule_type") or "").strip()
+        if rule_type not in {rule_type.value for rule_type in MappingRuleType}:
+            issues.append(suggestion_issue(index, "invalid_rule_type", "Suggestion rule_type is not supported."))
+            continue
+        relationship = str(item.get("relationship") or MappingRelationship.primary.value)
+        if relationship not in {relationship.value for relationship in MappingRelationship}:
+            issues.append(suggestion_issue(index, "invalid_relationship", "Suggestion relationship is not supported."))
+            continue
+        rule_status = str(item.get("status") or MappingRuleStatus.active.value)
+        if rule_status not in {rule_status.value for rule_status in MappingRuleStatus}:
+            issues.append(suggestion_issue(index, "invalid_status", "Suggestion status is not supported."))
+            continue
+        source = str(item.get("source") or MappingSource.ai_repository.value)
+        if source not in {source.value for source in MappingSource}:
+            source = MappingSource.ai_repository.value
+
+        candidate = RuleSnapshot(
+            module_id=module.id,
+            repository_id=repository_id,
+            rule_type=rule_type,
+            pattern=str(item.get("pattern") or "").strip(),
+            relationship=relationship,
+            status=rule_status,
+            confidence=bounded_int(item.get("confidence"), 80),
+            case_sensitive=item.get("case_sensitive") if isinstance(item.get("case_sensitive"), bool) else None,
+            conditions=item.get("conditions") if isinstance(item.get("conditions"), dict) else {},
+            stale_reason=str(item.get("stale_reason") or ""),
+            source=source,
+            ai_confidence=bounded_int(item.get("ai_confidence"), 0),
+        )
+        preflight = preflight_rule(
+            candidate,
+            rule_set,
+            repository_sample_inventory(db, output.workspace_id, output.project_id, repository_id) if candidate.rule_type in PATH_RULE_TYPES else [],
+        )
+        preflight_issues = [issue.to_dict() | {"item_index": index} for issue in preflight.issues]
+        blocking = [issue for issue in preflight_issues if issue["severity"] == "blocker" and issue["code"] != "duplicate_rule"]
+        if blocking:
+            issues.extend(blocking)
+            issues.extend(issue for issue in preflight_issues if issue["severity"] == "warning")
+            continue
+        if any(issue["code"] == "duplicate_rule" for issue in preflight_issues):
+            skipped.append({"item_index": index, "reason": "duplicate_rule", "module_id": module.id, "pattern": candidate.pattern})
+            issues.extend(issue for issue in preflight_issues if issue["severity"] == "warning")
+            continue
+        key = (candidate.module_id, candidate.rule_type, normalize_path(candidate.pattern))
+        if key in seen_rules:
+            skipped.append({"item_index": index, "reason": "duplicate_rule", "module_id": module.id, "pattern": candidate.pattern})
+            continue
+        seen_rules.add(key)
+        issues.extend(issue for issue in preflight_issues if issue["severity"] == "warning")
+        pending.append((item, candidate))
+
+    blockers = [issue for issue in issues if issue.get("severity") == "blocker"]
+    if blockers:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Module mapping suggestions failed preflight", "issues": blockers[:20]},
+        )
+
+    created: list[dict[str, str]] = []
+    for item, candidate in pending:
+        rule = ModuleMappingRule(
+            workspace_id=output.workspace_id,
+            project_id=output.project_id,
+            module_id=candidate.module_id,
+            repository_id=candidate.repository_id,
+            rule_type=candidate.rule_type,
+            pattern=candidate.pattern,
+            relationship=candidate.relationship,
+            status=candidate.status,
+            source=candidate.source or MappingSource.ai_repository.value,
+            description=str(item.get("description") or item.get("reason") or "")[:500],
+            ai_confidence=candidate.ai_confidence,
+            confidence=candidate.confidence,
+            evidence_refs=[ref for ref in item.get("evidence_refs", []) if isinstance(ref, dict)] if isinstance(item.get("evidence_refs"), list) else [],
+            accepted_from_output_id=output.id,
+            verified_by=actor_email,
+            verified_at=now_utc(),
+            stale_reason=candidate.stale_reason,
+            conditions=candidate.conditions,
+            case_sensitive=candidate.case_sensitive,
+        )
+        db.add(rule)
+        db.flush()
+        audit(
+            db,
+            workspace_id=output.workspace_id,
+            actor_email=actor_email,
+            action="mapping_rule.created_from_staged_output",
+            entity_type="ModuleMappingRule",
+            entity_id=rule.id,
+            summary=f"Accepted {rule.rule_type} mapping suggestion",
+            after=rule_snapshot(rule),
+        )
+        created.append({"id": rule.id, "module_id": rule.module_id, "pattern": rule.pattern})
+
+    return {
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "warning_count": len([issue for issue in issues if issue.get("severity") == "warning"]),
+        "created": created,
+        "skipped": skipped,
+        "issues": issues[:50],
+    }
+
+
 def recalc_module_paths(db: Session, module: ProjectModule) -> None:
     parent = db.get(ProjectModule, module.parent_id) if module.parent_id else None
     if parent is not None:
@@ -888,6 +1208,20 @@ def generate_module_tree_draft(
     )
 
 
+@router.post("/mapping-rules/preflight", response_model=MappingRulePreflightResponse)
+def preflight_mapping_rule(
+    workspace_id: str,
+    project_id: str,
+    payload: MappingRulePreflightRequest,
+    db: DbSession,
+) -> MappingRulePreflightResponse:
+    get_project_or_404(db, workspace_id, project_id)
+    get_module_or_404(db, workspace_id, project_id, payload.module_id)
+    assert_repository_scope(db, workspace_id, project_id, payload.repository_id)
+    candidate = candidate_rule_snapshot(payload.module_id, payload.model_dump(mode="json"), payload.rule_id or "")
+    return mapping_rule_preflight(db, workspace_id, project_id, candidate)
+
+
 @router.get("/mapping-rules", response_model=list[MappingRuleResponse])
 def list_mapping_rules(
     workspace_id: str,
@@ -1081,6 +1415,13 @@ def create_mapping_rule(
 ) -> MappingRuleResponse:
     module = get_module_or_404(db, workspace_id, project_id, module_id)
     assert_repository_scope(db, workspace_id, project_id, payload.repository_id)
+    preflight = mapping_rule_preflight(
+        db,
+        workspace_id,
+        project_id,
+        candidate_rule_snapshot(module.id, payload.model_dump(mode="json")),
+    )
+    raise_for_preflight_blockers(preflight)
     rule = ModuleMappingRule(
         workspace_id=workspace_id,
         project_id=project_id,
@@ -1140,6 +1481,38 @@ def update_mapping_rule(
     update_data = payload.model_dump(exclude_unset=True)
     if "repository_id" in update_data:
         assert_repository_scope(db, workspace_id, project_id, update_data["repository_id"])
+    current_data = {
+        "repository_id": rule.repository_id,
+        "rule_type": rule.rule_type,
+        "pattern": rule.pattern,
+        "relationship": rule.relationship,
+        "status": rule.status,
+        "source": rule.source,
+        "description": rule.description,
+        "ai_confidence": rule.ai_confidence,
+        "confidence": rule.confidence,
+        "evidence_refs": rule.evidence_refs,
+        "accepted_from_output_id": rule.accepted_from_output_id,
+        "verified_by": rule.verified_by,
+        "verified_at": rule.verified_at,
+        "stale_reason": rule.stale_reason,
+        "conditions": rule.conditions,
+        "case_sensitive": rule.case_sensitive,
+    }
+    merged_data = {
+        **current_data,
+        **{
+            key: value.value if isinstance(value, StrEnum) else value
+            for key, value in update_data.items()
+        },
+    }
+    preflight = mapping_rule_preflight(
+        db,
+        workspace_id,
+        project_id,
+        candidate_rule_snapshot(module_id, merged_data, rule.id),
+    )
+    raise_for_preflight_blockers(preflight)
     for field, value in update_data.items():
         setattr(rule, field, value.value if isinstance(value, StrEnum) else value)
     if "verified_by" not in update_data:

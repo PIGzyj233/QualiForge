@@ -2747,6 +2747,31 @@ button {
   align-items: center;
   gap: 6px;
 }
+.preflight-box {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgb(217 119 6 / 0.24);
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+  color: #92400e;
+}
+.preflight-box.blocker {
+  border-color: rgb(220 38 38 / 0.25);
+  background: #fef2f2;
+  color: #991b1b;
+}
+.preflight-box strong,
+.preflight-box span,
+.preflight-box small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.preflight-box span,
+.preflight-box small {
+  font-size: 12px;
+  line-height: 1.4;
+}
 .member-card-actions { display: flex; gap: 4px; }
 
 /* Modal dialog */

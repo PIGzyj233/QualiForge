@@ -19,6 +19,7 @@ from app.cases.import_models import (
     ImportCaseDraft,
     ImportDraftStatus,
 )
+from app.cases.mapping_evaluator import MappingEvidence, MappingRuleSet, ModuleSnapshot, RuleSnapshot, evaluate_mapping
 from app.cases.modules import MappingRelationship, MappingRuleStatus, ModuleMappingRule, ProjectModule
 from app.cases.step_models import normalize_steps_with_legacy
 from app.git.models import Job, JobStatus
@@ -188,6 +189,41 @@ def load_modules_and_rules(db: Session, workspace_id: str, project_id: str) -> t
     return list(modules), list(rules)
 
 
+def build_mapping_rule_set(modules: list[ProjectModule], rules: list[ModuleMappingRule]) -> MappingRuleSet:
+    return MappingRuleSet(
+        modules=tuple(
+            ModuleSnapshot(
+                id=module.id,
+                name=module.name,
+                slug=module.slug,
+                code=module.code,
+                path=module.path,
+                path_label=module.path_label,
+                status=module.status,
+            )
+            for module in modules
+        ),
+        rules=tuple(
+            RuleSnapshot(
+                id=rule.id,
+                module_id=rule.module_id,
+                repository_id=rule.repository_id,
+                rule_type=rule.rule_type,
+                pattern=rule.pattern,
+                relationship=rule.relationship,
+                status=rule.status,
+                confidence=rule.confidence,
+                case_sensitive=rule.case_sensitive,
+                conditions=rule.conditions or {},
+                stale_reason=rule.stale_reason,
+                source=rule.source,
+                ai_confidence=rule.ai_confidence,
+            )
+            for rule in rules
+        ),
+    )
+
+
 def infer_module_id(row: dict, modules: list[ProjectModule], rules: list[ModuleMappingRule]) -> str | None:
     module_hint = str(row.get("module") or "").strip().lower()
     for module in modules:
@@ -197,12 +233,9 @@ def infer_module_id(row: dict, modules: list[ProjectModule], rules: list[ModuleM
         if module_hint and module_hint in aliases:
             return module.id
 
-    searchable = " ".join(str(value) for value in row.values()).lower()
-    for rule in rules:
-        pattern = rule.pattern.lower().strip("*")
-        if pattern and pattern in searchable:
-            return rule.module_id
-    return None
+    searchable = " ".join(str(value) for value in row.values())
+    result = evaluate_mapping(MappingEvidence(kind="case_text", text=searchable), build_mapping_rule_set(modules, rules))
+    return result.best_match.rule.module_id if result.best_match else None
 
 
 def convert_rows_to_drafts(rows: list[dict], modules: list[ProjectModule], rules: list[ModuleMappingRule]) -> list[dict]:

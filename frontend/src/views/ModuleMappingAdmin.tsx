@@ -17,11 +17,13 @@ import {
   listRepositories,
   listWorkspaces,
   MappingRelationship,
+  MappingRulePreflightRecord,
   MappingRuleType,
   MappingSource,
   MappingStatus,
   ModuleMappingRuleRecord,
   ModuleTreeNode,
+  preflightMappingRule,
   ProjectModuleRecord,
   ProjectRecord,
   Session,
@@ -297,6 +299,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
   const [ruleEvidenceRefs, setRuleEvidenceRefs] = useState(resetRuleDefaults().evidenceRefs);
   const [ruleStaleReason, setRuleStaleReason] = useState(resetRuleDefaults().staleReason);
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [rulePreflight, setRulePreflight] = useState<MappingRulePreflightRecord | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -319,6 +322,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
     setRuleEvidenceRefs(defaults.evidenceRefs);
     setRuleStaleReason(defaults.staleReason);
     setEditingRuleId(null);
+    setRulePreflight(null);
   }
 
   async function refreshProjectModules(workspaceId: string, projectId: string) {
@@ -495,6 +499,16 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
         evidence_refs: evidenceRefs,
         stale_reason: ruleStatus === "stale" ? ruleStaleReason : ""
       };
+      const preflight = await preflightMappingRule(selectedWorkspaceId, selectedProjectId, {
+        ...payload,
+        module_id: selectedModuleId,
+        rule_id: editingRuleId
+      });
+      setRulePreflight(preflight);
+      if (preflight.blocker_count > 0) {
+        setMessage("映射规则预检未通过");
+        return;
+      }
       if (editingRuleId) {
         await updateMappingRule(selectedWorkspaceId, selectedProjectId, selectedModuleId, editingRuleId, actorEmail, payload);
         setMessage("已更新映射规则");
@@ -513,6 +527,7 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
 
   function editRule(rule: ModuleMappingRuleRecord) {
     setEditingRuleId(rule.id);
+    setRulePreflight(null);
     setRuleRepositoryId(rule.repository_id ?? "");
     setRuleType(rule.rule_type);
     setRulePattern(rule.pattern);
@@ -841,6 +856,20 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
                     Evidence refs JSON
                     <textarea value={ruleEvidenceRefs} onChange={(e) => setRuleEvidenceRefs(e.target.value)} rows={4} />
                   </label>
+                  {rulePreflight ? (
+                    <div className={rulePreflight.blocker_count > 0 ? "preflight-box blocker" : "preflight-box"}>
+                      <strong>
+                        预检 {rulePreflight.blocker_count > 0 ? `${rulePreflight.blocker_count} 个阻断` : `${rulePreflight.warning_count} 个提醒`}
+                      </strong>
+                      {rulePreflight.matched_sample_count ? <span>样本命中 {rulePreflight.matched_sample_count} 个路径</span> : null}
+                      {rulePreflight.issues.slice(0, 5).map((issue, index) => (
+                        <small key={`${issue.code}-${index}`}>
+                          {issue.severity === "blocker" ? "阻断" : "提醒"} · {issue.reason}
+                          {issue.path ? ` · ${issue.path}` : ""}
+                        </small>
+                      ))}
+                    </div>
+                  ) : null}
                   <div className="form-row compact">
                     <button type="submit" className="primary-button small" disabled={busy}>
                       {editingRuleId ? "保存规则" : "新增规则"}

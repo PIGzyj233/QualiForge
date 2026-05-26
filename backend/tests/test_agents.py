@@ -673,6 +673,58 @@ def test_module_tree_draft_acceptance_requires_workspace_owner(tmp_path: Path) -
     assert client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules/tree").json() == []
 
 
+def test_module_mapping_suggestions_acceptance_creates_formal_rules(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    workspace, project = create_workspace_project(client)
+    module = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules?actor_email={OWNER}",
+        json={"name": "Checkout", "code": "CHECKOUT", "description": "Checkout behavior", "owner": "QA"},
+    )
+    assert module.status_code == 201
+    run = create_agent_run(
+        client,
+        workspace["id"],
+        project["id"],
+        budget_snapshot={"output_type": "module_mapping_suggestions"},
+    )
+
+    staged = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/staged-outputs?actor_email={OWNER}",
+        json={
+            "output_type": "module_mapping_suggestions",
+            "title": "Checkout mapping suggestions",
+            "payload": {
+                "items": [
+                    {
+                        "module_key": "CHECKOUT",
+                        "rule_type": "keyword",
+                        "pattern": "refund",
+                        "relationship": "primary",
+                        "status": "active",
+                        "source": "ai_history",
+                        "ai_confidence": 80,
+                        "confidence": 90,
+                        "description": "Refund case text maps to checkout.",
+                    }
+                ]
+            },
+        },
+    )
+    assert staged.status_code == 201, staged.json()
+
+    accepted = client.patch(
+        f"/api/workspaces/{workspace['id']}/agent/staged-outputs/{staged.json()['id']}?actor_email={OWNER}",
+        json={"status": "accepted", "decision_summary": "Accept mapping suggestions"},
+    )
+
+    assert accepted.status_code == 200, accepted.json()
+    assert accepted.json()["payload"]["acceptance_result"]["created_count"] == 1
+    rules = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/mapping-rules?status=all").json()
+    assert len(rules) == 1
+    assert rules[0]["pattern"] == "refund"
+    assert rules[0]["accepted_from_output_id"] == staged.json()["id"]
+
+
 def test_manual_module_tree_staged_output_creation_requires_workspace_owner() -> None:
     client = make_client()
     workspace, project = create_workspace_project(client)

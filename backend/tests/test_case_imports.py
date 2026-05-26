@@ -111,6 +111,33 @@ def test_csv_upload_creates_import_batch_job_preserved_file_and_ai_drafts(tmp_pa
     assert "Normalized 1 imported case drafts" in jobs[0]["output_summary"]
 
 
+def test_case_text_import_does_not_match_path_like_mapping_rules(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    workspace = create_workspace(client)
+    project = create_project(client, workspace["id"])
+    module = create_module(client, workspace["id"], project["id"])
+    path_only = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules?actor_email=owner@qualiforge.local",
+        json={"key": "PATHS", "name": "Path rules", "description": "Path-only mapping", "owner": "Checkout QA"},
+    )
+    assert path_only.status_code == 201
+    directory_rule = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules/{path_only.json()['id']}/mapping-rules?actor_email=owner@qualiforge.local",
+        json={"rule_type": "directory", "pattern": "legacy/refund", "source": "manual", "confidence": 100},
+    )
+    assert directory_rule.status_code == 201
+
+    batch = upload_csv(
+        client,
+        workspace["id"],
+        project["id"],
+        "Case Title,Steps,Expected,Tags\nRefund path mention,legacy/refund should not map by path,done,refund\n",
+    )
+    draft = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/imports/{batch['id']}/drafts").json()[0]
+
+    assert draft["module_id"] == module["id"]
+
+
 def test_preview_bulk_update_review_submission_and_owner_bulk_import(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     workspace = create_workspace(client)

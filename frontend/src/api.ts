@@ -639,6 +639,24 @@ export type ModuleMappingRuleRecord = {
   updated_at: string;
 };
 
+export type MappingRulePreflightIssue = {
+  severity: "blocker" | "warning";
+  code: string;
+  reason: string;
+  rule_id?: string | null;
+  module_id?: string | null;
+  path?: string | null;
+};
+
+export type MappingRulePreflightRecord = {
+  passed: boolean;
+  blocker_count: number;
+  warning_count: number;
+  issues: MappingRulePreflightIssue[];
+  matched_sample_count: number;
+  sample_paths: string[];
+};
+
 export type ProjectModuleRecord = {
   id: string;
   workspace_id: string;
@@ -1655,6 +1673,34 @@ export function listMappingRules(
   if (filters?.source) params.set("source", filters.source);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   return requestJson<ModuleMappingRuleRecord[]>(`/workspaces/${workspaceId}/projects/${projectId}/mapping-rules${suffix}`);
+}
+
+export function preflightMappingRule(
+  workspaceId: string,
+  projectId: string,
+  payload: {
+    module_id: string;
+    rule_id?: string | null;
+    repository_id?: string | null;
+    rule_type: MappingRuleType;
+    pattern: string;
+    relationship?: MappingRelationship;
+    status?: MappingStatus;
+    source: MappingSource;
+    description: string;
+    ai_confidence?: number;
+    confidence: number;
+    evidence_refs?: Record<string, unknown>[];
+    accepted_from_output_id?: string | null;
+    stale_reason?: string;
+    conditions?: Record<string, unknown>;
+    case_sensitive?: boolean | null;
+  }
+): Promise<MappingRulePreflightRecord> {
+  return requestJson<MappingRulePreflightRecord>(`/workspaces/${workspaceId}/projects/${projectId}/mapping-rules/preflight`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
 
 export function createMappingRule(

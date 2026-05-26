@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fnmatch
 import re
 import shutil
 import subprocess
@@ -13,7 +12,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.cases.diff_models import ChangeType, DiffAnalysis, DiffAnalysisResponse, DiffAnalysisStatus, RiskLevel
-from app.cases.modules import MappingRelationship, MappingRuleStatus, ModuleMappingRule, ProjectModule
+from app.cases.mapping_evaluator import (
+    MappingEvidence,
+    MappingRuleSet,
+    ModuleSnapshot,
+    RuleSnapshot,
+    evaluate_mapping,
+    normalize_path,
+)
+from app.cases.modules import MappingRuleStatus, ModuleMappingRule, ProjectModule
 from app.git.models import GitRepository, Job, JobStatus
 from app.git.sandbox import ensure_safe_sandbox_path, run_git
 from app.workspace.routes import now_utc
@@ -51,10 +58,6 @@ def analysis_to_response(analysis: DiffAnalysis) -> DiffAnalysisResponse:
 
 def max_risk(*levels: str) -> str:
     return max(levels or (RiskLevel.low.value,), key=lambda item: RISK_ORDER.get(item, 0))
-
-
-def normalize_path(path: str) -> str:
-    return path.replace("\\", "/").strip("/")
 
 
 def detect_language(path: str) -> str:
@@ -300,6 +303,41 @@ def load_modules_and_rules(db: Session, workspace_id: str, project_id: str, repo
     return list(modules), list(rules)
 
 
+def build_mapping_rule_set(modules: list[ProjectModule], rules: list[ModuleMappingRule]) -> MappingRuleSet:
+    return MappingRuleSet(
+        modules=tuple(
+            ModuleSnapshot(
+                id=module.id,
+                name=module.name,
+                slug=module.slug,
+                code=module.code,
+                path=module.path,
+                path_label=module.path_label,
+                status=module.status,
+            )
+            for module in modules
+        ),
+        rules=tuple(
+            RuleSnapshot(
+                id=rule.id,
+                module_id=rule.module_id,
+                repository_id=rule.repository_id,
+                rule_type=rule.rule_type,
+                pattern=rule.pattern,
+                relationship=rule.relationship,
+                status=rule.status,
+                confidence=rule.confidence,
+                case_sensitive=rule.case_sensitive,
+                conditions=rule.conditions or {},
+                stale_reason=rule.stale_reason,
+                source=rule.source,
+                ai_confidence=rule.ai_confidence,
+            )
+            for rule in rules
+        ),
+    )
+
+
 def match_module(
     path: str,
     content: str,
@@ -307,50 +345,42 @@ def match_module(
     modules_by_id: dict[str, ProjectModule],
     rules: list[ModuleMappingRule],
 ) -> tuple[ProjectModule | None, int, list[str]]:
-    normalized_path = normalize_path(path)
-    structure_names_raw = " ".join(str(item.get("name", "")) for item in structures)
-    best_module: ProjectModule | None = None
-    best_score = 0
-    evidence: list[str] = []
-    relationship_weight = {
-        MappingRelationship.primary.value: 1.0,
-        MappingRelationship.related.value: 0.75,
-        MappingRelationship.dependency.value: 0.55,
-    }
+    modules = list(modules_by_id.values())
+    result = evaluate_mapping(
+        MappingEvidence(
+            kind="code_change",
+            path=path,
+            content=content,
+            structures=tuple(structures),
+        ),
+        build_mapping_rule_set(modules, rules),
+    )
+    if result.best_match is None:
+        return None, 0, list(result.evidence)
+    return modules_by_id.get(result.best_match.rule.module_id), result.best_match.score, [result.best_match.evidence]
 
-    for rule in rules:
-        if rule.relationship == MappingRelationship.evidence.value:
-            continue
-        case_sensitive = rule.case_sensitive if rule.case_sensitive is not None else rule.rule_type in {"directory", "file"}
-        normalized = normalized_path if case_sensitive else normalized_path.lower()
-        content_text = content if case_sensitive else content.lower()
-        structure_names = structure_names_raw if case_sensitive else structure_names_raw.lower()
-        pattern = normalize_path(rule.pattern) if case_sensitive else normalize_path(rule.pattern).lower()
-        matched = False
-        if rule.rule_type == "directory":
-            matched = fnmatch.fnmatch(normalized, pattern) or normalized.startswith(pattern.rstrip("/") + "/") or normalized == pattern.rstrip("/")
-        elif rule.rule_type in {"file", "package", "build_target", "asset_fixture"}:
-            matched = fnmatch.fnmatch(normalized, pattern) or normalized.endswith(pattern)
-        elif rule.rule_type == "api":
-            matched = pattern in structure_names or pattern in content_text
-        elif rule.rule_type == "config_key":
-            matched = pattern in structure_names or pattern in content_text
-        elif rule.rule_type == "database_migration":
-            matched = pattern in normalized or any(item.get("type") == "database_migration" for item in structures)
-        elif rule.rule_type == "keyword":
-            matched = pattern in normalized or pattern in content_text
-        else:
-            matched = pattern in normalized or pattern in content_text or pattern in structure_names
 
-        status_weight = 0.5 if rule.status == MappingRuleStatus.stale.value else 1.0
-        score = int(rule.confidence * relationship_weight.get(rule.relationship, 0.6) * status_weight)
-        if matched and score >= best_score:
-            best_module = modules_by_id.get(rule.module_id)
-            best_score = score
-            status_note = f", {rule.status}" if rule.status != MappingRuleStatus.active.value else ""
-            evidence = [f"{rule.relationship} {rule.rule_type}:{rule.pattern}{status_note}"]
-
-    return best_module, best_score, evidence
+def match_module_for_repository(
+    repository_id: str,
+    path: str,
+    content: str,
+    structures: list[dict[str, str]],
+    modules_by_id: dict[str, ProjectModule],
+    rule_set: MappingRuleSet,
+) -> tuple[ProjectModule | None, int, list[str]]:
+    result = evaluate_mapping(
+        MappingEvidence(
+            kind="code_change",
+            repository_id=repository_id,
+            path=path,
+            content=content,
+            structures=tuple(structures),
+        ),
+        rule_set,
+    )
+    if result.best_match is None:
+        return None, 0, list(result.evidence)
+    return modules_by_id.get(result.best_match.rule.module_id), result.best_match.score, [result.best_match.evidence]
 
 
 def file_risk(change_type: str, path: str, structures: list[dict[str, str]], additions: int, deletions: int) -> str:
@@ -471,6 +501,7 @@ def run_analysis(
 
         modules, rules = load_modules_and_rules(db, repository.workspace_id, repository.project_id, repository.id)
         modules_by_id = {module.id: module for module in modules}
+        rule_set = build_mapping_rule_set(modules, rules)
         file_changes: list[dict[str, Any]] = []
         for raw in raw_changes:
             path = str(raw["path"])
@@ -479,7 +510,14 @@ def run_analysis(
             target_content = "" if change_type == ChangeType.deleted.value else read_worktree_file(worktree_path, path)
             base_content = read_git_file(worktree_path, base_sha, old_path or path, repository.sync_timeout_seconds, key_logs)
             structures = detect_structure(path, base_content, target_content)
-            module, confidence, match_evidence = match_module(path, target_content or base_content, structures, modules_by_id, rules)
+            module, confidence, match_evidence = match_module_for_repository(
+                repository.id,
+                path,
+                target_content or base_content,
+                structures,
+                modules_by_id,
+                rule_set,
+            )
             stat = stats.get(path, {"additions": 0, "deletions": 0})
             risk = file_risk(change_type, path, structures, int(stat["additions"]), int(stat["deletions"]))
             patch = read_diff_patch(worktree_path, base_sha, target_sha, path, repository.sync_timeout_seconds, key_logs)

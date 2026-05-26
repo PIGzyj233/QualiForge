@@ -8,6 +8,7 @@
 |------|------|------|------|
 | [0001](0001-agent-architecture.md) | AI Agent Architecture | Accepted | Temporal + LangGraph + ModelGateway 分层、子代理边界、Coverage Index、Staging 工作流 |
 | [0002](0002-human-confirmed-module-mapping.md) | Human-Confirmed Module Trees and Code Mapping | Accepted | 模块树为人面向能力树、AI 仅建议、ModuleMappingRule 字段与生命周期 |
+| [0003](0003-centralize-module-mapping-rule-evaluation.md) | Centralize ModuleMapping Rule Evaluation | Accepted | ModuleMapping 规则评估与预检集中到 deep Module，统一 DiffAnalysis、Case import、Agent 与 Admin 语义 |
 
 ## 状态约定
 

@@ -838,7 +838,7 @@ def create_staged_output(
     run = get_run_or_404(db, workspace_id, run_id)
     if run.mode != AgentRunMode.execute.value:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Staged outputs require an execute agent run")
-    if payload.output_type == AgentStagedOutputType.module_tree_draft:
+    if payload.output_type in {AgentStagedOutputType.module_tree_draft, AgentStagedOutputType.module_mapping_suggestions}:
         require_workspace_owner(db, workspace_id, actor_email)
 
     output = AgentStagedOutput(
@@ -1049,6 +1049,12 @@ def decide_staged_output(
             from app.cases.modules import accept_module_tree_draft_output
 
             acceptance_result = accept_module_tree_draft_output(db, output=output, actor_email=actor_email)
+            output.payload = {**dict(output.payload or {}), "acceptance_result": acceptance_result}
+        elif output.output_type == AgentStagedOutputType.module_mapping_suggestions.value:
+            require_workspace_owner(db, workspace_id, actor_email)
+            from app.cases.modules import accept_module_mapping_suggestions_output
+
+            acceptance_result = accept_module_mapping_suggestions_output(db, output=output, actor_email=actor_email)
             output.payload = {**dict(output.payload or {}), "acceptance_result": acceptance_result}
     elif payload.status == AgentStagedOutputStatus.rejected:
         output.rejected_at = now
