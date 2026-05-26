@@ -2,13 +2,17 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { FolderPlus, GitBranch, Network, PencilLine, Plus, Trash2 } from "lucide-react";
 import { useParams } from "react-router-dom";
 import {
+  AgentStagedOutputRecord,
   createMappingRule,
   createModule,
+  decideAgentStagedOutput,
   deleteMappingRule,
   deleteModule,
+  generateModuleTreeDraft,
   GitRepositoryRecord,
   listMappingRules,
   listModuleTree,
+  listModuleTreeDrafts,
   listProjects,
   listRepositories,
   listWorkspaces,
@@ -57,6 +61,26 @@ function parseJsonObjectList(value: string): Record<string, unknown>[] {
     throw new Error("证据引用必须是 JSON 对象数组");
   }
   return parsed as Record<string, unknown>[];
+}
+
+type ModuleDraftItem = {
+  draft_id: string;
+  parent_draft_id?: string | null;
+  name: string;
+  slug: string;
+  code?: string;
+  description?: string;
+  keywords?: string[];
+  source_paths?: string[];
+  rationale?: string;
+  confidence?: number;
+  evidence_refs?: Record<string, unknown>[];
+};
+
+function moduleDraftItems(output: AgentStagedOutputRecord): ModuleDraftItem[] {
+  const items = output.payload.items;
+  if (!Array.isArray(items)) return [];
+  return items.filter((item): item is ModuleDraftItem => Boolean(item && typeof item === "object" && "draft_id" in item && "name" in item));
 }
 
 function resetRuleDefaults() {
@@ -252,8 +276,13 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [tree, setTree] = useState<ModuleTreeNode[]>([]);
   const [mappingRules, setMappingRules] = useState<ModuleMappingRuleRecord[]>([]);
+  const [moduleDrafts, setModuleDrafts] = useState<AgentStagedOutputRecord[]>([]);
   const [selectedModuleId, setSelectedModuleId] = useState("");
   const [dialog, setDialog] = useState<DialogMode>(null);
+  const [draftRepositoryId, setDraftRepositoryId] = useState("");
+  const [draftRef, setDraftRef] = useState("");
+  const [draftGuidance, setDraftGuidance] = useState("");
+  const [draftMaxModules, setDraftMaxModules] = useState("24");
 
   // Rule editor state
   const [ruleRepositoryId, setRuleRepositoryId] = useState(resetRuleDefaults().repositoryId);
@@ -293,14 +322,17 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
   }
 
   async function refreshProjectModules(workspaceId: string, projectId: string) {
-    const [nextTree, nextRules, nextRepositories] = await Promise.all([
+    const [nextTree, nextRules, nextRepositories, nextDrafts] = await Promise.all([
       listModuleTree(workspaceId, projectId, false, "all"),
       listMappingRules(workspaceId, projectId, { status: "all" }),
-      listRepositories(workspaceId, projectId)
+      listRepositories(workspaceId, projectId),
+      listModuleTreeDrafts(workspaceId, projectId, "staged")
     ]);
     setTree(nextTree);
     setMappingRules(nextRules);
     setRepositories(nextRepositories);
+    setModuleDrafts(nextDrafts);
+    setDraftRepositoryId((current) => (nextRepositories.some((repo) => repo.id === current) ? current : nextRepositories[0]?.id || ""));
     const flattened = flattenTree(nextTree);
     if (!flattened.some((m) => m.id === selectedModuleId)) {
       setSelectedModuleId(flattened[0]?.id ?? "");
@@ -320,13 +352,23 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
         setRepositories([]);
         setTree([]);
         setMappingRules([]);
+        setModuleDrafts([]);
+        setDraftRepositoryId("");
         return;
       }
       const ps = await listProjects(wid);
       setProjects(ps);
       const pid = pickExistingId(ps, preferredProjectId, selectedProjectId);
       setSelectedProjectId(pid);
-      if (pid) await refreshProjectModules(wid, pid);
+      if (pid) {
+        await refreshProjectModules(wid, pid);
+      } else {
+        setRepositories([]);
+        setTree([]);
+        setMappingRules([]);
+        setModuleDrafts([]);
+        setDraftRepositoryId("");
+      }
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "模块数据加载失败");
     } finally {
@@ -358,7 +400,15 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
       setProjects(ps);
       const pid = ps[0]?.id ?? "";
       setSelectedProjectId(pid);
-      if (pid) await refreshProjectModules(wid, pid);
+      if (pid) {
+        await refreshProjectModules(wid, pid);
+      } else {
+        setRepositories([]);
+        setTree([]);
+        setMappingRules([]);
+        setModuleDrafts([]);
+        setDraftRepositoryId("");
+      }
     } finally {
       setBusy(false);
     }
@@ -490,6 +540,55 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
     }
   }
 
+  async function handleGenerateDraft(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId || !selectedProjectId || !draftRepositoryId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const draft = await generateModuleTreeDraft(selectedWorkspaceId, selectedProjectId, actorEmail, {
+        repository_id: draftRepositoryId,
+        ref: draftRef || undefined,
+        guidance: draftGuidance || undefined,
+        max_modules: Number(draftMaxModules || 24),
+        max_depth: 3
+      });
+      if ("staged_outputs" in draft) {
+        setMessage(draft.staged_outputs[0] ? `已生成模块目录草稿：${moduleDraftItems(draft.staged_outputs[0]).length} 个候选模块` : "模块目录草稿生成任务已启动");
+      } else {
+        setMessage(`已生成模块目录草稿：${moduleDraftItems(draft).length} 个候选模块`);
+      }
+      await refreshProjectModules(selectedWorkspaceId, selectedProjectId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "模块目录草稿生成失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDraftDecision(output: AgentStagedOutputRecord, status: "accepted" | "rejected") {
+    if (!selectedWorkspaceId || !selectedProjectId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const decided = await decideAgentStagedOutput(selectedWorkspaceId, output.id, actorEmail, {
+        status,
+        decision_summary: status === "accepted" ? "Accepted module tree draft from Module Mapping admin" : "Rejected module tree draft from Module Mapping admin"
+      });
+      const result = decided.payload.acceptance_result as { created_count?: number; reused_count?: number } | undefined;
+      setMessage(
+        status === "accepted"
+          ? `已确认模块草稿：新增 ${result?.created_count ?? 0} 个，复用 ${result?.reused_count ?? 0} 个`
+          : "已拒绝模块草稿"
+      );
+      await refreshProjectModules(selectedWorkspaceId, selectedProjectId);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "模块草稿确认失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="panel module-admin-panel">
       <header className="panel-head">
@@ -531,6 +630,76 @@ export function ModuleMappingAdmin({ session }: { session: Session }) {
       ) : null}
 
       {message ? <div className="inline-notice">{message}</div> : null}
+
+      <section className="rule-section">
+        <header className="rule-section-head">
+          <h4>
+            <Network size={14} aria-hidden="true" /> Agent 模块目录草稿
+          </h4>
+          <small>{moduleDrafts.length} 个待确认</small>
+        </header>
+        <form className="card-form" onSubmit={handleGenerateDraft}>
+          <div className="form-row">
+            <label>
+              仓库
+              <select value={draftRepositoryId} onChange={(event) => setDraftRepositoryId(event.target.value)} disabled={busy || repositories.length === 0}>
+                {repositories.map((repository) => (
+                  <option key={repository.id} value={repository.id}>
+                    {repository.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Ref
+              <input value={draftRef} onChange={(event) => setDraftRef(event.target.value)} placeholder="默认分支" />
+            </label>
+            <label>
+              模块上限
+              <input type="number" min="3" max="80" value={draftMaxModules} onChange={(event) => setDraftMaxModules(event.target.value)} />
+            </label>
+          </div>
+          <label>
+            生成要求
+            <input value={draftGuidance} onChange={(event) => setDraftGuidance(event.target.value)} placeholder="例如：优先按业务能力分组" />
+          </label>
+          <div className="form-row compact">
+            <button type="submit" className="primary-button small" disabled={busy || !draftRepositoryId}>
+              生成草稿
+            </button>
+          </div>
+        </form>
+
+        <div className="card-list">
+          {moduleDrafts.map((draft) => {
+            const items = moduleDraftItems(draft);
+            return (
+              <article className="member-card" key={draft.id}>
+                <div>
+                  <strong>{draft.title}</strong>
+                  <span>{items.length} 个候选模块 · {String(draft.payload.generated_by || "agent")}</span>
+                  {items.slice(0, 6).map((item) => (
+                    <small key={item.draft_id}>
+                      {item.parent_draft_id ? "↳ " : ""}
+                      {item.name} · {(item.source_paths ?? []).slice(0, 2).join(", ") || item.slug}
+                    </small>
+                  ))}
+                  {items.length > 6 ? <small>另有 {items.length - 6} 个候选模块</small> : null}
+                </div>
+                <div className="member-card-actions">
+                  <button className="ghost-button small" type="button" onClick={() => void handleDraftDecision(draft, "accepted")} disabled={busy}>
+                    确认
+                  </button>
+                  <button className="ghost-button small" type="button" onClick={() => void handleDraftDecision(draft, "rejected")} disabled={busy}>
+                    拒绝
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+          {moduleDrafts.length === 0 ? <p className="empty-state">暂无待确认模块草稿。</p> : null}
+        </div>
+      </section>
 
       <div className="module-admin-split">
         <aside className="module-tree-panel">

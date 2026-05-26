@@ -44,6 +44,8 @@ class AgentGraphState(TypedDict, total=False):
     subagent_plan: dict[str, Any]
     llm_raw: str
     candidates: list[dict[str, Any]]
+    module_tree_draft: dict[str, Any]
+    verified_module_tree_draft: dict[str, Any]
     verified_candidates: list[dict[str, Any]]
     reuse_recommendations: list[dict[str, Any]]
     subagent_results: dict[str, Any]
@@ -71,6 +73,29 @@ class GeneratedCandidateEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     case_candidates: list[GeneratedCaseCandidate] = Field(min_length=1)
+
+
+class GeneratedModuleDraftItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str = Field(min_length=1, max_length=80)
+    parent_draft_id: str | None = Field(default=None, max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+    slug: str = Field(min_length=1, max_length=80)
+    code: str = Field(default="", max_length=48)
+    description: str = Field(default="", max_length=500)
+    keywords: list[str] = Field(default_factory=list, max_length=30)
+    source_paths: list[str] = Field(min_length=1, max_length=20)
+    rationale: str = Field(min_length=1, max_length=700)
+    confidence: int = Field(default=70, ge=0, le=100)
+    evidence_refs: list[EvidenceRef] = Field(min_length=1)
+
+
+class GeneratedModuleTreeDraftEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=1000)
+    modules: list[GeneratedModuleDraftItem] = Field(min_length=1)
 
 
 @dataclass(frozen=True)
@@ -115,6 +140,14 @@ SUBAGENT_REGISTRY: dict[str, SubAgentSpec] = {
         parallel_group="case_design",
         trigger_tokens=frozenset({"case", "test", "candidate", "scenario", "coverage"}),
         purpose="Generate structured candidate cases from verified evidence.",
+    ),
+    "ModuleTreeDraftSubAgent": SubAgentSpec(
+        name="ModuleTreeDraftSubAgent",
+        stage="module_tree_draft",
+        required=False,
+        parallel_group="module_tree_draft",
+        trigger_tokens=frozenset({"module", "modules", "目录", "模块", "mapping", "tree", "architecture"}),
+        purpose="Generate a reviewable module tree draft from repository evidence.",
     ),
     "CriticSubAgent": SubAgentSpec(
         name="CriticSubAgent",

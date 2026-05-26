@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -11,8 +12,18 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Uni
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
+from app.agents.models import (
+    AgentConversation,
+    AgentRun,
+    AgentRunMode,
+    AgentStagedOutput,
+    AgentStagedOutputStatus,
+    AgentStagedOutputType,
+)
+from app.agents.serializers import run_to_response, staged_output_to_response
+from app.agents.schemas import AgentRunExecuteResponse, AgentStagedOutputResponse
 from app.cases.domain import CaseDraft, CaseRevision, TestCase
-from app.git.models import GitRepository
+from app.git.models import GitRepository, RepositoryStatus
 from app.platform.database import Base
 from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, new_id, now_utc, require_workspace_owner
 
@@ -231,6 +242,16 @@ class ModuleResponse(BaseModel):
 
 class ModuleTreeNode(ModuleResponse):
     children: list["ModuleTreeNode"] = Field(default_factory=list)
+
+
+class ModuleTreeDraftCreate(BaseModel):
+    repository_id: str = Field(min_length=1, max_length=32)
+    ref: str = Field(default="", max_length=160)
+    guidance: str = Field(default="", max_length=1000)
+    max_depth: int = Field(default=3, ge=1, le=5)
+    max_modules: int = Field(default=24, ge=3, le=80)
+    min_files: int = Field(default=2, ge=1, le=50)
+    include_tests: bool = False
 
 
 def get_db(request: Request):
@@ -525,6 +546,131 @@ def assert_unique_code(db: Session, module: ProjectModule | None, workspace_id: 
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Module code already exists in this project")
 
 
+def available_module_code(db: Session, workspace_id: str, project_id: str, preferred: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9_]+", "_", normalize_module_code(preferred).upper()).strip("_")[:40]
+    if not base:
+        return ""
+    candidate = base
+    counter = 2
+    while True:
+        existing = db.scalar(
+            select(ProjectModule).where(
+                ProjectModule.workspace_id == workspace_id,
+                ProjectModule.project_id == project_id,
+                ProjectModule.code == candidate,
+            )
+        )
+        if existing is None:
+            return candidate
+        suffix = f"_{counter}"
+        candidate = f"{base[: 48 - len(suffix)]}{suffix}"
+        counter += 1
+
+
+def module_by_path(db: Session, workspace_id: str, project_id: str, path: str) -> ProjectModule | None:
+    return db.scalar(
+        select(ProjectModule).where(
+            ProjectModule.workspace_id == workspace_id,
+            ProjectModule.project_id == project_id,
+            ProjectModule.path == path,
+        )
+    )
+
+
+def accept_module_tree_draft_output(db: Session, *, output: AgentStagedOutput, actor_email: str) -> dict[str, Any]:
+    if output.output_type != AgentStagedOutputType.module_tree_draft.value:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Staged output is not a module tree draft")
+    if not output.project_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Module tree draft is not scoped to a project")
+    payload = dict(output.payload or {})
+    raw_items = payload.get("items") or []
+    items = [item for item in raw_items if isinstance(item, dict)]
+    if not items:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Module tree draft has no items")
+
+    by_draft_id = {str(item.get("draft_id") or ""): item for item in items if str(item.get("draft_id") or "")}
+    accepted_by_draft_id: dict[str, ProjectModule] = {}
+    accepted_paths: set[str] = set()
+    created: list[dict[str, str]] = []
+    reused: list[dict[str, str]] = []
+    pending = list(items)
+
+    while pending:
+        progressed = False
+        for item in list(pending):
+            draft_id = str(item.get("draft_id") or "")
+            parent_draft_id = str(item.get("parent_draft_id") or "") if item.get("parent_draft_id") else ""
+            if parent_draft_id and parent_draft_id not in accepted_by_draft_id:
+                if parent_draft_id in by_draft_id:
+                    continue
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Missing parent draft {parent_draft_id}")
+
+            parent = accepted_by_draft_id.get(parent_draft_id) if parent_draft_id else None
+            name = str(item.get("name") or "").strip()[:120] or "模块"
+            slug = ensure_slug(str(item.get("slug") or name))
+            path = f"{parent.path}/{slug}" if parent else slug
+            if path in accepted_paths:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Module tree draft contains duplicate module path {path}",
+                )
+            module = module_by_path(db, output.workspace_id, output.project_id, path)
+            keywords = clean_keywords([str(value) for value in item.get("keywords", []) if str(value).strip()])
+            if module is None:
+                module = ProjectModule(
+                    workspace_id=output.workspace_id,
+                    project_id=output.project_id,
+                    parent_id=parent.id if parent else None,
+                    name=name,
+                    slug=slug,
+                    code=available_module_code(db, output.workspace_id, output.project_id, str(item.get("code") or "")),
+                    path=path,
+                    path_label=name,
+                    depth=0,
+                    sort_order=int(item.get("sort_order") or len(created) * 10),
+                    description=str(item.get("description") or item.get("rationale") or "")[:500],
+                    owner="",
+                    keywords=keywords,
+                )
+                db.add(module)
+                db.flush()
+                recalc_module_paths(db, module)
+                db.flush()
+                audit(
+                    db,
+                    workspace_id=output.workspace_id,
+                    actor_email=actor_email,
+                    action="module.created_from_draft",
+                    entity_type="ProjectModule",
+                    entity_id=module.id,
+                    summary=f"Created module {module.path_label} from module tree draft",
+                    after={**module_snapshot(module), "accepted_from_output_id": output.id, "source_paths": item.get("source_paths") or []},
+                )
+                created.append({"id": module.id, "path": module.path, "draft_id": draft_id})
+            else:
+                merged_keywords = clean_keywords([*(module.keywords or []), *keywords])
+                if merged_keywords != (module.keywords or []):
+                    module.keywords = merged_keywords
+                    module.updated_at = now_utc()
+                if not module.description and item.get("description"):
+                    module.description = str(item.get("description") or "")[:500]
+                    module.updated_at = now_utc()
+                reused.append({"id": module.id, "path": module.path, "draft_id": draft_id})
+            accepted_by_draft_id[draft_id] = module
+            accepted_paths.add(path)
+            pending.remove(item)
+            progressed = True
+        if not progressed:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Module tree draft contains an unresolved parent cycle")
+
+    return {
+        "created_count": len(created),
+        "reused_count": len(reused),
+        "created": created,
+        "reused": reused,
+    }
+
+
 def recalc_module_paths(db: Session, module: ProjectModule) -> None:
     parent = db.get(ProjectModule, module.parent_id) if module.parent_id else None
     if parent is not None:
@@ -584,6 +730,162 @@ def list_module_tree(
         .order_by(ProjectModule.depth, ProjectModule.sort_order, ProjectModule.name)
     ).all()
     return build_tree(list(ordered), nodes)
+
+
+@router.get("/module-tree-drafts", response_model=list[AgentStagedOutputResponse])
+def list_module_tree_drafts(
+    workspace_id: str,
+    project_id: str,
+    db: DbSession,
+    status_filter: Literal["staged", "accepted", "rejected", "all"] = Query(default="staged", alias="status"),
+) -> list[AgentStagedOutputResponse]:
+    get_workspace_or_404(db, workspace_id)
+    get_project_or_404(db, workspace_id, project_id)
+    statement = (
+        select(AgentStagedOutput)
+        .where(
+            AgentStagedOutput.workspace_id == workspace_id,
+            AgentStagedOutput.project_id == project_id,
+            AgentStagedOutput.output_type == AgentStagedOutputType.module_tree_draft.value,
+        )
+        .order_by(AgentStagedOutput.created_at.desc(), AgentStagedOutput.id.desc())
+    )
+    if status_filter != "all":
+        statement = statement.where(AgentStagedOutput.status == status_filter)
+    return [staged_output_to_response(db, output) for output in db.scalars(statement).all()]
+
+
+@router.post(
+    "/module-tree-drafts/generate",
+    response_model=AgentStagedOutputResponse | AgentRunExecuteResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def generate_module_tree_draft(
+    workspace_id: str,
+    project_id: str,
+    payload: ModuleTreeDraftCreate,
+    db: DbSession,
+    request: Request,
+    response: Response,
+    actor_email: ActorEmail,
+) -> AgentStagedOutputResponse | AgentRunExecuteResponse:
+    get_workspace_or_404(db, workspace_id)
+    get_project_or_404(db, workspace_id, project_id)
+    require_workspace_owner(db, workspace_id, actor_email)
+    repository = db.scalar(
+        select(GitRepository).where(
+            GitRepository.id == payload.repository_id,
+            GitRepository.workspace_id == workspace_id,
+            GitRepository.project_id == project_id,
+        )
+    )
+    if repository is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+    if repository.status != RepositoryStatus.synced.value or not Path(repository.mirror_path).exists():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Repository must be synced before module draft generation")
+
+    goal = (
+        f"根据仓库 {repository.name} 生成第一版模块目录参考，进入人工确认环节。"
+        f" 目标模块数不超过 {payload.max_modules}，建议深度不超过 {payload.max_depth}。"
+        " 由 LLM Agent 自行决定需要读取、搜索和分析哪些仓库文件。"
+    )
+    if payload.guidance.strip():
+        goal = f"{goal} 额外要求：{payload.guidance.strip()}"
+    conversation = AgentConversation(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        title=f"模块目录参考 - {repository.name}",
+        created_by=actor_email,
+    )
+    db.add(conversation)
+    db.flush()
+    run = AgentRun(
+        conversation_id=conversation.id,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        goal=goal,
+        mode=AgentRunMode.execute.value,
+        trigger_type="module_tree_draft",
+        created_by=actor_email,
+        budget_snapshot={
+            "output_type": AgentStagedOutputType.module_tree_draft.value,
+            "requested_subagents": ["ModuleTreeDraftSubAgent"],
+            "max_tool_calls": 80,
+            "max_model_calls": 8,
+            "max_subagents": 4,
+            "max_parallel_subagents": 4,
+            "max_total_source_chars_sent": 180000,
+            "module_tree_draft_request": payload.model_dump(mode="json"),
+        },
+    )
+    db.add(run)
+    db.flush()
+    audit(
+        db,
+        workspace_id=workspace_id,
+        actor_email=actor_email,
+        action="module_tree_draft.agent_run_created",
+        entity_type="AgentRun",
+        entity_id=run.id,
+        summary=f"Created module tree draft agent run for {repository.name}",
+        after={"repository_id": repository.id, "ref": payload.ref or repository.default_branch},
+    )
+    db.commit()
+
+    if not request.app.state.settings.agent_execute_sync_mode:
+        from app.agents.temporal import AgentTemporalUnavailable, start_agent_run_workflow
+
+        starter = getattr(request.app.state, "agent_workflow_starter", start_agent_run_workflow)
+        try:
+            started = starter(
+                db=db,
+                settings=request.app.state.settings,
+                run=run,
+                workspace_id=workspace_id,
+                repository_id=repository.id,
+                ref=payload.ref or repository.default_branch,
+                candidate_limit=1,
+                actor_email=actor_email,
+            )
+        except AgentTemporalUnavailable as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        response.status_code = status.HTTP_202_ACCEPTED
+        db.refresh(run)
+        return AgentRunExecuteResponse(
+            run=run_to_response(run),
+            summary=started.get("summary", "Agent workflow started"),
+            staged_outputs=[],
+            tool_calls=[],
+            sandboxes=[],
+        )
+
+    from app.agents.graph import AgentGraphConflict, AgentPolicyViolation, execute_agent_graph
+
+    try:
+        result = execute_agent_graph(
+            db=db,
+            settings=request.app.state.settings,
+            workspace_id=workspace_id,
+            run_id=run.id,
+            repository_id=repository.id,
+            ref=payload.ref or repository.default_branch,
+            candidate_limit=1,
+            actor_email=actor_email,
+            model_gateway_transport=getattr(request.app.state, "model_gateway_transport", None),
+        )
+    except AgentPolicyViolation as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except AgentGraphConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    for output in result.staged_outputs:
+        if output.output_type == AgentStagedOutputType.module_tree_draft.value:
+            return staged_output_to_response(db, output)
+    db.refresh(result.run)
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=result.run.failure_reason or "Agent did not create a module tree draft",
+    )
 
 
 @router.get("/mapping-rules", response_model=list[MappingRuleResponse])

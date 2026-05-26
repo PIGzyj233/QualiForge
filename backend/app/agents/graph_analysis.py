@@ -63,6 +63,38 @@ def select_subagent_plan(*, run: AgentRun, snapshot: dict[str, Any]) -> dict[str
             selected.append(name)
             reasons[name] = reason
 
+    if snapshot.get("output_type") == AgentStagedOutputType.module_tree_draft.value:
+        add("CodeAnalysisSubAgent", "required_for_module_tree_repository_evidence")
+        add("ModuleTreeDraftSubAgent", "requested_module_tree_draft_output")
+        for name in requested:
+            add(name, "requested_by_run_budget")
+        grouped: dict[str, list[str]] = {}
+        for name in selected:
+            spec = SUBAGENT_REGISTRY[name]
+            grouped.setdefault(spec.parallel_group, []).append(name)
+        group_order = ["read_analysis", "module_tree_draft"]
+        parallel_groups = [grouped[group] for group in group_order if group in grouped]
+        return {
+            "selected": selected,
+            "parallel_groups": parallel_groups,
+            "selection_policy": "module_tree_draft_v1",
+            "selection_reasons": reasons,
+            "requested_subagents": requested,
+            "disabled_subagents": sorted(disabled),
+            "skipped_subagents": skipped,
+            "available_subagents": [
+                {
+                    "name": spec.name,
+                    "stage": spec.stage,
+                    "required": spec.required,
+                    "parallel_group": spec.parallel_group,
+                    "purpose": spec.purpose,
+                }
+                for spec in SUBAGENT_REGISTRY.values()
+            ],
+            "supervisor_writes_staged_outputs": True,
+        }
+
     for spec in SUBAGENT_REGISTRY.values():
         if spec.required:
             add(spec.name, "required_by_agent_graph")
@@ -90,7 +122,7 @@ def select_subagent_plan(*, run: AgentRun, snapshot: dict[str, Any]) -> dict[str
     for name in selected:
         spec = SUBAGENT_REGISTRY[name]
         grouped.setdefault(spec.parallel_group, []).append(name)
-    group_order = ["read_analysis", "case_design", "critic", "report_draft"]
+    group_order = ["read_analysis", "case_design", "module_tree_draft", "critic", "report_draft"]
     parallel_groups = [grouped[group] for group in group_order if group in grouped]
 
     return {

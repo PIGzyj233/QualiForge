@@ -78,6 +78,9 @@ class AgentStagedOutputType(StrEnum):
     report_draft = "report_draft"
     coverage_update = "coverage_update"
     agent_note = "agent_note"
+    module_tree_draft = "module_tree_draft"
+    module_mapping_suggestions = "module_mapping_suggestions"
+    module_refactor_suggestion = "module_refactor_suggestion"
 
 
 class EvidenceKind(StrEnum):

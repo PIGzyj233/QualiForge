@@ -249,7 +249,15 @@ export type AgentStagedOutputRecord = {
   agent_run_id: string;
   workspace_id: string;
   project_id: string | null;
-  output_type: "case_candidate" | "regression_recommendation" | "report_draft" | "coverage_update" | "agent_note";
+  output_type:
+    | "case_candidate"
+    | "regression_recommendation"
+    | "report_draft"
+    | "coverage_update"
+    | "agent_note"
+    | "module_tree_draft"
+    | "module_mapping_suggestions"
+    | "module_refactor_suggestion";
   status: "staged" | "accepted" | "rejected";
   idempotency_key: string;
   title: string;
@@ -1588,6 +1596,41 @@ export function deleteModule(workspaceId: string, projectId: string, moduleId: s
   return requestNoContent(
     `/workspaces/${workspaceId}/projects/${projectId}/modules/${moduleId}?actor_email=${encodeURIComponent(actorEmail)}`,
     { method: "DELETE" }
+  );
+}
+
+export function listModuleTreeDrafts(
+  workspaceId: string,
+  projectId: string,
+  status: "staged" | "accepted" | "rejected" | "all" = "staged"
+): Promise<AgentStagedOutputRecord[]> {
+  return requestJson<AgentStagedOutputRecord[]>(
+    `/workspaces/${workspaceId}/projects/${projectId}/module-tree-drafts?status=${encodeURIComponent(status)}`
+  );
+}
+
+export type ModuleTreeDraftGenerateResponse = AgentStagedOutputRecord | AgentRunExecuteResponse;
+
+export function generateModuleTreeDraft(
+  workspaceId: string,
+  projectId: string,
+  actorEmail: string,
+  payload: {
+    repository_id: string;
+    ref?: string;
+    guidance?: string;
+    max_depth?: number;
+    max_modules?: number;
+    min_files?: number;
+    include_tests?: boolean;
+  }
+): Promise<ModuleTreeDraftGenerateResponse> {
+  return requestJson<ModuleTreeDraftGenerateResponse>(
+    `/workspaces/${workspaceId}/projects/${projectId}/module-tree-drafts/generate?actor_email=${encodeURIComponent(actorEmail)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
   );
 }
 

@@ -39,6 +39,7 @@ def make_client(
         "model_gateway_api_key": "test-model-key",
         "model_gateway_default_model": "deepseek-v4-pro",
         "model_gateway_reasoning_effort": "high",
+        "agent_execute_sync_mode": True,
     }
     settings_values.update(settings_overrides or {})
     settings = Settings(**settings_values)
@@ -217,6 +218,134 @@ def successful_model_transport(calls: list[dict[str, Any]]) -> Callable:
             "choices": [{"message": {"content": case_candidate_content()}}],
             "usage": {"prompt_tokens": 120, "completion_tokens": 80},
         }
+
+    return fake_transport
+
+
+def module_tree_model_transport(calls: list[dict[str, Any]]) -> Callable:
+    def fake_transport(url: str, headers: dict[str, str], payload: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        calls.append({"url": url, "headers": headers, "payload": payload, "timeout": timeout_seconds})
+        if payload.get("tools") and len([call for call in calls if call["payload"].get("tools")]) == 1:
+            return {
+                "id": "chatcmpl-module-tool-call",
+                "model": payload["model"],
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_read_refund",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "code_read_range",
+                                        "arguments": json.dumps(
+                                            {"path": "src/checkout/refund.py", "start_line": 1, "end_line": 20}
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 80, "completion_tokens": 20},
+            }
+        if payload.get("tools"):
+            return {
+                "id": "chatcmpl-module-analysis-complete",
+                "model": payload["model"],
+                "choices": [{"message": {"content": json.dumps({"analysis_complete": True, "notes": "Checkout refund flow inspected."})}}],
+                "usage": {"prompt_tokens": 90, "completion_tokens": 20},
+            }
+        return {
+            "id": "chatcmpl-module-draft",
+            "model": payload["model"],
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "summary": "Checkout has a focused refund capability backed by repository evidence.",
+                                "modules": [
+                                    {
+                                        "draft_id": "checkout",
+                                        "parent_draft_id": None,
+                                        "name": "Checkout",
+                                        "slug": "checkout",
+                                        "code": "CHECKOUT_MODULE",
+                                        "description": "Checkout-facing refund and payment behavior.",
+                                        "keywords": ["checkout", "refund"],
+                                        "source_paths": ["src/checkout"],
+                                        "rationale": "The repository groups refund behavior under src/checkout.",
+                                        "confidence": 88,
+                                        "evidence_refs": [
+                                            {
+                                                "kind": "code_file",
+                                                "ref_id": "repo:HEAD:src/checkout/refund.py",
+                                                "label": "src/checkout/refund.py:1-20",
+                                                "summary": "Refund behavior is implemented under the checkout source path.",
+                                                "confidence": 0.9,
+                                                "source": "code_read_range",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        )
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 160, "completion_tokens": 90},
+        }
+
+    return fake_transport
+
+
+def module_tree_tool_error_recovery_transport(calls: list[dict[str, Any]]) -> Callable:
+    def fake_transport(url: str, headers: dict[str, str], payload: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        calls.append({"url": url, "headers": headers, "payload": payload, "timeout": timeout_seconds})
+        if payload.get("tools") and len([call for call in calls if call["payload"].get("tools")]) == 1:
+            return {
+                "id": "chatcmpl-module-tool-error",
+                "model": payload["model"],
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_missing_file",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "code_read_range",
+                                        "arguments": json.dumps({"path": "src/checkout/missing.py", "start_line": 1, "end_line": 20}),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 80, "completion_tokens": 20},
+            }
+        if payload.get("tools"):
+            return {
+                "id": "chatcmpl-module-analysis-recovered",
+                "model": payload["model"],
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "analysis_complete": True,
+                                    "notes": "The missing file was ignored; src/checkout/refund.py remains enough evidence.",
+                                }
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 90, "completion_tokens": 20},
+            }
+        return module_tree_model_transport([])(url, headers, payload, timeout_seconds)
 
     return fake_transport
 
@@ -477,6 +606,149 @@ def test_agent_execute_generates_staged_case_candidate(tmp_path: Path) -> None:
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/coverage-index?coverage_state=staged&module_key=CHECKOUT"
     ).json()
     assert [entry["behavior_summary"] for entry in coverage] == ["Refund emits attributable audit and log signals."]
+
+
+def test_module_tree_draft_agent_generates_reviewable_output_and_accepts_modules(tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, module_tree_model_transport(calls), {"agent_execute_sync_mode": True})
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    synced_repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+
+    generated = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/module-tree-drafts/generate?actor_email={OWNER}",
+        json={"repository_id": synced_repository["id"], "max_modules": 12, "guidance": "Prefer product capability modules."},
+    )
+
+    assert generated.status_code == 201, generated.json()
+    draft = generated.json()
+    assert draft["output_type"] == "module_tree_draft"
+    assert draft["status"] == "staged"
+    assert draft["payload"]["generated_by"] == "llm_agent_repository_tools_v1"
+    assert draft["payload"]["items"][0]["name"] == "Checkout"
+    assert draft["payload"]["items"][0]["source_paths"] == ["src/checkout"]
+    tool_payload = next(call["payload"] for call in calls if call["payload"].get("tools"))
+    tool_names = {tool["function"]["name"] for tool in tool_payload["tools"]}
+    assert tool_names == {"code_rg_files", "code_search", "code_read_range", "git_show_file", "coverage_lookup"}
+
+    accepted = client.patch(
+        f"/api/workspaces/{workspace['id']}/agent/staged-outputs/{draft['id']}?actor_email={OWNER}",
+        json={"status": "accepted", "decision_summary": "Accept module tree draft"},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["payload"]["acceptance_result"]["created_count"] == 1
+
+    tree = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules/tree").json()
+    assert [node["name"] for node in tree] == ["Checkout"]
+    assert tree[0]["keywords"] == ["checkout", "refund"]
+
+
+def test_module_tree_draft_acceptance_requires_workspace_owner(tmp_path: Path) -> None:
+    client = make_client(tmp_path, module_tree_model_transport([]), {"agent_execute_sync_mode": True})
+    workspace, project = create_workspace_project(client)
+    member = client.post(
+        f"/api/workspaces/{workspace['id']}/members?actor_email={OWNER}",
+        json={"email": "tester@qualiforge.local", "display_name": "Tester", "role": "WorkspaceMember"},
+    )
+    assert member.status_code == 201
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    synced_repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    generated = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/module-tree-drafts/generate?actor_email={OWNER}",
+        json={"repository_id": synced_repository["id"], "max_modules": 12},
+    )
+    assert generated.status_code == 201, generated.json()
+    draft = generated.json()
+
+    rejected = client.patch(
+        f"/api/workspaces/{workspace['id']}/agent/staged-outputs/{draft['id']}?actor_email=tester@qualiforge.local",
+        json={"status": "accepted", "decision_summary": "Member should not be able to create modules"},
+    )
+
+    assert rejected.status_code == 403
+    stored = client.get(f"/api/workspaces/{workspace['id']}/agent/runs/{draft['agent_run_id']}/staged-outputs").json()[0]
+    assert stored["status"] == "staged"
+    assert client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/modules/tree").json() == []
+
+
+def test_manual_module_tree_staged_output_creation_requires_workspace_owner() -> None:
+    client = make_client()
+    workspace, project = create_workspace_project(client)
+    member = client.post(
+        f"/api/workspaces/{workspace['id']}/members?actor_email={OWNER}",
+        json={"email": "tester@qualiforge.local", "display_name": "Tester", "role": "WorkspaceMember"},
+    )
+    assert member.status_code == 201
+    conversation = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/conversations?actor_email={OWNER}",
+        json={"title": "Manual module tree", "project_id": project["id"]},
+    ).json()
+    run = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/conversations/{conversation['id']}/runs?actor_email={OWNER}",
+        json={"goal": "Manual module tree draft", "mode": "execute"},
+    ).json()
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/staged-outputs?actor_email=tester@qualiforge.local",
+        json={"output_type": "module_tree_draft", "title": "Unsafe draft", "payload": {"items": []}},
+    )
+
+    assert response.status_code == 403
+
+
+def test_module_tree_tool_error_is_returned_to_llm_for_recovery(tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = []
+    client = make_client(tmp_path, module_tree_tool_error_recovery_transport(calls), {"agent_execute_sync_mode": True})
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    synced_repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+
+    generated = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/module-tree-drafts/generate?actor_email={OWNER}",
+        json={"repository_id": synced_repository["id"], "max_modules": 12},
+    )
+
+    assert generated.status_code == 201, generated.json()
+    assert generated.json()["payload"]["generated_by"] == "llm_agent_repository_tools_v1"
+    assert len([call for call in calls if call["payload"].get("tools")]) == 2
+    detail = client.get(f"/api/workspaces/{workspace['id']}/agent/runs/{generated.json()['agent_run_id']}/execution-detail").json()
+    failed_tools = [call for call in detail["tool_calls"] if call["status"] == "failed"]
+    assert failed_tools[0]["tool_name"] == "code_read_range"
+
+
+def test_module_tree_draft_generation_respects_temporal_async_mode(tmp_path: Path) -> None:
+    client = make_client(tmp_path, settings_overrides={"agent_execute_sync_mode": False})
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    synced_repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+    started: list[dict[str, Any]] = []
+
+    def workflow_starter(**kwargs):
+        stored_run = kwargs["run"]
+        stored_run.temporal_workflow_id = f"agent-run-{stored_run.id}"
+        stored_run.current_phase = "temporal_queued"
+        kwargs["db"].commit()
+        started.append(kwargs)
+        return {"summary": "Agent workflow started"}
+
+    client.app.state.agent_workflow_starter = workflow_starter
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/module-tree-drafts/generate?actor_email={OWNER}",
+        json={"repository_id": synced_repository["id"], "max_modules": 12},
+    )
+
+    assert response.status_code == 202, response.json()
+    payload = response.json()
+    assert payload["run"]["temporal_workflow_id"] == f"agent-run-{payload['run']['id']}"
+    assert payload["run"]["current_phase"] == "temporal_queued"
+    assert payload["run"]["budget_snapshot"]["output_type"] == "module_tree_draft"
+    assert payload["staged_outputs"] == []
+    assert started[0]["repository_id"] == synced_repository["id"]
 
 
 def test_critic_rejects_low_confidence_evidence_candidate(tmp_path: Path) -> None:
@@ -1760,6 +2032,86 @@ def test_staged_output_writer_is_idempotent_for_activity_retry(tmp_path: Path) -
     assert len(outputs) == 1
     assert outputs[0].idempotency_key
     assert len(coverage) == 1
+
+
+def test_module_tree_verifier_rejects_parent_cycles_and_normalized_slug_conflicts(tmp_path: Path) -> None:
+    from app.agent_graph import AgentGraphExecutor
+
+    client = make_client(tmp_path)
+    workspace, project = create_workspace_project(client)
+
+    def assert_invalid(items: list[dict[str, Any]], expected_reason: str) -> None:
+        run = create_agent_run(
+            client,
+            workspace["id"],
+            project["id"],
+            budget_snapshot={"output_type": "module_tree_draft"},
+        )
+        state = {"workspace_id": workspace["id"], "run_id": run["id"], "module_tree_draft": {"items": items}}
+        with client.app.state.database.session_factory() as db:
+            stored = db.get(AgentRun, run["id"])
+            assert stored is not None
+            executor = AgentGraphExecutor(
+                db=db,
+                settings=client.app.state.settings,
+                run=stored,
+                actor_email=OWNER,
+                candidate_limit=1,
+                model_gateway_transport=None,
+            )
+            with pytest.raises(RuntimeError, match=expected_reason):
+                executor.verify_module_tree_draft(state)
+
+    base_ref = {
+        "kind": "code_file",
+        "ref_id": "repo:abc:src/checkout/refund.py",
+        "label": "src/checkout/refund.py",
+        "confidence": 0.9,
+        "summary": "Checkout evidence",
+        "source": "code_read_range",
+    }
+    assert_invalid(
+        [
+            {
+                "draft_id": "a",
+                "parent_draft_id": "b",
+                "name": "A",
+                "slug": "a",
+                "source_paths": ["src/a"],
+                "evidence_refs": [base_ref],
+            },
+            {
+                "draft_id": "b",
+                "parent_draft_id": "a",
+                "name": "B",
+                "slug": "b",
+                "source_paths": ["src/b"],
+                "evidence_refs": [base_ref],
+            },
+        ],
+        "parent_cycle_detected",
+    )
+    assert_invalid(
+        [
+            {
+                "draft_id": "checkout_one",
+                "parent_draft_id": None,
+                "name": "Checkout",
+                "slug": "Checkout",
+                "source_paths": ["src/checkout"],
+                "evidence_refs": [base_ref],
+            },
+            {
+                "draft_id": "checkout_two",
+                "parent_draft_id": None,
+                "name": "Checkout copy",
+                "slug": "checkout",
+                "source_paths": ["src/checkout-copy"],
+                "evidence_refs": [base_ref],
+            },
+        ],
+        "missing_or_duplicate_sibling_slug",
+    )
 
 
 def test_agent_memory_curator_search_versions_rollback_and_secret_rejection(tmp_path: Path) -> None:

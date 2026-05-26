@@ -32,6 +32,7 @@ from app.agents.models import (
     AgentRunStatus,
     AgentStagedOutput,
     AgentStagedOutputStatus,
+    AgentStagedOutputType,
     AgentSubagentRun,
     AgentToolCall,
     AgentToolCallStatus,
@@ -108,7 +109,7 @@ from app.platform.telemetry import (
     AGENT_TOOL_DURATION_SECONDS,
     elapsed_seconds,
 )
-from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, now_utc
+from app.workspace.routes import ActorEmail, audit, get_project_or_404, get_workspace_or_404, now_utc, require_workspace_owner
 
 
 def get_db(request: Request):
@@ -837,6 +838,8 @@ def create_staged_output(
     run = get_run_or_404(db, workspace_id, run_id)
     if run.mode != AgentRunMode.execute.value:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Staged outputs require an execute agent run")
+    if payload.output_type == AgentStagedOutputType.module_tree_draft:
+        require_workspace_owner(db, workspace_id, actor_email)
 
     output = AgentStagedOutput(
         agent_run_id=run.id,
@@ -1041,6 +1044,12 @@ def decide_staged_output(
         output.accepted_at = now
         next_coverage_state = "candidate"
         action = "agent_staged_output.accepted"
+        if output.output_type == AgentStagedOutputType.module_tree_draft.value:
+            require_workspace_owner(db, workspace_id, actor_email)
+            from app.cases.modules import accept_module_tree_draft_output
+
+            acceptance_result = accept_module_tree_draft_output(db, output=output, actor_email=actor_email)
+            output.payload = {**dict(output.payload or {}), "acceptance_result": acceptance_result}
     elif payload.status == AgentStagedOutputStatus.rejected:
         output.rejected_at = now
         next_coverage_state = "rejected"
