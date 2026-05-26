@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Product context
 
-QualiForge is an AI-native test asset workbench for small/mid-sized QA teams. Read `CONTEXT.md` for the domain vocabulary (`Workspace`, `Project`, `Repository`, `Module`/`FeatureArea`, `ModuleMapping`, `TestCase`, `CaseRevision`, `Review`, `DiffAnalysis`, `AICaseCandidate`, `TestPlan`, `PlanItem`, `Job`, `Report`). `docs/mvp-prd.md` has the full MVP scope; `docs/future-roadmap.md` is explicitly deferred.
+QualiForge is an AI-native test asset workbench for small/mid-sized QA teams. Read `CONTEXT.md` for the domain vocabulary (`Workspace`, `Project`, `Repository`, `Module`/`FeatureArea`, `ModuleMapping`, `TestCase`, `CaseRevision`, `Review`, `DiffAnalysis`, `AICaseCandidate`, `TestPlan`, `PlanItem`, `Job`, `Report`). `docs/product/prd.md` has the full MVP scope; `docs/product/roadmap.md` is explicitly deferred. `docs/README.md` is the documentation index.
 
 Three product invariants govern design decisions:
 
@@ -46,14 +46,14 @@ There is no linter/formatter wired in either package — don't fabricate one. Th
 
 ## Backend architecture
 
-The FastAPI app is composed of **vertical-slice routers** under `backend/app/`. Each slice file (`workspaces.py`, `ai_config.py`, `gitlab.py`, `modules.py`, `case_imports.py`, `case_reviews.py`, `diff_analysis.py`, `ai_suggestions.py`, `test_plans.py`, `release_reports.py`) contains its SQLAlchemy models, Pydantic schemas, and `APIRouter` together. `app/main.py::create_app` wires them via `include_router`.
+The FastAPI app is composed of **domain packages** under `backend/app/` (`platform/`, `workspace/`, `ai/`, `git/`, `cases/`, `planning/`, `agents/`). Each exposes one `router: APIRouter`. `app/main.py::create_app` wires them via `include_router`. Root-level shim files (`app/workspaces.py`, `app/ai_config.py`, etc.) re-export from sub-packages for backwards compatibility — new code should import the sub-package paths directly.
 
 Key shared infrastructure:
 
-- `app/database.py` — `Base = DeclarativeBase` (every slice's models inherit it), `Database` wrapper that normalizes `postgresql://` → `postgresql+psycopg://`, lazy `create_all` on first session, and special-cases SQLite (including in-memory `StaticPool` used by tests).
-- `app/workspaces.py` is the **foundation module**. Other slices import these helpers from it: `audit()` (writes `AuditLog`), `get_workspace_or_404`, `get_project_or_404`, `require_workspace_owner` (raises 403 if actor isn't `WorkspaceOwner`), `now_utc`, `new_id` (uuid4 hex), and the `ActorEmail` query-param alias. Don't duplicate these — import them.
-- `app/config.py` — Pydantic settings with `QUALIFORGE_` env prefix. CORS origins come from a comma-separated string. Sandbox/storage paths default to `.qualiforge/...` locally and `/data/...` in Compose.
-- `app/worker.py` — standalone process started via `python -m app.worker`. Currently just writes a Redis heartbeat key every `worker_heartbeat_seconds`; no task queue yet. Mutations that need background work (git sync, diff analysis, AI calls) currently run inline using FastAPI `BackgroundTasks`.
+- `app/platform/database.py` — `Base = DeclarativeBase` (every package's models inherit it), `Database` wrapper that normalizes `postgresql://` → `postgresql+psycopg://`, lazy `create_all` on first session, and special-cases SQLite (including in-memory `StaticPool` used by tests).
+- `app/workspace/routes.py` is the **foundation module**. Other packages import these helpers from it: `audit()` (writes `AuditLog`), `get_workspace_or_404`, `get_project_or_404`, `require_workspace_owner` (raises 403 if actor isn't `WorkspaceOwner`), `now_utc`, `new_id` (uuid4 hex), and the `ActorEmail` query-param alias. Don't duplicate these — import them.
+- `app/platform/config.py` — Pydantic settings with `QUALIFORGE_` env prefix. CORS origins come from a comma-separated string. Sandbox/storage paths default to `.qualiforge/...` locally and `/data/...` in Compose. Full reference in `docs/operations/configuration.md`.
+- `app/worker.py` — standalone process started via `python -m app.worker`. Currently just writes a Redis heartbeat key every `worker_heartbeat_seconds`; no task queue yet. Long-running agent work runs via Temporal (`agents/temporal.py`, `workflows.py`); other long mutations (git sync, diff analysis) currently run inline using FastAPI `BackgroundTasks`.
 
 Routing conventions:
 
@@ -66,20 +66,24 @@ Testing pattern (`backend/tests/`):
 - `conftest.py` only adds the backend root to `sys.path`. There are no fixtures.
 - Tests build an isolated app per test via `create_app(Settings(database_url="sqlite+pysqlite:///:memory:", redis_url="redis://localhost:6379/15"))` and use FastAPI's `TestClient`. Follow this pattern for new tests — don't rely on the module-level `app` for stateful tests.
 
+Full architecture walkthrough lives in `docs/architecture/backend.md`; cross-package data flow and Temporal/LangGraph split in `docs/architecture/overview.md` and `docs/architecture/ai-agent.md`.
+
 ## Frontend architecture
 
-Single-page React app in `frontend/src/`:
+Single-page React app in `frontend/src/`, routed by react-router (see `routes/AppRouter.tsx`):
 
 - `api.ts` is the **single source of truth** for backend types and fetch helpers. Every backend response shape is mirrored here. When you change a backend schema, update `api.ts` in the same change.
-- `App.tsx` toggles between `LoginView` and `Workbench` based on a `Session` persisted to `localStorage` under `qualiforge.session`.
-- `views/Workbench.tsx` is the chrome (sidebar + topbar + status tiles). It dispatches by `NavKey` (`workbench` | `projects` | `library` | `reviews` | `reports` | `settings`) defined in `lib/navigation.ts`.
-- Admin views (`*Admin.tsx`) are the working surfaces — one per backend slice (`WorkspaceAdmin`, `AIConfigAdmin`, `GitLabSandboxAdmin`, `ModuleMappingAdmin`, `CaseImportAdmin`, `CaseReviewAdmin`, `DiffAnalysisAdmin`, `AISuggestionAdmin`, `TestPlanAdmin`, `ReleaseReportAdmin`). The leaner `*View.tsx` files (`LibraryView`, `ReportsView`, `ReviewsView`, `SettingsView`, `ProjectsView`) are top-level nav hosts that compose the admin components.
+- `App.tsx` toggles between `LoginView` and `<AppRouter>` based on a `Session` persisted to `localStorage` under `qualiforge.session`.
+- `routes/AppRouter.tsx` owns the route table. Layouts: `WorkspaceLayout` (top chrome + sidebar), `AdminLayout` (workspace admin tabs), `ProjectLayout` (project sub-nav).
+- Admin views (`views/*Admin.tsx`) are the working surfaces — one per backend slice (`AIConfigAdmin`, `GitLabSandboxAdmin`, `ModuleMappingAdmin`, `CaseImportAdmin`, `DiffAnalysisAdmin`, `AISuggestionAdmin`, `TestPlanAdmin`, `ReleaseReportAdmin`, `AgentWorkbenchView`). Top-level navigational hosts like `LibraryView`, `ReviewQueueView`, and the panels in `views/workspace/*` and `views/project/*` compose those admin components and lighter panels.
 - UI copy is **Simplified Chinese** for user-facing strings; identifiers and comments stay English. Match this when adding strings.
 - `vite.config.ts` proxies `/api` → `http://localhost:8000` in dev. `VITE_API_URL` overrides the base in `api.ts`.
-- No state library, no routing library, no test runner — keep additions minimal unless asked.
+- No state library, no UI kit, no test runner — keep additions minimal unless asked.
+
+Full route table and views inventory in `docs/architecture/frontend.md`.
 
 ## Issue tracking & conventions
 
 - Issues live in GitHub (`PIGzyj233/QualiForge`). Use `gh` CLI. The MVP work plan is twelve issues `#1`–`#12` and they are all marked done in `app/main.py::dashboard_summary` — when you finish a slice that maps to one of them, keep that summary aligned.
 - Triage labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` (see `docs/agents/triage-labels.md`).
-- ADRs go in `docs/adr/` (currently empty apart from `.gitkeep`).
+- ADRs go in `docs/adr/` (`0001-agent-architecture.md`, `0002-human-confirmed-module-mapping.md`; index at `docs/adr/README.md`).

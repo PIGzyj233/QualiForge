@@ -33,9 +33,8 @@ Important product principles:
 
 Primary reference docs:
 
-- `docs/mvp-prd.md`: MVP product requirements.
-- `docs/module-mapping-implementation-plan.md`: human-confirmed module tree and code mapping implementation plan.
-- `docs/adr/0001-agent-architecture.md`: accepted AI agent architecture decisions.
-- `docs/ai-agent-design.md`: implementation-oriented AI agent design.
-- `docs/future-roadmap.md`: deferred and future capabilities.
+- `docs/product/prd.md`: MVP product requirements and current delivery status.
+- `docs/architecture/module-mapping.md`: human-confirmed module tree and code mapping implementation status.
+- `docs/architecture/ai-agent.md`: implementation-oriented AI agent design (current state, design vs delivered).
+- `docs/product/roadmap.md`: deferred and future capabilities.
 - `docs/adr/`: architectural decision records.

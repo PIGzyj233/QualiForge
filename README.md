@@ -1,18 +1,74 @@
 # QualiForge
 
-AI-native test asset workbench for small and mid-sized engineering and QA teams.
+**AI 原生测试资产工作台** — 为中小型工程与 QA 团队打造的私有化部署平台。
 
-## Local MVP Workbench
+将零散的历史测试用例、GitLab 仓库上下文、版本 Tag diff、评审流程、测试计划执行和发布报告，整合为一个人与 AI 都能高效使用的结构化知识库。
+
+---
+
+## 界面预览
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<strong>工作台总览</strong><br><br>
+<img src="docs/screenshots/screenshot-overview.png" alt="工作台总览"><br>
+工作区状态、项目列表与近期活动一览。
+</td>
+<td width="50%" valign="top">
+<strong>项目工作台</strong><br><br>
+<img src="docs/screenshots/screenshot-project-overview.png" alt="项目工作台"><br>
+用例库、Diff 分析、AI 建议、测试计划与发布报告集中管理。
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<strong>AI 建议</strong><br><br>
+<img src="docs/screenshots/screenshot-ai-suggestions.png" alt="AI 建议"><br>
+基于 tag diff 生成测试用例候选，人工确认后方可入库。
+</td>
+<td width="50%" valign="top">
+<strong>发布报告</strong><br><br>
+<img src="docs/screenshots/screenshot-reports.png" alt="发布报告"><br>
+AI 起草摘要与风险评估，人工确认发布决策，支持 Markdown 导出。
+</td>
+</tr>
+</table>
+
+---
+
+## 核心能力
+
+| 能力 | 说明 |
+|------|------|
+| **用例库治理** | 草稿 → 待审 → 批准 → 归档完整状态流，版本快照，评审意见 |
+| **GitLab 集成** | 只读仓库镜像，Tag diff 分析，模块映射规则自动关联 |
+| **AI 辅助** | 用例归一化、Diff 建议生成、报告起草；AI 只能建议，不能绕过人工审批 |
+| **测试计划** | 发布 / 回归 / 冒烟 / 特性 / 自定义，正式用例快照 + AI 临时条目 + 手工条目 |
+| **发布报告** | AI 起草 + 人工确认发布决策，完整审计链，Markdown 导出 |
+| **私有化部署** | Docker Compose 一键启动，所有数据本地存储 |
+
+---
+
+## 快速启动
 
 ```powershell
 Copy-Item .env.example .env
 docker compose up --build
 ```
 
-Real model calls are optional in local development. The default model-call
-configuration targets DeepSeek's OpenAI-compatible chat completions endpoint:
+启动后访问：
 
-```powershell
+- **工作台**：http://localhost:5173
+- **后端健康检查**：http://localhost:8000/api/health
+
+---
+
+## AI 模型配置
+
+默认对接 DeepSeek OpenAI 兼容接口，在 `.env` 中配置：
+
+```env
 QUALIFORGE_MODEL_GATEWAY_PROVIDER=deepseek
 QUALIFORGE_MODEL_GATEWAY_API_BASE_URL=https://api.deepseek.com
 QUALIFORGE_MODEL_GATEWAY_API_KEY=your-api-key
@@ -20,68 +76,13 @@ QUALIFORGE_MODEL_GATEWAY_DEFAULT_MODEL=deepseek-v4-pro
 QUALIFORGE_MODEL_GATEWAY_REASONING_EFFORT=high
 ```
 
-For local DeepSeek testing, existing `DEEPSEEK_API_KEY` and `DEEPSEEK_BASE_URL`
-values in `.env` are also accepted when the `QUALIFORGE_MODEL_GATEWAY_*`
-variables are not set.
+支持任意 OpenAI 兼容端点：直接 Provider API、本地模型服务、NewAPI 或其他网关。
 
-That endpoint can be a direct provider API, a local model service, or a
-deployment-owned relay such as NewAPI or another OpenAI-compatible gateway.
-QualiForge does not bundle, configure, or document relay/provider routing; it
-only sends model calls and records invocation metadata. The gateway layer also
-has a streaming method for compatible endpoints; the current agent workflow uses
-non-streaming completion responses for structured candidate generation.
+---
 
-Then open:
+## 本地开发
 
-- Web workbench: http://localhost:5173
-- Backend health: http://localhost:8000/api/health
-- Detailed health: http://localhost:8000/api/health/detailed
-
-Temporal-backed agent execution is enabled by default in Docker Compose. After
-the stack is healthy, the durable workflow path can be smoke-tested without a
-real model endpoint with:
-
-```powershell
-python scripts/smoke_temporal_compose.py
-```
-
-The smoke test creates a temporary workspace, container-local Git repository,
-repository sync job, Temporal-backed Agent run, detail refresh, resume signal,
-and cancellation.
-
-If Docker cannot pull `temporalio/temporal:latest`, the Compose smoke is an
-environment prerequisite failure rather than an agent implementation failure.
-The SDK-level durable workflow path can still be verified locally without Docker
-with:
-
-```powershell
-Set-Location backend
-uv run pytest tests/test_agent_temporal_workflow.py tests/test_agent_temporal_api_integration.py
-```
-
-Those tests run a real Temporal Python test environment and worker, covering the
-workflow id, activity retry, timeout failure, child workflows, resume signal,
-cancel path, and the API execute/resume/cancel round trip. The Compose smoke is
-still the product-mode check once the Temporal image is available.
-
-The current implementation covers the first MVP platform slice:
-
-- GitHub issue #1: a private-deployment workbench shell with FastAPI, React, PostgreSQL, Redis, and a background worker service.
-- GitHub issue #2: Workspace, member, project, and audit-log foundations with workspace-scoped APIs and UI controls.
-- GitHub issue #3: OpenAI-compatible Provider, Model Profile, Workspace AI data policy, and AI invocation summary logging.
-- GitHub issue #4: Workspace-owned GitLab token storage, read-only repository binding, background mirror sync jobs, and isolated Git Sandbox paths with size, timeout, and symlink-escape guards.
-- GitHub issue #5: Project modules/function domains and ModuleMapping rules for directories, files, APIs, services, config keys, database migrations, and keywords.
-- GitHub issue #6: CSV/XLSX historical test case import batches with preserved raw files, AI-normalized drafts, preview bulk edits, review submission, and WorkspaceOwner bulk import into the formal case library.
-- GitHub issue #7: test case review governance with draft, pending review, approved, rejected, and archived states, revision snapshots, comments, edit requests, approval policy, and configurable self-review/update-review rules.
-- GitHub issue #8: tag/ref diff analysis jobs that run in the Git Sandbox and surface impacted modules, risk level, recommended test scope, changed files, structural evidence, and confidence.
-- GitHub issue #9: Diff-based AI test suggestions with source evidence, mapping-rule hits, related formal cases, feedback, draft AI case candidates, and temporary or formal PlanItem creation.
-- GitHub issue #10: release/regression/smoke/feature/custom TestPlan creation with version scope, owner, conclusion placeholder, formal case snapshots, AI temporary items, manual items, and audit-backed scope changes.
-- GitHub issue #11: PlanItem execution tracking with not-run/pass/fail/block/skip states, assignee, actual result, failure reason, defect links, uploaded evidence, executor timestamps, progress summary, and failure/blocking filters.
-- GitHub issue #12: release report drafts with Summary, Version & Diff, Scope, Execution Statistics, Failed/Blocked Items, Risk Assessment, AI Notes, owner-confirmed Release Decision, Appendix, Web viewing, Markdown export, and audit trails.
-
-## Local Development
-
-Backend:
+**后端：**
 
 ```powershell
 Set-Location backend
@@ -90,80 +91,33 @@ uv run pytest tests
 uv run uvicorn app.main:app --reload
 ```
 
-Compose uses `postgres:18-alpine` and mounts the database volume at
-`/var/lib/postgresql`, matching the Postgres 18+ Docker image layout. If an old
-local volume was initialized with `/var/lib/postgresql/data`, Postgres 18 will
-create a fresh 18.x data directory inside the existing named volume; migrate the
-old data with `pg_upgrade` if you need to preserve it.
-
-Useful API paths:
-
-- `GET /api/health/detailed`
-- `POST /api/workspaces`
-- `GET /api/workspaces?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/members`
-- `GET /api/workspaces/{workspace_id}/projects`
-- `GET /api/workspaces/{workspace_id}/audit-logs`
-- `GET /api/workspaces/{workspace_id}/ai-settings`
-- `POST /api/workspaces/{workspace_id}/llm-providers`
-- `POST /api/workspaces/{workspace_id}/model-profiles`
-- `POST /api/workspaces/{workspace_id}/ai-invocations`
-- `GET /api/workspaces/{workspace_id}/gitlab-token`
-- `PUT /api/workspaces/{workspace_id}/gitlab-token?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/repositories`
-- `POST /api/workspaces/{workspace_id}/repositories?actor_email=owner@qualiforge.local`
-- `POST /api/workspaces/{workspace_id}/repositories/{repository_id}/sync?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/jobs`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses/{analysis_id}`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses/{analysis_id}/job`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses/{analysis_id}/ai-suggestions?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/diff-analyses/{analysis_id}/ai-suggestions`
-- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/ai-suggestions/{suggestion_id}?actor_email=owner@qualiforge.local`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/ai-suggestions/{suggestion_id}/candidate?actor_email=owner@qualiforge.local`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/ai-suggestions/{suggestion_id}/plan-items?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/plans`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/plans?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/items`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/items?actor_email=owner@qualiforge.local`
-- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/items/{item_id}/execution?actor_email=owner@qualiforge.local`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/items/{item_id}/evidence?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/reports`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/plans/{plan_id}/reports/draft?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/reports/{report_id}`
-- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/reports/{report_id}/decision?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/reports/{report_id}/markdown`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/modules`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/modules?actor_email=owner@qualiforge.local`
-- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/modules/{module_id}?actor_email=owner@qualiforge.local`
-- `DELETE /api/workspaces/{workspace_id}/projects/{project_id}/modules/{module_id}?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/mapping-rules`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/modules/{module_id}/mapping-rules?actor_email=owner@qualiforge.local`
-- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/modules/{module_id}/mapping-rules/{rule_id}?actor_email=owner@qualiforge.local`
-- `DELETE /api/workspaces/{workspace_id}/projects/{project_id}/modules/{module_id}/mapping-rules/{rule_id}?actor_email=owner@qualiforge.local`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/imports?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/imports`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/imports/{batch_id}/drafts`
-- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/imports/{batch_id}/drafts-bulk?actor_email=owner@qualiforge.local`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/imports/{batch_id}/submit-review?actor_email=owner@qualiforge.local`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/imports/{batch_id}/bulk-import?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/test-cases`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/test-cases?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}`
-- `PATCH /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}?actor_email=owner@qualiforge.local`
-- `DELETE /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/review-settings`
-- `PUT /api/workspaces/{workspace_id}/review-settings?actor_email=owner@qualiforge.local`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}/submit-review?actor_email=owner@qualiforge.local`
-- `POST /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}/reviews?actor_email=owner@qualiforge.local`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}/reviews`
-- `GET /api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{case_id}/revisions`
-
-Frontend:
+**前端：**
 
 ```powershell
 Set-Location frontend
 npm install
 npm run dev
 ```
+
+**Temporal 工作流冒烟测试（需 Docker Compose 已启动）：**
+
+```powershell
+python scripts/smoke_temporal_compose.py
+```
+
+---
+
+## 技术栈
+
+- **后端**：FastAPI · PostgreSQL · Redis · Temporal（Durable Workflow）
+- **前端**：React · Vite · TypeScript
+- **AI**：OpenAI 兼容接口，结构化候选生成，非流式 completion
+- **部署**：Docker Compose，`postgres:18-alpine`
+
+---
+
+## 产品原则
+
+- AI 可以建议、归一化、摘要、起草，但**不能绕过人工审核**进入正式用例库。
+- Git 仓库分析全程**只读**，平台不运行项目代码、不启动服务、不执行任意命令。
+- 黑盒测试人员无需了解代码路径，技术关联由系统推断，人工可确认或纠正。
