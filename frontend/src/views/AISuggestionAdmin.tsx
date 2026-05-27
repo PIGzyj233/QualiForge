@@ -1,15 +1,29 @@
 import { useEffect, useState } from "react";
-import { BrainCircuit, CheckCircle2, ChevronRight, ClipboardCheck, MessageSquare, Plus, Sparkles, XCircle } from "lucide-react";
-import { AISuggestionRecord, createCandidateFromSuggestion, createSuggestionPlanItems, DiffAnalysisRecord, listDiffAnalyses, generateAISuggestions, listAISuggestions, listTestCases, TestCaseRecord, updateAISuggestion } from "../api/cases";
-import { listTestPlans, PlanItemRecord, TestPlanRecord } from "../api/planning";
-import { Session } from "../api/workspace";
-import { useWorkspaceContext } from "../hooks/useWorkspaceContext";
-import { statusLabel, riskLabel, suggestionTypeLabel } from "../lib/labels";
+import { BrainCircuit, ChevronRight, Sparkles } from "lucide-react";
+import {
+  type AISuggestionRecord, createCandidateFromSuggestion, createSuggestionPlanItems,
+  type DiffAnalysisRecord, generateAISuggestions, listAISuggestions, listDiffAnalyses,
+  listTestCases, type TestCaseRecord, updateAISuggestion
+} from "@/api/cases";
+import { listTestPlans, type TestPlanRecord } from "@/api/planning";
+import { useCurrentWorkspace, useCurrentProject } from "@/stores/workspace-store";
+import { useSessionStore } from "@/stores/session-store";
+import { statusLabel, riskLabel, suggestionTypeLabel } from "@/lib/labels";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 
-export function AISuggestionAdmin(_: { session: Session }) {
-  const { actorEmail, currentWorkspace, currentProject } = useWorkspaceContext();
-  const wid = currentWorkspace?.id ?? "";
-  const pid = currentProject?.id ?? "";
+export function AISuggestionAdmin() {
+  const session = useSessionStore((s) => s.session);
+  const ws = useCurrentWorkspace();
+  const proj = useCurrentProject();
+  const actorEmail = session?.user.email ?? "";
+  const wid = ws?.id ?? "";
+  const pid = proj?.id ?? "";
 
   const [analyses, setAnalyses] = useState<DiffAnalysisRecord[]>([]);
   const [selectedAnalysisId, setSelectedAnalysisId] = useState("");
@@ -22,60 +36,11 @@ export function AISuggestionAdmin(_: { session: Session }) {
   const [feedbackText, setFeedbackText] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [recentPlanItems, setRecentPlanItems] = useState<PlanItemRecord[]>([]);
 
-  const selectedAnalysis = analyses.find((a) => a.id === selectedAnalysisId);
   const selectedSuggestion = suggestions.find((s) => s.id === selectedSuggestionId);
-  const relatedCases = selectedSuggestion
-    ? approvedCases.filter((c) => selectedSuggestion.related_case_ids.includes(c.id))
-    : [];
-  const selectedCandidateSteps =
-    selectedSuggestion && Array.isArray(selectedSuggestion.candidate_payload.steps) ? selectedSuggestion.candidate_payload.steps : [];
-  const selectedEvidence = selectedSuggestion ? selectedSuggestion.mapping_evidence.slice(0, 6) : [];
-  const llmUsed = Boolean(selectedSuggestion?.source_diff?.llm_used);
-  const toolObservationCount = Number(selectedSuggestion?.source_diff?.tool_observation_count ?? 0);
-  const sourceLabel = llmUsed
-    ? toolObservationCount > 0
-      ? `模型生成 · 已调用仓库只读工具探索 ${toolObservationCount} 条证据`
-      : "模型生成 · 基于 Diff 证据和已有用例上下文"
-    : "规则建议 · 未调用模型";
-
-  async function loadProjectData() {
-    if (!wid || !pid) {
-      setAnalyses([]);
-      setApprovedCases([]);
-      setPlans([]);
-      return;
-    }
-    setBusy(true);
-    setMessage(null);
-    try {
-      const [nextAnalyses, nextCases, nextPlans] = await Promise.all([
-        listDiffAnalyses(wid, pid),
-        listTestCases(wid, pid, undefined, "approved"),
-        listTestPlans(wid, pid)
-      ]);
-      setAnalyses(nextAnalyses);
-      setApprovedCases(nextCases);
-      setPlans(nextPlans);
-      const aid = nextAnalyses[0]?.id ?? "";
-      setSelectedAnalysisId(aid);
-      const planId = nextPlans[0]?.id ?? "";
-      setSelectedPlanId(planId);
-      if (aid) await loadSuggestions(aid);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "AI 智能推荐数据加载失败");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function loadSuggestions(analysisId: string) {
-    if (!wid || !pid || !analysisId) {
-      setSuggestions([]);
-      setSelectedSuggestionId("");
-      return;
-    }
+    if (!wid || !pid || !analysisId) { setSuggestions([]); setSelectedSuggestionId(""); return; }
     const list = await listAISuggestions(wid, pid, analysisId);
     setSuggestions(list);
     const sid = list[0]?.id ?? "";
@@ -84,357 +49,176 @@ export function AISuggestionAdmin(_: { session: Session }) {
   }
 
   useEffect(() => {
-    void loadProjectData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!wid || !pid) return;
+    void (async () => {
+      setBusy(true);
+      try {
+        const [anals, cases, ps] = await Promise.all([listDiffAnalyses(wid, pid), listTestCases(wid, pid, undefined, "approved"), listTestPlans(wid, pid)]);
+        setAnalyses(anals); setApprovedCases(cases); setPlans(ps);
+        const aid = anals[0]?.id ?? "";
+        setSelectedAnalysisId(aid);
+        setSelectedPlanId(ps[0]?.id ?? "");
+        if (aid) await loadSuggestions(aid);
+      } catch (err) { setMessage(err instanceof Error ? err.message : "加载失败"); }
+      finally { setBusy(false); }
+    })();
   }, [wid, pid]);
-
-  function pickSuggestion(s: AISuggestionRecord) {
-    setSelectedSuggestionId(s.id);
-    setSelectedCaseIds(s.selected_case_ids);
-    setFeedbackText("");
-  }
 
   async function generate() {
     if (!wid || !pid || !selectedAnalysisId) return;
-    setBusy(true);
-    setMessage(null);
+    setBusy(true); setMessage(null);
     try {
       const next = await generateAISuggestions(wid, pid, selectedAnalysisId, actorEmail, { force: suggestions.length > 0 });
       setMessage(`已生成 ${next.length} 条建议`);
       await loadSuggestions(selectedAnalysisId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "AI 建议生成失败");
-    } finally {
-      setBusy(false);
-    }
+    } catch (err) { setMessage(err instanceof Error ? err.message : "生成失败"); }
+    finally { setBusy(false); }
   }
 
   async function feedback(status: "accepted" | "ignored" | "modified") {
     if (!wid || !pid || !selectedSuggestion) return;
-    setBusy(true);
-    setMessage(null);
+    setBusy(true); setMessage(null);
     try {
-      const updated = await updateAISuggestion(wid, pid, selectedSuggestion.id, actorEmail, {
-        status,
-        feedback_comment: feedbackText || undefined,
-        selected_case_ids: selectedSuggestion.suggestion_type === "regression" ? selectedCaseIds : undefined
-      });
+      const updated = await updateAISuggestion(wid, pid, selectedSuggestion.id, actorEmail, { status, feedback_comment: feedbackText || undefined, selected_case_ids: selectedSuggestion.suggestion_type === "regression" ? selectedCaseIds : undefined });
       setMessage(`已反馈：${statusLabel[updated.status]}`);
       await loadSuggestions(selectedAnalysisId);
-      pickSuggestion(updated);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "AI 建议反馈失败");
-    } finally {
-      setBusy(false);
-    }
+    } catch (err) { setMessage(err instanceof Error ? err.message : "反馈失败"); }
+    finally { setBusy(false); }
   }
 
   async function createCandidate() {
     if (!wid || !pid || !selectedSuggestion) return;
     setBusy(true);
     try {
-      const result = await createCandidateFromSuggestion(wid, pid, selectedSuggestion.id, actorEmail);
-      setMessage(`已创建 AI 候选草稿 "${result.test_case.title}"`);
+      const r = await createCandidateFromSuggestion(wid, pid, selectedSuggestion.id, actorEmail);
+      setMessage(`已创建 AI 候选草稿 "${r.test_case.title}"`);
       await loadSuggestions(selectedAnalysisId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "创建 AI 候选失败");
-    } finally {
-      setBusy(false);
-    }
+    } catch (err) { setMessage(err instanceof Error ? err.message : "创建失败"); }
+    finally { setBusy(false); }
   }
 
   async function addToPlan(includeAICandidate: boolean) {
-    if (!wid || !pid || !selectedSuggestion || !selectedAnalysis) return;
+    if (!wid || !pid || !selectedSuggestion) return;
+    const analysis = analyses.find((a) => a.id === selectedAnalysisId);
     setBusy(true);
     try {
-      const result = await createSuggestionPlanItems(wid, pid, selectedSuggestion.id, actorEmail, {
-        plan_id: selectedPlanId || undefined,
-        version_ref: selectedAnalysis.target_ref,
-        test_case_ids: includeAICandidate ? [] : selectedCaseIds,
-        include_ai_candidate: includeAICandidate
-      });
-      setRecentPlanItems(result.items);
-      setMessage(`已加入计划：${result.items.length} 项`);
-      await loadSuggestions(selectedAnalysisId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "加入计划失败");
-    } finally {
-      setBusy(false);
-    }
+      const r = await createSuggestionPlanItems(wid, pid, selectedSuggestion.id, actorEmail, { plan_id: selectedPlanId || undefined, version_ref: analysis?.target_ref ?? "", test_case_ids: includeAICandidate ? [] : selectedCaseIds, include_ai_candidate: includeAICandidate });
+      setMessage(`已加入计划：${r.items.length} 项`);
+    } catch (err) { setMessage(err instanceof Error ? err.message : "加入计划失败"); }
+    finally { setBusy(false); }
   }
 
-  if (!currentProject) {
-    return <p className="empty-state">尚未选择项目。</p>;
-  }
+  if (!proj) return <p className="text-sm text-[var(--muted-foreground)]">尚未选择项目。</p>;
 
   return (
-    <section className="panel ai-suggestion-panel">
-      <header className="panel-head">
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between">
         <div>
-          <span className="eyebrow">AI Suggestions</span>
-          <h2>AI 智能推荐</h2>
-          <p className="panel-sub">基于 Diff 分析为本次发布生成回归用例和候选用例，仍需人工评审入库。</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)] mb-1">AI Suggestions</p>
+          <h1 className="font-heading text-2xl font-bold">AI 智能推荐</h1>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">基于 Diff 分析为本次发布生成回归用例和候选用例，仍需人工评审入库。</p>
         </div>
-        <BrainCircuit size={20} aria-hidden="true" />
-      </header>
+        <BrainCircuit size={20} className="text-[var(--muted-foreground)]" />
+      </div>
+      {message && <Alert><AlertDescription>{message}</AlertDescription></Alert>}
 
-      {message ? <div className="inline-notice">{message}</div> : null}
-
-      <ol className="wizard">
-        <li className="wizard-step">
-          <header className="wizard-step-head">
-            <span className="wizard-num">1</span>
-            <div>
-              <h3>选择 Diff 分析</h3>
-              <p>从已经完成的 Diff 分析中选一份作为推荐输入。</p>
-            </div>
-          </header>
-          <div className="wizard-step-body">
-            {analyses.length === 0 ? (
-              <p className="empty-state">尚无 Diff 分析。请先到「Diff 分析」生成一份。</p>
-            ) : (
-              <div className="diff-radio-list">
-                {analyses.map((a) => (
-                  <label className={selectedAnalysisId === a.id ? "diff-radio-row selected" : "diff-radio-row"} key={a.id}>
-                    <input
-                      type="radio"
-                      name="diff-analysis"
-                      checked={selectedAnalysisId === a.id}
-                      onChange={() => {
-                        setSelectedAnalysisId(a.id);
-                        void loadSuggestions(a.id);
-                      }}
-                    />
-                    <div>
-                      <strong>
-                        {a.base_ref} → {a.target_ref}
-                      </strong>
-                      <small>
-                        风险 {riskLabel[a.risk_level]} · {a.module_impacts.length} 个模块受影响 ·{" "}
-                        {new Date(a.created_at).toLocaleDateString()}
-                      </small>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            )}
-            <button className="primary-button small" type="button" onClick={() => void generate()} disabled={busy || !selectedAnalysisId}>
-              <Sparkles size={14} aria-hidden="true" />
-              {suggestions.length ? "重新生成 AI 建议" : "生成 AI 建议"}
-            </button>
-          </div>
-        </li>
-
-        <li className={`wizard-step ${suggestions.length === 0 ? "disabled" : ""}`}>
-          <header className="wizard-step-head">
-            <span className="wizard-num">2</span>
-            <div>
-              <h3>查看建议并反馈</h3>
-              <p>左侧选择一条建议，右侧查看证据，标记采纳 / 修改 / 忽略。</p>
-            </div>
-          </header>
-          <div className="wizard-step-body">
-            <div className="suggestion-split">
-              <ol className="suggestion-list">
-                {suggestions.map((s) => (
-                  <li key={s.id}>
-                    <button
-                      className={selectedSuggestionId === s.id ? "suggestion-row active" : "suggestion-row"}
-                      type="button"
-                      onClick={() => pickSuggestion(s)}
-                    >
-                      <ChevronRight size={14} aria-hidden="true" />
-                      <div>
-                        <strong>
-                          {suggestionTypeLabel[s.suggestion_type]} · {s.title}
-                        </strong>
-                        <small>
-                          模块 {s.module_key} · 置信度 {s.confidence}% · {statusLabel[s.status]}
-                        </small>
-                      </div>
-                    </button>
-                  </li>
-                ))}
-                {suggestions.length === 0 ? <p className="empty-state">点击上方「生成 AI 建议」</p> : null}
-              </ol>
-
-              <div className="suggestion-detail">
-                {selectedSuggestion ? (
-                  <>
-                    <h4>{selectedSuggestion.title}</h4>
-                    <p className="rationale">{selectedSuggestion.rationale}</p>
-                    {selectedSuggestion.code_paths.length ? (
-                      <p>
-                        <small>代码路径：{selectedSuggestion.code_paths.slice(0, 5).join(" · ")}</small>
-                      </p>
-                    ) : null}
-                    {selectedSuggestion.interfaces.length ? (
-                      <p>
-                        <small>接口：{selectedSuggestion.interfaces.slice(0, 5).join(" · ")}</small>
-                      </p>
-                    ) : null}
-                    {selectedEvidence.length ? (
-                      <div className="suggestion-evidence">
-                        <small>证据</small>
-                        <ul>
-                          {selectedEvidence.map((item) => (
-                            <li key={item}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {selectedSuggestion.suggestion_type === "case_candidate" && selectedCandidateSteps.length ? (
-                      <div className="suggestion-evidence">
-                        <small>候选步骤</small>
-                        <ol>
-                          {selectedCandidateSteps.slice(0, 5).map((step, index) => (
-                            <li key={`${index}-${step.action}`}>
-                              <strong>{step.action}</strong>
-                              <span>{step.expected}</span>
-                            </li>
-                          ))}
-                        </ol>
-                      </div>
-                    ) : null}
-                    <small>{sourceLabel}</small>
-                    <label>
-                      反馈意见（可选）
-                      <textarea
-                        rows={2}
-                        value={feedbackText}
-                        onChange={(e) => setFeedbackText(e.target.value)}
-                        placeholder="例：建议增加超时分支用例"
-                      />
-                    </label>
-                    <div className="form-row compact">
-                      <button className="primary-button small" type="button" onClick={() => void feedback("accepted")} disabled={busy}>
-                        <CheckCircle2 size={14} aria-hidden="true" /> 采纳
-                      </button>
-                      <button className="ghost-button small" type="button" onClick={() => void feedback("modified")} disabled={busy}>
-                        <MessageSquare size={14} aria-hidden="true" /> 标记修改
-                      </button>
-                      <button className="ghost-button small" type="button" onClick={() => void feedback("ignored")} disabled={busy}>
-                        <XCircle size={14} aria-hidden="true" /> 忽略
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <p className="empty-state">从左侧选择一条建议。</p>
-                )}
-              </div>
-            </div>
-          </div>
-        </li>
-
-        <li className={`wizard-step ${selectedSuggestion ? "" : "disabled"}`}>
-          <header className="wizard-step-head">
-            <span className="wizard-num">3</span>
-            <div>
-              <h3>采纳到正式用例或本次计划</h3>
-              <p>回归建议命中正式用例 → 勾选后入计划；候选建议 → 创建草稿等待评审，或直接加为临时计划项。</p>
-            </div>
-          </header>
-          <div className="wizard-step-body">
-            {selectedSuggestion?.suggestion_type === "regression" ? (
-              <>
-                <h5>命中的正式用例</h5>
-                {relatedCases.length === 0 ? (
-                  <p className="empty-state">建议未命中已通过评审的正式用例。</p>
-                ) : (
-                  <div className="case-checklist">
-                    {relatedCases.map((c) => (
-                      <label key={c.id}>
-                        <input
-                          type="checkbox"
-                          checked={selectedCaseIds.includes(c.id)}
-                          onChange={(e) =>
-                            setSelectedCaseIds((cur) =>
-                              e.target.checked ? Array.from(new Set([...cur, c.id])) : cur.filter((x) => x !== c.id)
-                            )
-                          }
-                        />
-                        <strong>{c.title}</strong>
-                        <small>{c.module_path_label || "未归属"}</small>
-                      </label>
-                    ))}
+      {/* Step 1 */}
+      <Card>
+        <CardHeader><CardTitle className="text-sm font-semibold">1 · 选择 Diff 分析</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {analyses.length === 0 ? (
+            <p className="text-sm text-[var(--muted-foreground)]">尚无 Diff 分析。请先到「Diff 分析」生成一份。</p>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {analyses.map((a) => (
+                <label key={a.id} className={`flex items-center gap-3 rounded-[var(--radius-sm)] border px-3 py-2.5 cursor-pointer transition-colors ${selectedAnalysisId === a.id ? "border-[var(--primary)] bg-[var(--accent)]" : "hover:bg-[var(--muted)]/40"}`}>
+                  <input type="radio" name="diff" checked={selectedAnalysisId === a.id} onChange={() => { setSelectedAnalysisId(a.id); void loadSuggestions(a.id); }} className="accent-[var(--primary)]" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">{a.base_ref} → {a.target_ref}</p>
+                    <p className="text-xs text-[var(--muted-foreground)]">风险 {riskLabel[a.risk_level]} · {a.module_impacts.length} 个模块受影响 · {new Date(a.created_at).toLocaleDateString()}</p>
                   </div>
-                )}
-              </>
-            ) : null}
-
-            {selectedSuggestion?.suggestion_type === "case_candidate" ? (
-              <div className="card-form">
-                <h5>AI 候选</h5>
-                <p className="panel-sub">
-                  {selectedSuggestion.candidate_case_id ? "已创建候选草稿，请到评审队列处理。" : "尚未创建草稿。"}
-                </p>
-                <div className="form-row compact">
-                  <button
-                    className="ghost-button small"
-                    type="button"
-                    disabled={busy || !!selectedSuggestion.candidate_case_id}
-                    onClick={() => void createCandidate()}
-                  >
-                    <Plus size={14} aria-hidden="true" /> 创建候选草稿（走评审）
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            <div className="card-form">
-              <h5>加入计划</h5>
-              <label>
-                目标 TestPlan
-                <select value={selectedPlanId} onChange={(e) => setSelectedPlanId(e.target.value)} disabled={busy || plans.length === 0}>
-                  <option value="">自动创建 release plan</option>
-                  {plans.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} · {p.version_ref || "无版本"}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="form-row compact">
-                {selectedSuggestion?.suggestion_type === "regression" ? (
-                  <button
-                    className="primary-button small"
-                    type="button"
-                    onClick={() => void addToPlan(false)}
-                    disabled={busy || selectedCaseIds.length === 0}
-                  >
-                    <ClipboardCheck size={14} aria-hidden="true" /> 选中用例加入计划
-                  </button>
-                ) : null}
-                {selectedSuggestion?.suggestion_type === "case_candidate" ? (
-                  <button
-                    className="primary-button small"
-                    type="button"
-                    onClick={() => void addToPlan(true)}
-                    disabled={busy}
-                  >
-                    <ClipboardCheck size={14} aria-hidden="true" /> 加入临时计划项
-                  </button>
-                ) : null}
-              </div>
+                </label>
+              ))}
             </div>
+          )}
+          <Button disabled={busy || !selectedAnalysisId} onClick={generate} className="self-start">
+            <Sparkles size={14} />{suggestions.length ? "重新生成 AI 建议" : "生成 AI 建议"}
+          </Button>
+        </CardContent>
+      </Card>
 
-            {recentPlanItems.length ? (
-              <div className="card-list">
-                {recentPlanItems.map((item) => (
-                  <article className="member-card" key={item.id}>
+      {/* Step 2 */}
+      {suggestions.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 items-start">
+          <Card>
+            <CardHeader><CardTitle className="text-sm">2 · 建议列表 ({suggestions.length})</CardTitle></CardHeader>
+            <CardContent className="p-0">
+              {suggestions.map((s) => (
+                <button key={s.id} type="button" onClick={() => { setSelectedSuggestionId(s.id); setSelectedCaseIds(s.selected_case_ids); setFeedbackText(""); }}
+                  className={`w-full text-left flex items-start gap-2 px-4 py-3 border-b last:border-0 transition-colors hover:bg-[var(--muted)]/40 ${selectedSuggestionId === s.id ? "bg-[var(--accent)]" : ""}`}>
+                  <ChevronRight size={14} className="mt-0.5 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold truncate">{suggestionTypeLabel[s.suggestion_type]} · {s.title}</p>
+                    <p className="text-xs text-[var(--muted-foreground)]">模块 {s.module_key} · 置信度 {s.confidence}% · {statusLabel[s.status]}</p>
+                  </div>
+                </button>
+              ))}
+            </CardContent>
+          </Card>
+
+          {selectedSuggestion && (
+            <div className="flex flex-col gap-4">
+              <Card>
+                <CardHeader><CardTitle>{selectedSuggestion.title}</CardTitle></CardHeader>
+                <CardContent className="flex flex-col gap-3">
+                  <p className="text-sm text-[var(--muted-foreground)]">{selectedSuggestion.rationale}</p>
+                  {selectedSuggestion.mapping_evidence.length > 0 && (
                     <div>
-                      <strong>{item.title}</strong>
-                      <small>
-                        {statusLabel[item.source_type]} · {statusLabel[item.status]}
-                      </small>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)] mb-1.5">证据</p>
+                      <ul className="flex flex-col gap-1">{selectedSuggestion.mapping_evidence.slice(0, 6).map((e) => <li key={e} className="text-xs text-[var(--muted-foreground)]">· {e}</li>)}</ul>
                     </div>
-                  </article>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        </li>
-      </ol>
-    </section>
+                  )}
+                  {selectedSuggestion.suggestion_type === "case_candidate" && Array.isArray(selectedSuggestion.candidate_payload.steps) && (
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)] mb-1.5">候选步骤</p>
+                      <ol className="flex flex-col gap-1">{(selectedSuggestion.candidate_payload.steps as Array<{action: string; expected: string}>).slice(0, 5).map((step, i) => <li key={i} className="text-sm"><span className="font-medium">{step.action}</span>{step.expected && <span className="text-[var(--muted-foreground)]"> → {step.expected}</span>}</li>)}</ol>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-5 flex flex-col gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label>反馈意见</Label>
+                    <Textarea value={feedbackText} onChange={(e) => setFeedbackText(e.target.value)} rows={2} placeholder="可选" />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button disabled={busy} onClick={() => void feedback("accepted")}>采纳</Button>
+                    <Button variant="outline" disabled={busy} onClick={() => void feedback("modified")}>修改后采纳</Button>
+                    <Button variant="outline" disabled={busy} onClick={() => void feedback("ignored")}>忽略</Button>
+                    {selectedSuggestion.suggestion_type === "case_candidate" && (
+                      <Button variant="outline" disabled={busy} onClick={createCandidate}>创建 AI 候选草稿</Button>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader><CardTitle className="text-sm">3 · 加入测试计划</CardTitle></CardHeader>
+                <CardContent className="flex flex-col gap-3">
+                  <Select value={selectedPlanId} onValueChange={setSelectedPlanId} disabled={plans.length === 0}>
+                    <SelectTrigger><SelectValue placeholder="选择计划" /></SelectTrigger>
+                    <SelectContent>{plans.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <div className="flex gap-2">
+                    <Button disabled={busy || !selectedPlanId} onClick={() => void addToPlan(false)}>加入已选用例</Button>
+                    <Button variant="outline" disabled={busy || !selectedPlanId} onClick={() => void addToPlan(true)}>加入 AI 候选</Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

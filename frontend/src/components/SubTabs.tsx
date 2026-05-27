@@ -1,29 +1,13 @@
-type SubTab = {
-  key: string;
-  label: string;
-};
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-type SubTabsProps = {
-  tabs: SubTab[];
-  active: string;
-  onChange: (key: string) => void;
-};
+type SubTab = { key: string; label: string };
 
-export function SubTabs({ tabs, active, onChange }: SubTabsProps) {
+export function SubTabs({ tabs, active, onChange }: { tabs: SubTab[]; active: string; onChange: (key: string) => void }) {
   return (
-    <div className="sub-tabs" role="tablist">
-      {tabs.map((tab) => (
-        <button
-          key={tab.key}
-          type="button"
-          role="tab"
-          aria-selected={active === tab.key}
-          className={active === tab.key ? "sub-tab active" : "sub-tab"}
-          onClick={() => onChange(tab.key)}
-        >
-          {tab.label}
-        </button>
-      ))}
-    </div>
+    <Tabs value={active} onValueChange={onChange}>
+      <TabsList>
+        {tabs.map((tab) => <TabsTrigger key={tab.key} value={tab.key}>{tab.label}</TabsTrigger>)}
+      </TabsList>
+    </Tabs>
   );
 }

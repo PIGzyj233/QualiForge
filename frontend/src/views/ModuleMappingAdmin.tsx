@@ -5,6 +5,7 @@ import { AgentStagedOutputRecord, decideAgentStagedOutput } from "../api/agents"
 import { createMappingRule, createModule, deleteMappingRule, deleteModule, generateModuleTreeDraft, listMappingRules, listModuleTree, listModuleTreeDrafts, MappingRelationship, MappingRulePreflightRecord, MappingRuleType, MappingSource, MappingStatus, ModuleMappingRuleRecord, ModuleTreeNode, preflightMappingRule, ProjectModuleRecord, updateMappingRule, updateModule } from "../api/cases";
 import { GitRepositoryRecord, listRepositories } from "../api/git";
 import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
+import { useSessionStore } from "@/stores/session-store";
 import { mappingRelationshipLabel, mappingRuleTypeLabel, mappingSourceLabel, mappingStatusLabel } from "../lib/labels";
 import { pickExistingId } from "../lib/selection";
 
@@ -242,8 +243,9 @@ function ModuleDialog({
   );
 }
 
-export function ModuleMappingAdmin({ session }: { session: Session }) {
-  const actorEmail = session.user.email;
+export function ModuleMappingAdmin() {
+  const session = useSessionStore((s) => s.session);
+  const actorEmail = session?.user.email ?? "";
   const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");

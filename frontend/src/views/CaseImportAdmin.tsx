@@ -1,21 +1,34 @@
 import { FormEvent, useEffect, useState } from "react";
-import { ClipboardCheck, FileText, PencilLine } from "lucide-react";
+import { ClipboardCheck, FileText } from "lucide-react";
 import { useParams } from "react-router-dom";
-import { bulkImportTestCases, bulkUpdateImportDrafts, CaseStep, ImportBatchRecord, ImportDraftRecord, listImportBatches, listImportDrafts, listModules, listTestCases, ProjectModuleRecord, submitImportReview, TestCaseRecord, uploadImportBatch } from "../api/cases";
-import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
-import { Pagination } from "../components/Pagination";
-import { StepsEditor } from "../components/StepsEditor";
-import { usePagination } from "../hooks/usePagination";
-import { statusLabel } from "../lib/labels";
-import { pickExistingId } from "../lib/selection";
+import {
+  bulkImportTestCases, bulkUpdateImportDrafts, type CaseStep, type ImportBatchRecord,
+  type ImportDraftRecord, listImportBatches, listImportDrafts, listModules,
+  listTestCases, type ProjectModuleRecord, submitImportReview, type TestCaseRecord, uploadImportBatch
+} from "@/api/cases";
+import { useCurrentWorkspace, useCurrentProject } from "@/stores/workspace-store";
+import { useSessionStore } from "@/stores/session-store";
+import { Pagination } from "@/components/Pagination";
+import { StepsEditor } from "@/components/StepsEditor";
+import { usePagination } from "@/hooks/usePagination";
+import { statusLabel } from "@/lib/labels";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { StatusPill } from "@/components/StatusPill";
 
-export function CaseImportAdmin({ session }: { session: Session }) {
-  const actorEmail = session.user.email;
-  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState("");
+export function CaseImportAdmin() {
+  const session = useSessionStore((s) => s.session);
+  const ws = useCurrentWorkspace();
+  const proj = useCurrentProject();
+  const { wid = "", pid = "" } = useParams<{ wid: string; pid: string }>();
+  const actorEmail = session?.user.email ?? "";
+  const wid_ = (wid || ws?.id) ?? "";
+  const pid_ = (pid || proj?.id) ?? "";
+
   const [modules, setModules] = useState<ProjectModuleRecord[]>([]);
   const [batches, setBatches] = useState<ImportBatchRecord[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState("");
@@ -28,375 +41,155 @@ export function CaseImportAdmin({ session }: { session: Session }) {
   const [bulkPriority, setBulkPriority] = useState("P1");
   const [bulkRisk, setBulkRisk] = useState("high");
   const [bulkTags, setBulkTags] = useState("checkout, imported");
-  const [bulkCustomFields, setBulkCustomFields] = useState("{\"source\":\"legacy\"}");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const draftsPagination = usePagination(drafts, 10);
 
-  async function refreshImportProject(workspaceId: string, projectId: string, preferredBatchId?: string) {
-    const [nextModules, nextBatches, nextTestCases] = await Promise.all([
-      listModules(workspaceId, projectId),
-      listImportBatches(workspaceId, projectId),
-      listTestCases(workspaceId, projectId)
-    ]);
-    setModules(nextModules);
-    setBatches(nextBatches);
-    setTestCases(nextTestCases);
-      const nextBatchId = pickExistingId(nextBatches, preferredBatchId, selectedBatchId);
-    setSelectedBatchId(nextBatchId);
-    setDrafts(nextBatchId ? await listImportDrafts(workspaceId, projectId, nextBatchId) : []);
-    if (!bulkModuleId && nextModules[0]) {
-      setBulkModuleId(nextModules[0].id);
-    }
-  }
-
-  async function refreshImportWorkspaces(preferredWorkspaceId?: string, preferredProjectId?: string, preferredBatchId?: string) {
-    setBusy(true);
-    setMessage(null);
-    try {
-      const nextWorkspaces = await listWorkspaces(actorEmail);
-      setWorkspaces(nextWorkspaces);
-      const nextWorkspaceId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
-      setSelectedWorkspaceId(nextWorkspaceId);
-      if (!nextWorkspaceId) return;
-      const nextProjects = await listProjects(nextWorkspaceId);
-      setProjects(nextProjects);
-      const nextProjectId = pickExistingId(nextProjects, preferredProjectId, selectedProjectId);
-      setSelectedProjectId(nextProjectId);
-      if (nextProjectId) {
-        await refreshImportProject(nextWorkspaceId, nextProjectId, preferredBatchId);
-      }
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "导入数据加载失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  useEffect(() => {
-    void refreshImportWorkspaces(routeWorkspaceId || undefined, routeProjectId || undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeWorkspaceId, routeProjectId]);
-
-  async function handleWorkspaceSwitch(workspaceId: string) {
-    setSelectedWorkspaceId(workspaceId);
-    setBusy(true);
-    setMessage(null);
-    try {
-      const nextProjects = await listProjects(workspaceId);
-      setProjects(nextProjects);
-      const nextProjectId = nextProjects[0]?.id ?? "";
-      setSelectedProjectId(nextProjectId);
-      if (nextProjectId) {
-        await refreshImportProject(workspaceId, nextProjectId);
-      }
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "导入 Workspace 切换失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleProjectSwitch(projectId: string) {
-    setSelectedProjectId(projectId);
-    if (!selectedWorkspaceId || !projectId) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      await refreshImportProject(selectedWorkspaceId, projectId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "导入 Project 切换失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleBatchSelect(batchId: string) {
+  async function refresh(preferredBatchId?: string) {
+    if (!wid_ || !pid_) return;
+    const [mods, bs, cases] = await Promise.all([listModules(wid_, pid_), listImportBatches(wid_, pid_), listTestCases(wid_, pid_)]);
+    setModules(mods); setBatches(bs); setTestCases(cases);
+    const batchId = preferredBatchId ?? bs[0]?.id ?? "";
     setSelectedBatchId(batchId);
-    if (!selectedWorkspaceId || !selectedProjectId || !batchId) return;
-    setBusy(true);
-    setMessage(null);
+    if (!bulkModuleId && mods[0]) setBulkModuleId(mods[0].id);
+    if (batchId) setDrafts(await listImportDrafts(wid_, pid_, batchId));
+  }
+
+  useEffect(() => { void refresh(); }, [wid_, pid_]);
+
+  async function handleUpload(e: FormEvent) {
+    e.preventDefault();
+    if (!wid_ || !pid_ || !importFile) return;
+    setBusy(true); setMessage(null);
     try {
-      setDrafts(await listImportDrafts(selectedWorkspaceId, selectedProjectId, batchId));
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "导入草稿加载失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleUpload(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedWorkspaceId || !selectedProjectId || !importFile) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const batch = await uploadImportBatch(selectedWorkspaceId, selectedProjectId, actorEmail, importFile);
-      await new Promise((resolve) => window.setTimeout(resolve, 700));
-      setMessage(`已上传并创建导入 Job：${batch.file_name}`);
-      setImportFile(null);
-      await refreshImportProject(selectedWorkspaceId, selectedProjectId, batch.id);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "文件上传失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function parseTagsInput(value: string): string[] {
-    return value.split(/[,，;；\s]+/).map((item) => item.trim()).filter(Boolean);
-  }
-
-  function buildBulkPayload() {
-    const payload: Record<string, unknown> = {};
-    if (bulkTitle.trim()) payload.title = bulkTitle.trim();
-    if (bulkModuleId) payload.module_id = bulkModuleId;
-    const cleanedSteps = bulkSteps.filter((s) => s.action.trim() || s.expected.trim());
-    if (cleanedSteps.length) payload.steps = cleanedSteps;
-    if (bulkPriority.trim()) payload.priority = bulkPriority.trim();
-    if (bulkRisk.trim()) payload.risk = bulkRisk.trim();
-    const tags = parseTagsInput(bulkTags);
-    if (tags.length) payload.tags = tags;
-    if (bulkCustomFields.trim()) {
-      payload.custom_fields = JSON.parse(bulkCustomFields) as Record<string, string>;
-    }
-    return payload;
+      const batch = await uploadImportBatch(wid_, pid_, actorEmail, importFile);
+      await new Promise((r) => window.setTimeout(r, 700));
+      setMessage(`已上传：${batch.file_name}`); setImportFile(null);
+      await refresh(batch.id);
+    } catch (err) { setMessage(err instanceof Error ? err.message : "上传失败"); }
+    finally { setBusy(false); }
   }
 
   async function handleBulkUpdate() {
-    if (!selectedWorkspaceId || !selectedProjectId || !selectedBatchId) return;
-    setBusy(true);
-    setMessage(null);
+    if (!wid_ || !pid_ || !selectedBatchId) return;
+    setBusy(true); setMessage(null);
     try {
-      await bulkUpdateImportDrafts(selectedWorkspaceId, selectedProjectId, selectedBatchId, actorEmail, buildBulkPayload());
+      const payload: Record<string, unknown> = {};
+      if (bulkTitle.trim()) payload.title = bulkTitle.trim();
+      if (bulkModuleId) payload.module_id = bulkModuleId;
+      const steps = bulkSteps.filter((s) => s.action.trim() || s.expected.trim());
+      if (steps.length) payload.steps = steps;
+      if (bulkPriority.trim()) payload.priority = bulkPriority.trim();
+      if (bulkRisk.trim()) payload.risk = bulkRisk.trim();
+      const tags = bulkTags.split(/[,，;；\s]+/).map((t) => t.trim()).filter(Boolean);
+      if (tags.length) payload.tags = tags;
+      await bulkUpdateImportDrafts(wid_, pid_, selectedBatchId, actorEmail, payload);
       setMessage("已批量修正导入草稿");
-      await refreshImportProject(selectedWorkspaceId, selectedProjectId, selectedBatchId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "批量修正失败");
-    } finally {
-      setBusy(false);
-    }
+      await refresh(selectedBatchId);
+    } catch (err) { setMessage(err instanceof Error ? err.message : "批量修正失败"); }
+    finally { setBusy(false); }
   }
 
   async function handleSubmitReview() {
-    if (!selectedWorkspaceId || !selectedProjectId || !selectedBatchId) return;
-    setBusy(true);
-    setMessage(null);
+    if (!wid_ || !pid_ || !selectedBatchId) return;
+    setBusy(true); setMessage(null);
     try {
-      const batch = await submitImportReview(selectedWorkspaceId, selectedProjectId, selectedBatchId, actorEmail);
+      const batch = await submitImportReview(wid_, pid_, selectedBatchId, actorEmail);
       setMessage(`已提交评审：${statusLabel[batch.status]}`);
-      await refreshImportProject(selectedWorkspaceId, selectedProjectId, selectedBatchId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "提交评审失败");
-    } finally {
-      setBusy(false);
-    }
+      await refresh(selectedBatchId);
+    } catch (err) { setMessage(err instanceof Error ? err.message : "提交失败"); }
+    finally { setBusy(false); }
   }
 
   async function handleBulkImport() {
-    if (!selectedWorkspaceId || !selectedProjectId || !selectedBatchId) return;
-    setBusy(true);
-    setMessage(null);
+    if (!wid_ || !pid_ || !selectedBatchId) return;
+    setBusy(true); setMessage(null);
     try {
-      const result = await bulkImportTestCases(selectedWorkspaceId, selectedProjectId, selectedBatchId, actorEmail);
-      setMessage(`已完成入库：${result.imported_count} 条已通过评审的用例`);
-      await refreshImportProject(selectedWorkspaceId, selectedProjectId, selectedBatchId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "完成入库失败");
-    } finally {
-      setBusy(false);
-    }
+      const r = await bulkImportTestCases(wid_, pid_, selectedBatchId, actorEmail);
+      setMessage(`已完成入库：${r.imported_count} 条`);
+      await refresh(selectedBatchId);
+    } catch (err) { setMessage(err instanceof Error ? err.message : "入库失败"); }
+    finally { setBusy(false); }
   }
 
-  const selectedProject = projects.find((project) => project.id === selectedProjectId);
-  const selectedBatch = batches.find((batch) => batch.id === selectedBatchId);
-  const moduleById = new Map(modules.map((module) => [module.id, module]));
+  const selectedBatch = batches.find((b) => b.id === selectedBatchId);
+  const f = "flex flex-col gap-1.5";
 
   return (
-    <section className="section-block import-admin">
-      <div className="section-heading">
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between">
         <div>
-          <span className="eyebrow">Case Import</span>
-          <h2>历史用例导入</h2>
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)] mb-1">Case Import</p>
+          <h1 className="font-heading text-2xl font-bold">历史用例导入</h1>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">{batches.length} 批次 · {drafts.length} 草稿 · {testCases.length} 正式用例</p>
         </div>
-        <ClipboardCheck size={20} aria-hidden="true" />
+        <ClipboardCheck size={20} className="text-[var(--muted-foreground)]" />
       </div>
-      <div className="admin-body">
-        {message ? <div className="inline-notice">{message}</div> : null}
+      {message && <Alert><AlertDescription>{message}</AlertDescription></Alert>}
 
-        <div className="admin-toolbar">
-          <label className="select-label">
-            当前 Workspace
-            <select
-              value={selectedWorkspaceId}
-              onChange={(event) => void handleWorkspaceSwitch(event.target.value)}
-              disabled={busy || workspaces.length === 0}
-            >
-              <option value="">未选择</option>
-              {workspaces.map((workspace) => (
-                <option value={workspace.id} key={workspace.id}>
-                  {workspace.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="select-label">
-            当前 Project
-            <select
-              value={selectedProjectId}
-              onChange={(event) => void handleProjectSwitch(event.target.value)}
-              disabled={busy || projects.length === 0}
-            >
-              <option value="">未选择</option>
-              {projects.map((project) => (
-                <option value={project.id} key={project.id}>
-                  {project.key} · {project.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="admin-context">
-          <strong>{selectedProject ? `${selectedProject.key} · ${selectedProject.name}` : "尚未选择 Project"}</strong>
-          <span>{batches.length} import batches · {drafts.length} preview drafts · {testCases.length} formal cases</span>
-        </div>
-
-        <div className="admin-grid">
-          <section className="admin-pane" aria-label="上传历史用例">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Upload</span>
-                <h3>Excel / CSV</h3>
-              </div>
-              <FileText size={18} aria-hidden="true" />
-            </div>
-            <form className="stack-form" onSubmit={handleUpload}>
-              <label>
-                文件
-                <input
-                  type="file"
-                  accept=".csv,.xlsx"
-                  onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
-                  required
-                />
-              </label>
-              <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId || !selectedProjectId || !importFile}>
-                上传并解析
-              </button>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><FileText size={16} />上传 Excel / CSV</CardTitle></CardHeader>
+          <CardContent>
+            <form onSubmit={handleUpload} className="flex flex-col gap-3">
+              <input type="file" accept=".csv,.xlsx" onChange={(e) => setImportFile(e.target.files?.[0] ?? null)} className="text-sm" />
+              <Button type="submit" disabled={busy || !wid_ || !pid_ || !importFile} className="self-start">上传并解析</Button>
             </form>
-            <div className="data-list">
-              {batches.map((batch) => (
-                <div className="data-row module-row" key={batch.id}>
-                  <div>
-                    <strong>{batch.file_name} · {statusLabel[batch.status]}</strong>
-                    <span>{batch.row_count} rows · job {batch.job_id?.slice(0, 8) ?? "none"}</span>
-                    <small>{batch.original_file_path}</small>
-                  </div>
-                  <button className="ghost-button" type="button" onClick={() => void handleBatchSelect(batch.id)}>
-                    查看
-                  </button>
-                </div>
-              ))}
-              {batches.length === 0 ? <p className="empty-state">暂无导入批次</p> : null}
-            </div>
-          </section>
+            {batches.length > 0 && (
+              <div className="mt-4 flex flex-col gap-1.5">
+                <Label>选择批次</Label>
+                <Select value={selectedBatchId} onValueChange={async (v) => { setSelectedBatchId(v); if (wid_ && pid_ && v) setDrafts(await listImportDrafts(wid_, pid_, v)); }}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{batches.map((b) => <SelectItem key={b.id} value={b.id}>{b.file_name} · {statusLabel[b.status]}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-          <section className="admin-pane" aria-label="批量修正导入草稿">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Bulk Fix</span>
-                <h3>预览批量修正</h3>
+        <Card>
+          <CardHeader><CardTitle>批量修正草稿</CardTitle></CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className={f}><Label>标题（可选）</Label><Input value={bulkTitle} onChange={(e) => setBulkTitle(e.target.value)} placeholder="留空则不修改" /></div>
+              <div className={f}>
+                <Label>模块</Label>
+                <Select value={bulkModuleId} onValueChange={setBulkModuleId} disabled={modules.length === 0}>
+                  <SelectTrigger><SelectValue placeholder="选择模块" /></SelectTrigger>
+                  <SelectContent>{modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.path_label}</SelectItem>)}</SelectContent>
+                </Select>
               </div>
-              <PencilLine size={18} aria-hidden="true" />
+              <div className={f}><Label>优先级</Label><Input value={bulkPriority} onChange={(e) => setBulkPriority(e.target.value)} /></div>
+              <div className={f}><Label>风险</Label><Input value={bulkRisk} onChange={(e) => setBulkRisk(e.target.value)} /></div>
             </div>
-            <form className="stack-form" onSubmit={(event) => event.preventDefault()}>
-              <div className="form-row">
-                <label>
-                  标题
-                  <input value={bulkTitle} onChange={(event) => setBulkTitle(event.target.value)} />
-                </label>
-                <label>
-                  模块
-                  <select value={bulkModuleId} onChange={(event) => setBulkModuleId(event.target.value)}>
-                    <option value="">不修改</option>
-                    {modules.map((module) => (
-                      <option value={module.id} key={module.id}>
-                        {module.key} · {module.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <StepsEditor steps={bulkSteps} onChange={setBulkSteps} disabled={busy} />
-              <div className="form-row">
-                <label>
-                  优先级
-                  <input value={bulkPriority} onChange={(event) => setBulkPriority(event.target.value)} />
-                </label>
-                <label>
-                  风险
-                  <input value={bulkRisk} onChange={(event) => setBulkRisk(event.target.value)} />
-                </label>
-              </div>
-              <label>
-                标签
-                <input value={bulkTags} onChange={(event) => setBulkTags(event.target.value)} />
-              </label>
-              <label>
-                自定义字段 JSON
-                <input value={bulkCustomFields} onChange={(event) => setBulkCustomFields(event.target.value)} />
-              </label>
-              <div className="form-row compact">
-                <button className="ghost-button" type="button" onClick={() => void handleBulkUpdate()} disabled={busy || !selectedBatchId || drafts.length === 0}>
-                  批量修正
-                </button>
-                <button className="ghost-button" type="button" onClick={() => void handleSubmitReview()} disabled={busy || !selectedBatchId || drafts.length === 0}>
-                  提交评审
-                </button>
-                <button className="primary-button small" type="button" onClick={() => void handleBulkImport()} disabled={busy || !selectedBatchId || drafts.length === 0}>
-                  完成入库
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
+            <div className={f}><Label>标签（逗号分隔）</Label><Input value={bulkTags} onChange={(e) => setBulkTags(e.target.value)} /></div>
+            <StepsEditor steps={bulkSteps} onChange={setBulkSteps} />
+            <div className="flex gap-2 flex-wrap">
+              <Button variant="outline" disabled={busy || !selectedBatchId} onClick={handleBulkUpdate}>批量修正</Button>
+              <Button variant="outline" disabled={busy || !selectedBatchId} onClick={handleSubmitReview}>提交评审</Button>
+              <Button disabled={busy || !selectedBatchId} onClick={handleBulkImport}>完成入库</Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
-        <section className="audit-pane" aria-label="导入草稿预览">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Preview</span>
-              <h3>导入草稿</h3>
-            </div>
-            <ClipboardCheck size={18} aria-hidden="true" />
-          </div>
-          <div className="data-list">
+      {drafts.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle className="text-sm">导入草稿 ({drafts.length})</CardTitle></CardHeader>
+          <CardContent className="p-0">
             {draftsPagination.currentItems.map((draft) => (
-              <div className="data-row wide" key={draft.id}>
-                <div>
-                  <strong>
-                    #{draft.source_row_index} {draft.title} · {statusLabel[draft.status]}
-                  </strong>
-                  <span>
-                    {moduleById.get(draft.module_id ?? "")?.key ?? "未归属"} · {draft.priority} · {draft.risk} · {draft.tags.join(", ") || "no tags"}
-                  </span>
-                  <small>
-                    {draft.steps.length} 个步骤 ·{" "}
-                    {draft.steps.filter((s) => s.expected).length} 个步骤有预期
-                  </small>
+              <div key={draft.id} className="flex items-center justify-between gap-3 px-5 py-3 border-b last:border-0">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold truncate">{draft.title}</p>
+                  <p className="text-xs text-[var(--muted-foreground)]">{draft.priority} · {draft.risk}</p>
                 </div>
+                <StatusPill status={draft.status} />
               </div>
             ))}
-            {drafts.length === 0 ? <p className="empty-state">{selectedBatch ? "暂无草稿" : "选择或上传导入批次"}</p> : null}
-          </div>
-          <Pagination
-            currentPage={draftsPagination.currentPage}
-            totalPages={draftsPagination.totalPages}
-            totalItems={draftsPagination.totalItems}
-            onPageChange={draftsPagination.goToPage}
-          />
-        </section>
-      </div>
-    </section>
+            <div className="px-5"><Pagination currentPage={draftsPagination.currentPage} totalPages={draftsPagination.totalPages} totalItems={draftsPagination.totalItems} onPageChange={draftsPagination.goToPage} itemsPerPage={10} /></div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
   );
 }

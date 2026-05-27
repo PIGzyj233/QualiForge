@@ -3,7 +3,9 @@ import { Bot, Boxes, Check, CircleStop, ClipboardCheck, FileSearch, GitBranch, L
 import { useParams } from "react-router-dom";
 import { AgentExecutionDetailRecord, AgentMemoryFileRecord, AgentMemorySearchResult, AgentMemoryVersionRecord, AgentRunRecord, AgentRunStatus, AgentStagedOutputRecord, cancelAgentRun, curateAgentMemory, createAgentConversation, createAgentRun, decideAgentApproval, decideAgentStagedOutput, executeAgentRun, getAgentExecutionDetail, listAgentMemoryVersions, listAgentRuns, rollbackAgentMemory, resumeAgentRun, searchAgentMemory, upsertAgentBudgetPolicy } from "../api/agents";
 import { GitRepositoryRecord, listRepositories } from "../api/git";
-import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
+import { listProjects, listWorkspaces, ProjectRecord, WorkspaceRecord } from "../api/workspace";
+import { useSessionStore } from "@/stores/session-store";
+import { useCurrentWorkspace, useCurrentProject } from "@/stores/workspace-store";
 import { Pagination } from "../components/Pagination";
 import { StatusPill } from "../components/StatusPill";
 import { usePagination } from "../hooks/usePagination";
@@ -53,8 +55,9 @@ function childWorkflowStats(item: Record<string, unknown>) {
   return parts.join(" · ");
 }
 
-export function AgentWorkbenchView({ session }: { session: Session }) {
-  const actorEmail = session.user.email;
+export function AgentWorkbenchView() {
+  const session = useSessionStore((s) => s.session);
+  const actorEmail = session?.user.email ?? "";
   const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");

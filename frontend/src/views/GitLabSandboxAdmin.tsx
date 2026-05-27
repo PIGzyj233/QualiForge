@@ -1,25 +1,36 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Database, GitBranch, GitCommitHorizontal, KeyRound } from "lucide-react";
+import { GitBranch, GitCommitHorizontal, KeyRound } from "lucide-react";
 import { useParams } from "react-router-dom";
-import { bindRepository, getGitLabToken, GitLabTokenRecord, GitRepositoryRecord, JobRecord, listJobs, listRepositories, syncRepository, upsertGitLabToken } from "../api/git";
-import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
-import { Pagination } from "../components/Pagination";
-import { usePagination } from "../hooks/usePagination";
-import { statusLabel } from "../lib/labels";
-import { pickExistingId } from "../lib/selection";
+import {
+  bindRepository, getGitLabToken, type GitLabTokenRecord, type GitRepositoryRecord,
+  type JobRecord, listJobs, listRepositories, syncRepository, upsertGitLabToken
+} from "@/api/git";
+import { listProjects, type ProjectRecord } from "@/api/workspace";
+import { useCurrentWorkspace } from "@/stores/workspace-store";
+import { useSessionStore } from "@/stores/session-store";
+import { Pagination } from "@/components/Pagination";
+import { usePagination } from "@/hooks/usePagination";
+import { statusLabel } from "@/lib/labels";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-export function GitLabSandboxAdmin({ session }: { session: Session }) {
-  const actorEmail = session.user.email;
-  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
+export function GitLabSandboxAdmin() {
+  const session = useSessionStore((s) => s.session);
+  const ws = useCurrentWorkspace();
+  const actorEmail = session?.user.email ?? "";
+  const wid = ws?.id ?? "";
+
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [tokenConfig, setTokenConfig] = useState<GitLabTokenRecord | null>(null);
   const [repositories, setRepositories] = useState<GitRepositoryRecord[]>([]);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [gitlabBaseUrl, setGitlabBaseUrl] = useState("https://gitlab.example.com");
   const [gitlabToken, setGitlabToken] = useState("");
-  const [projectId, setProjectId] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [repositoryName, setRepositoryName] = useState("Checkout API");
   const [remoteUrl, setRemoteUrl] = useState("https://gitlab.example.com/team/checkout-api.git");
   const [defaultBranch, setDefaultBranch] = useState("main");
@@ -30,305 +41,135 @@ export function GitLabSandboxAdmin({ session }: { session: Session }) {
   const [message, setMessage] = useState<string | null>(null);
   const jobsPagination = usePagination(jobs, 8);
 
-  async function refreshGitWorkspaces(preferredWorkspaceId?: string, preferredProjectId?: string) {
-    setBusy(true);
-    setMessage(null);
+  async function refresh() {
+    if (!wid) return;
+    const [token, ps, repos, js] = await Promise.all([getGitLabToken(wid), listProjects(wid), listRepositories(wid), listJobs(wid)]);
+    setTokenConfig(token); if (token) setGitlabBaseUrl(token.gitlab_base_url);
+    setProjects(ps); setRepositories(repos); setJobs(js);
+    if (!selectedProjectId && ps[0]) setSelectedProjectId(ps[0].id);
+  }
+
+  useEffect(() => { void refresh(); }, [wid]);
+
+  async function handleTokenSave(e: FormEvent) {
+    e.preventDefault();
+    if (!wid) return;
+    setBusy(true); setMessage(null);
     try {
-      const nextWorkspaces = await listWorkspaces(actorEmail);
-      setWorkspaces(nextWorkspaces);
-      const nextSelectedId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
-      setSelectedWorkspaceId(nextSelectedId);
-      if (nextSelectedId) {
-        await refreshGitConfig(nextSelectedId, preferredProjectId);
-      }
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "GitLab 配置加载失败");
-    } finally {
-      setBusy(false);
-    }
+      const t = await upsertGitLabToken(wid, actorEmail, { gitlab_base_url: gitlabBaseUrl, token: gitlabToken });
+      setTokenConfig(t); setGitlabToken(""); setMessage(`已保存 GitLab token：${t.token_masked}`);
+      await refresh();
+    } catch (err) { setMessage(err instanceof Error ? err.message : "Token 保存失败"); }
+    finally { setBusy(false); }
   }
 
-  async function refreshGitConfig(workspaceId: string, preferredProjectId?: string) {
-    const [nextToken, nextProjects, nextRepositories, nextJobs] = await Promise.all([
-      getGitLabToken(workspaceId),
-      listProjects(workspaceId),
-      listRepositories(workspaceId),
-      listJobs(workspaceId)
-    ]);
-    setTokenConfig(nextToken);
-    if (nextToken) {
-      setGitlabBaseUrl(nextToken.gitlab_base_url);
-    }
-    setProjects(nextProjects);
-    setRepositories(nextRepositories);
-    setJobs(nextJobs);
-    setProjectId(pickExistingId(nextProjects, preferredProjectId, projectId));
-  }
-
-  useEffect(() => {
-    void refreshGitWorkspaces(routeWorkspaceId || undefined, routeProjectId || undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeWorkspaceId, routeProjectId]);
-
-  async function handleWorkspaceSwitch(workspaceId: string) {
-    setSelectedWorkspaceId(workspaceId);
-    setBusy(true);
-    setMessage(null);
+  async function handleRepositoryBind(e: FormEvent) {
+    e.preventDefault();
+    if (!wid || !selectedProjectId) return;
+    setBusy(true); setMessage(null);
     try {
-      await refreshGitConfig(workspaceId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Git Workspace 切换失败");
-    } finally {
-      setBusy(false);
-    }
+      const r = await bindRepository(wid, actorEmail, { project_id: selectedProjectId, name: repositoryName, remote_url: remoteUrl, default_branch: defaultBranch, repo_size_limit_mb: Number(repoSizeLimitMb), diff_file_limit: Number(diffFileLimit), sync_timeout_seconds: Number(syncTimeoutSeconds) });
+      setMessage(`已绑定仓库：${r.name}`); await refresh();
+    } catch (err) { setMessage(err instanceof Error ? err.message : "仓库绑定失败"); }
+    finally { setBusy(false); }
   }
 
-  async function handleTokenSave(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedWorkspaceId) return;
-    setBusy(true);
-    setMessage(null);
+  async function handleSync(repositoryId: string) {
+    if (!wid) return;
+    setBusy(true); setMessage(null);
     try {
-      const token = await upsertGitLabToken(selectedWorkspaceId, actorEmail, {
-        gitlab_base_url: gitlabBaseUrl,
-        token: gitlabToken
-      });
-      setTokenConfig(token);
-      setGitlabToken("");
-      setMessage(`已保存 GitLab token：${token.token_masked}`);
-      await refreshGitConfig(selectedWorkspaceId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "GitLab token 保存失败");
-    } finally {
-      setBusy(false);
-    }
+      const job = await syncRepository(wid, repositoryId, actorEmail);
+      setMessage(`已创建同步 Job：${job.status}`); await refresh();
+    } catch (err) { setMessage(err instanceof Error ? err.message : "同步失败"); }
+    finally { setBusy(false); }
   }
 
-  async function handleRepositoryBind(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedWorkspaceId || !projectId) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const repository = await bindRepository(selectedWorkspaceId, actorEmail, {
-        project_id: projectId,
-        name: repositoryName,
-        remote_url: remoteUrl,
-        default_branch: defaultBranch,
-        repo_size_limit_mb: Number(repoSizeLimitMb),
-        diff_file_limit: Number(diffFileLimit),
-        sync_timeout_seconds: Number(syncTimeoutSeconds)
-      });
-      setMessage(`已绑定仓库：${repository.name}`);
-      await refreshGitConfig(selectedWorkspaceId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "仓库绑定失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleRepositorySync(repositoryId: string) {
-    if (!selectedWorkspaceId) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const job = await syncRepository(selectedWorkspaceId, repositoryId, actorEmail);
-      setMessage(`已创建同步 Job：${job.status}`);
-      await refreshGitConfig(selectedWorkspaceId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "仓库同步失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId);
+  const f = "flex flex-col gap-1.5";
 
   return (
-    <section className="section-block git-admin">
-      <div className="section-heading">
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between">
         <div>
-          <span className="eyebrow">GitLab</span>
-          <h2>只读仓库和 Git Sandbox</h2>
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)] mb-1">GitLab</p>
+          <h1 className="font-heading text-2xl font-bold">只读仓库和 Git Sandbox</h1>
         </div>
-        <GitCommitHorizontal size={20} aria-hidden="true" />
+        <GitCommitHorizontal size={20} className="text-[var(--muted-foreground)]" />
       </div>
-      <div className="admin-body">
-        {message ? <div className="inline-notice">{message}</div> : null}
+      {message && <Alert><AlertDescription>{message}</AlertDescription></Alert>}
 
-        <div className="admin-toolbar">
-          <label className="select-label">
-            当前 Workspace
-            <select
-              value={selectedWorkspaceId}
-              onChange={(event) => void handleWorkspaceSwitch(event.target.value)}
-              disabled={busy || workspaces.length === 0}
-            >
-              <option value="">未选择</option>
-              {workspaces.map((workspace) => (
-                <option value={workspace.id} key={workspace.id}>
-                  {workspace.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="admin-context compact-context">
-            <strong>{selectedWorkspace?.name ?? "尚未选择 Workspace"}</strong>
-            <span>{tokenConfig ? `GitLab ${tokenConfig.gitlab_base_url} · token ${tokenConfig.token_masked}` : "保存 Workspace 级只读 GitLab token 后绑定项目仓库。"}</span>
-          </div>
-        </div>
-
-        <div className="admin-grid">
-          <section className="admin-pane" aria-label="GitLab token 配置">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Credential</span>
-                <h3>Workspace GitLab Token</h3>
-              </div>
-              <KeyRound size={18} aria-hidden="true" />
-            </div>
-            <form className="stack-form" onSubmit={handleTokenSave}>
-              <label>
-                GitLab Base URL
-                <input value={gitlabBaseUrl} onChange={(event) => setGitlabBaseUrl(event.target.value)} required />
-              </label>
-              <div className="form-row compact">
-                <label>
-                  Token
-                  <input value={gitlabToken} onChange={(event) => setGitlabToken(event.target.value)} required />
-                </label>
-                <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId}>
-                  保存 Token
-                </button>
-              </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><KeyRound size={16} />Workspace GitLab Token</CardTitle></CardHeader>
+          <CardContent>
+            <form onSubmit={handleTokenSave} className="flex flex-col gap-3">
+              <div className={f}><Label>GitLab Base URL</Label><Input value={gitlabBaseUrl} onChange={(e) => setGitlabBaseUrl(e.target.value)} required /></div>
+              <div className={f}><Label>Token</Label><Input type="password" value={gitlabToken} onChange={(e) => setGitlabToken(e.target.value)} required /></div>
+              <Button type="submit" disabled={busy || !wid} className="self-start">保存 Token</Button>
             </form>
-            <div className="data-list">
-              {tokenConfig ? (
-                <div className="data-row wide">
-                  <div>
-                    <strong>{tokenConfig.gitlab_base_url}</strong>
-                    <span>token {tokenConfig.token_masked} · updated by {tokenConfig.updated_by}</span>
-                  </div>
-                </div>
-              ) : (
-                <p className="empty-state">暂无 GitLab token</p>
-              )}
-            </div>
-          </section>
+            {tokenConfig && <p className="mt-3 text-xs text-[var(--muted-foreground)]">{tokenConfig.gitlab_base_url} · token {tokenConfig.token_masked} · updated by {tokenConfig.updated_by}</p>}
+          </CardContent>
+        </Card>
 
-          <section className="admin-pane" aria-label="Repository 绑定">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Repositories</span>
-                <h3>项目仓库绑定</h3>
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><GitBranch size={16} />项目仓库绑定</CardTitle></CardHeader>
+          <CardContent>
+            <form onSubmit={handleRepositoryBind} className="flex flex-col gap-3">
+              <div className={f}>
+                <Label>Project</Label>
+                <Select value={selectedProjectId} onValueChange={setSelectedProjectId} disabled={projects.length === 0}>
+                  <SelectTrigger><SelectValue placeholder="选择 Project" /></SelectTrigger>
+                  <SelectContent>{projects.map((p) => <SelectItem key={p.id} value={p.id}>{p.key} · {p.name}</SelectItem>)}</SelectContent>
+                </Select>
               </div>
-              <GitBranch size={18} aria-hidden="true" />
-            </div>
-            <form className="stack-form" onSubmit={handleRepositoryBind}>
-              <label>
-                Project
-                <select value={projectId} onChange={(event) => setProjectId(event.target.value)} required>
-                  <option value="">未选择</option>
-                  {projects.map((project) => (
-                    <option value={project.id} key={project.id}>
-                      {project.key} · {project.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="form-row">
-                <label>
-                  仓库名称
-                  <input value={repositoryName} onChange={(event) => setRepositoryName(event.target.value)} required />
-                </label>
-                <label>
-                  默认分支
-                  <input value={defaultBranch} onChange={(event) => setDefaultBranch(event.target.value)} required />
-                </label>
+              <div className="grid grid-cols-2 gap-3">
+                <div className={f}><Label>仓库名称</Label><Input value={repositoryName} onChange={(e) => setRepositoryName(e.target.value)} required /></div>
+                <div className={f}><Label>默认分支</Label><Input value={defaultBranch} onChange={(e) => setDefaultBranch(e.target.value)} required /></div>
               </div>
-              <label>
-                Remote URL
-                <input value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} required />
-              </label>
-              <div className="form-row">
-                <label>
-                  大小限制 MB
-                  <input value={repoSizeLimitMb} onChange={(event) => setRepoSizeLimitMb(event.target.value)} />
-                </label>
-                <label>
-                  Diff 文件数限制
-                  <input value={diffFileLimit} onChange={(event) => setDiffFileLimit(event.target.value)} />
-                </label>
+              <div className={f}><Label>Remote URL</Label><Input value={remoteUrl} onChange={(e) => setRemoteUrl(e.target.value)} required /></div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className={f}><Label>大小限制 MB</Label><Input value={repoSizeLimitMb} onChange={(e) => setRepoSizeLimitMb(e.target.value)} /></div>
+                <div className={f}><Label>Diff 文件数</Label><Input value={diffFileLimit} onChange={(e) => setDiffFileLimit(e.target.value)} /></div>
+                <div className={f}><Label>超时秒数</Label><Input value={syncTimeoutSeconds} onChange={(e) => setSyncTimeoutSeconds(e.target.value)} /></div>
               </div>
-              <div className="form-row compact">
-                <label>
-                  超时秒数
-                  <input value={syncTimeoutSeconds} onChange={(event) => setSyncTimeoutSeconds(event.target.value)} />
-                </label>
-                <button className="ghost-button" type="submit" disabled={busy || !selectedWorkspaceId || projects.length === 0}>
-                  绑定仓库
-                </button>
-              </div>
+              <Button type="submit" disabled={busy || !wid || !selectedProjectId} className="self-start">绑定仓库</Button>
             </form>
-          </section>
-        </div>
-
-        <section className="audit-pane" aria-label="Git Repository 列表">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Sandbox Checkouts</span>
-              <h3>仓库工作副本</h3>
-            </div>
-            <GitCommitHorizontal size={18} aria-hidden="true" />
-          </div>
-          <div className="data-list">
-            {repositories.map((repository) => (
-              <div className="data-row git-row" key={repository.id}>
-                <div>
-                  <strong>{repository.name} · {statusLabel[repository.status]}</strong>
-                  <span>{repository.remote_url}</span>
-                  <small>{repository.mirror_path}</small>
-                  <small>
-                    {repository.repo_size_limit_mb} MB · diff {repository.diff_file_limit} files · timeout {repository.sync_timeout_seconds}s
-                  </small>
-                </div>
-                <button className="ghost-button" type="button" disabled={busy} onClick={() => void handleRepositorySync(repository.id)}>
-                  同步
-                </button>
-              </div>
-            ))}
-            {repositories.length === 0 ? <p className="empty-state">暂无仓库绑定</p> : null}
-          </div>
-        </section>
-
-        <section className="audit-pane" aria-label="Git Sync Jobs">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Jobs</span>
-              <h3>同步任务</h3>
-            </div>
-            <Database size={18} aria-hidden="true" />
-          </div>
-          <div className="audit-list">
-            {jobsPagination.currentItems.map((job) => (
-              <div className="audit-row" key={job.id}>
-                <span>{statusLabel[job.status]}</span>
-                <strong>{job.input_summary}</strong>
-                <small>{job.error_summary || job.output_summary || job.key_logs[0]}</small>
-              </div>
-            ))}
-            {jobs.length === 0 ? <p className="empty-state">暂无同步任务</p> : null}
-          </div>
-          <Pagination
-            currentPage={jobsPagination.currentPage}
-            totalPages={jobsPagination.totalPages}
-            totalItems={jobsPagination.totalItems}
-            onPageChange={jobsPagination.goToPage}
-            itemsPerPage={8}
-          />
-        </section>
+          </CardContent>
+        </Card>
       </div>
-    </section>
+
+      <Card>
+        <CardHeader><CardTitle>仓库工作副本</CardTitle></CardHeader>
+        <CardContent className="p-0">
+          {repositories.map((r) => (
+            <div key={r.id} className="flex items-center justify-between gap-3 px-5 py-3 border-b last:border-0">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">{r.name} · {statusLabel[r.status]}</p>
+                <p className="text-xs text-[var(--muted-foreground)] truncate">{r.remote_url}</p>
+                <p className="text-xs font-mono text-[var(--muted-foreground)] truncate">{r.mirror_path}</p>
+              </div>
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => void handleSync(r.id)}>同步</Button>
+            </div>
+          ))}
+          {repositories.length === 0 && <p className="px-5 py-4 text-sm text-[var(--muted-foreground)]">暂无仓库</p>}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Jobs</CardTitle></CardHeader>
+        <CardContent className="p-0">
+          {jobsPagination.currentItems.map((job) => (
+            <div key={job.id} className="flex items-center justify-between gap-3 px-5 py-3 border-b last:border-0">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold truncate">{job.input_summary}</p>
+                <p className="text-xs text-[var(--muted-foreground)]">{job.input_summary} · {statusLabel[job.status]}</p>
+              </div>
+              <span className="text-xs text-[var(--muted-foreground)] shrink-0">{new Date(job.created_at).toLocaleString()}</span>
+            </div>
+          ))}
+          {jobs.length === 0 && <p className="px-5 py-4 text-sm text-[var(--muted-foreground)]">暂无 Jobs</p>}
+          <div className="px-5"><Pagination currentPage={jobsPagination.currentPage} totalPages={jobsPagination.totalPages} totalItems={jobsPagination.totalItems} onPageChange={jobsPagination.goToPage} itemsPerPage={8} /></div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }

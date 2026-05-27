@@ -1,27 +1,39 @@
 import { FormEvent, useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Code2, FileText, FolderKanban, GitCommitHorizontal, History, Network, ShieldAlert } from "lucide-react";
+import { ChevronDown, ChevronRight, GitCommitHorizontal, Network, ShieldAlert } from "lucide-react";
 import { useParams } from "react-router-dom";
-import { createDiffAnalysis, DiffAnalysisRecord, listDiffAnalyses } from "../api/cases";
-import { GitRepositoryRecord, listRepositories } from "../api/git";
-import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
-import { statusLabel, riskLabel, changeTypeLabel } from "../lib/labels";
-import { pickExistingId } from "../lib/selection";
+import { createDiffAnalysis, type DiffAnalysisRecord, listDiffAnalyses } from "@/api/cases";
+import { type GitRepositoryRecord, listRepositories } from "@/api/git";
+import { useCurrentWorkspace, useCurrentProject } from "@/stores/workspace-store";
+import { useSessionStore } from "@/stores/session-store";
+import { statusLabel, riskLabel, changeTypeLabel } from "@/lib/labels";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 
 function diffLineClass(line: string) {
-  if (line.startsWith("+")) return "added";
-  if (line.startsWith("-")) return "removed";
-  if (line.startsWith("@@")) return "header";
-  if (line.startsWith("\\")) return "note";
-  return "context";
+  if (line.startsWith("+")) return "text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20";
+  if (line.startsWith("-")) return "text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20";
+  if (line.startsWith("@@")) return "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20";
+  return "text-[var(--muted-foreground)]";
 }
 
-export function DiffAnalysisAdmin({ session }: { session: Session }) {
-  const actorEmail = session.user.email;
-  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState("");
+const riskVariant: Record<string, "destructive" | "warning" | "success" | "secondary"> = {
+  critical: "destructive", high: "destructive", medium: "warning", low: "success", none: "secondary"
+};
+
+export function DiffAnalysisAdmin() {
+  const session = useSessionStore((s) => s.session);
+  const ws = useCurrentWorkspace();
+  const proj = useCurrentProject();
+  const { wid = "", pid = "" } = useParams<{ wid: string; pid: string }>();
+  const actorEmail = session?.user.email ?? "";
+  const wid_ = (wid || ws?.id) ?? "";
+  const pid_ = (pid || proj?.id) ?? "";
+
   const [repositories, setRepositories] = useState<GitRepositoryRecord[]>([]);
   const [selectedRepositoryId, setSelectedRepositoryId] = useState("");
   const [analyses, setAnalyses] = useState<DiffAnalysisRecord[]>([]);
@@ -30,318 +42,144 @@ export function DiffAnalysisAdmin({ session }: { session: Session }) {
   const [targetRef, setTargetRef] = useState("v2");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [expandedDiffPaths, setExpandedDiffPaths] = useState<string[]>([]);
+  const [expandedPaths, setExpandedPaths] = useState<string[]>([]);
 
-  function toggleDiffPath(pathKey: string) {
-    setExpandedDiffPaths((current) => (current.includes(pathKey) ? current.filter((item) => item !== pathKey) : [...current, pathKey]));
+  async function refresh() {
+    if (!wid_ || !pid_) return;
+    const [repos, anals] = await Promise.all([listRepositories(wid_, pid_), listDiffAnalyses(wid_, pid_)]);
+    setRepositories(repos); setAnalyses(anals);
+    const synced = repos.find((r) => r.status === "synced");
+    if (!selectedRepositoryId && synced) setSelectedRepositoryId(synced.id);
+    if (!selectedAnalysisId && anals[0]) setSelectedAnalysisId(anals[0].id);
   }
 
-  async function refreshDiffProject(workspaceId: string, projectId: string, preferredRepositoryId?: string, preferredAnalysisId?: string) {
-    const [nextRepositories, nextAnalyses] = await Promise.all([
-      listRepositories(workspaceId, projectId),
-      listDiffAnalyses(workspaceId, projectId)
-    ]);
-    setRepositories(nextRepositories);
-    setAnalyses(nextAnalyses);
-    const syncedRepository = nextRepositories.find((repository) => repository.status === "synced");
-    const nextRepositoryId = pickExistingId(nextRepositories, preferredRepositoryId || syncedRepository?.id, selectedRepositoryId);
-    const nextAnalysisId = pickExistingId(nextAnalyses, preferredAnalysisId, selectedAnalysisId);
-    setSelectedRepositoryId(nextRepositoryId);
-    setSelectedAnalysisId(nextAnalysisId);
-  }
+  useEffect(() => { void refresh(); }, [wid_, pid_]);
 
-  async function refreshDiffWorkspaces(preferredWorkspaceId?: string, preferredProjectId?: string, preferredAnalysisId?: string) {
-    setBusy(true);
-    setMessage(null);
+  async function handleRunDiff(e: FormEvent) {
+    e.preventDefault();
+    if (!wid_ || !pid_ || !selectedRepositoryId) return;
+    setBusy(true); setMessage(null);
     try {
-      const nextWorkspaces = await listWorkspaces(actorEmail);
-      setWorkspaces(nextWorkspaces);
-      const nextWorkspaceId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
-      setSelectedWorkspaceId(nextWorkspaceId);
-      if (!nextWorkspaceId) return;
-      const nextProjects = await listProjects(nextWorkspaceId);
-      setProjects(nextProjects);
-      const nextProjectId = pickExistingId(nextProjects, preferredProjectId, selectedProjectId);
-      setSelectedProjectId(nextProjectId);
-      if (nextProjectId) {
-        await refreshDiffProject(nextWorkspaceId, nextProjectId, undefined, preferredAnalysisId);
-      }
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Diff 分析数据加载失败");
-    } finally {
-      setBusy(false);
-    }
+      const a = await createDiffAnalysis(wid_, pid_, actorEmail, { repository_id: selectedRepositoryId, base_ref: baseRef, target_ref: targetRef });
+      setMessage(`已完成 Diff 分析：${riskLabel[a.risk_level]} · ${a.file_changes.length} files`);
+      setSelectedAnalysisId(a.id);
+      await refresh();
+    } catch (err) { setMessage(err instanceof Error ? err.message : "Diff 分析失败"); }
+    finally { setBusy(false); }
   }
 
-  useEffect(() => {
-    void refreshDiffWorkspaces(routeWorkspaceId || undefined, routeProjectId || undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeWorkspaceId, routeProjectId]);
-
-  async function handleWorkspaceSwitch(workspaceId: string) {
-    setSelectedWorkspaceId(workspaceId);
-    setBusy(true);
-    setMessage(null);
-    try {
-      const nextProjects = await listProjects(workspaceId);
-      setProjects(nextProjects);
-      const nextProjectId = nextProjects[0]?.id ?? "";
-      setSelectedProjectId(nextProjectId);
-      if (nextProjectId) {
-        await refreshDiffProject(workspaceId, nextProjectId);
-      }
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Diff Workspace 切换失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleProjectSwitch(projectId: string) {
-    setSelectedProjectId(projectId);
-    if (!selectedWorkspaceId || !projectId) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      await refreshDiffProject(selectedWorkspaceId, projectId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Diff Project 切换失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleRunDiff(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedWorkspaceId || !selectedProjectId || !selectedRepositoryId) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const analysis = await createDiffAnalysis(selectedWorkspaceId, selectedProjectId, actorEmail, {
-        repository_id: selectedRepositoryId,
-        base_ref: baseRef,
-        target_ref: targetRef
-      });
-      setMessage(`已完成 Diff 分析：${riskLabel[analysis.risk_level]} · ${analysis.file_changes.length} files`);
-      await refreshDiffProject(selectedWorkspaceId, selectedProjectId, selectedRepositoryId, analysis.id);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Diff 分析失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const selectedProject = projects.find((project) => project.id === selectedProjectId);
-  const selectedRepository = repositories.find((repository) => repository.id === selectedRepositoryId);
-  const selectedAnalysis = analyses.find((analysis) => analysis.id === selectedAnalysisId);
+  const selectedAnalysis = analyses.find((a) => a.id === selectedAnalysisId);
 
   return (
-    <section className="section-block diff-admin">
-      <div className="section-heading">
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between">
         <div>
-          <span className="eyebrow">Diff Decision</span>
-          <h2>Tag Diff 模块影响分析</h2>
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)] mb-1">Diff Decision</p>
+          <h1 className="font-heading text-2xl font-bold">Tag Diff 模块影响分析</h1>
         </div>
-        <Network size={20} aria-hidden="true" />
+        <Network size={20} className="text-[var(--muted-foreground)]" />
       </div>
-      <div className="admin-body">
-        {message ? <div className="inline-notice">{message}</div> : null}
+      {message && <Alert><AlertDescription>{message}</AlertDescription></Alert>}
 
-        <div className="admin-toolbar">
-          <label className="select-label">
-            当前 Workspace
-            <select value={selectedWorkspaceId} onChange={(event) => void handleWorkspaceSwitch(event.target.value)} disabled={busy || workspaces.length === 0}>
-              <option value="">未选择</option>
-              {workspaces.map((workspace) => (
-                <option value={workspace.id} key={workspace.id}>
-                  {workspace.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="select-label">
-            当前 Project
-            <select value={selectedProjectId} onChange={(event) => void handleProjectSwitch(event.target.value)} disabled={busy || projects.length === 0}>
-              <option value="">未选择</option>
-              {projects.map((project) => (
-                <option value={project.id} key={project.id}>
-                  {project.key} · {project.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="admin-context">
-          <strong>{selectedProject ? `${selectedProject.key} · ${selectedProject.name}` : "尚未选择 Project"}</strong>
-          <span>{selectedRepository ? `${selectedRepository.name} · ${statusLabel[selectedRepository.status]}` : "先绑定并同步 Repository"}</span>
-        </div>
-
-        <div className="admin-grid">
-          <section className="admin-pane" aria-label="创建 Diff 分析">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Job Input</span>
-                <h3>运行 DiffAnalysis</h3>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><GitCommitHorizontal size={16} />运行 DiffAnalysis</CardTitle></CardHeader>
+          <CardContent>
+            <form onSubmit={handleRunDiff} className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label>Repository</Label>
+                <Select value={selectedRepositoryId} onValueChange={setSelectedRepositoryId} disabled={repositories.length === 0}>
+                  <SelectTrigger><SelectValue placeholder="选择 Repository" /></SelectTrigger>
+                  <SelectContent>{repositories.map((r) => <SelectItem key={r.id} value={r.id}>{r.name} · {statusLabel[r.status]}</SelectItem>)}</SelectContent>
+                </Select>
               </div>
-              <GitCommitHorizontal size={18} aria-hidden="true" />
-            </div>
-            <form className="stack-form" onSubmit={handleRunDiff}>
-              <label>
-                Repository
-                <select value={selectedRepositoryId} onChange={(event) => setSelectedRepositoryId(event.target.value)} disabled={busy || repositories.length === 0}>
-                  <option value="">未选择</option>
-                  {repositories.map((repository) => (
-                    <option value={repository.id} key={repository.id}>
-                      {repository.name} · {statusLabel[repository.status]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="form-row">
-                <label>
-                  Base ref/tag
-                  <input value={baseRef} onChange={(event) => setBaseRef(event.target.value)} required />
-                </label>
-                <label>
-                  Target ref/tag
-                  <input value={targetRef} onChange={(event) => setTargetRef(event.target.value)} required />
-                </label>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5"><Label>Base ref/tag</Label><Input value={baseRef} onChange={(e) => setBaseRef(e.target.value)} required /></div>
+                <div className="flex flex-col gap-1.5"><Label>Target ref/tag</Label><Input value={targetRef} onChange={(e) => setTargetRef(e.target.value)} required /></div>
               </div>
-              <button className="primary-button small" type="submit" disabled={busy || !selectedRepositoryId}>
-                运行 Diff
-              </button>
+              <Button type="submit" disabled={busy || !selectedRepositoryId} className="self-start">运行 Diff</Button>
             </form>
-          </section>
+          </CardContent>
+        </Card>
 
-          <section className="admin-pane" aria-label="Diff 测试决策">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Testing Scope</span>
-                <h3>推荐测试范围</h3>
-              </div>
-              <ShieldAlert size={18} aria-hidden="true" />
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2"><ShieldAlert size={16} />推荐测试范围</CardTitle>
+              {selectedAnalysis && <Badge variant={riskVariant[selectedAnalysis.risk_level] ?? "secondary"}>{riskLabel[selectedAnalysis.risk_level]}</Badge>}
             </div>
+          </CardHeader>
+          <CardContent>
             {selectedAnalysis ? (
-              <div className="decision-panel">
-                <div className={`risk-pill ${selectedAnalysis.risk_level}`}>{riskLabel[selectedAnalysis.risk_level]}</div>
-                <strong>{selectedAnalysis.summary}</strong>
-                <span>{selectedAnalysis.base_ref} → {selectedAnalysis.target_ref} · {statusLabel[selectedAnalysis.status]}</span>
-                <ul>
-                  {selectedAnalysis.recommended_scope.slice(0, 5).map((scope) => (
-                    <li key={scope}>{scope}</li>
-                  ))}
+              <div className="flex flex-col gap-2">
+                <div className="flex gap-2 flex-wrap">
+                  <Select value={selectedAnalysisId} onValueChange={setSelectedAnalysisId}>
+                    <SelectTrigger className="w-auto"><SelectValue /></SelectTrigger>
+                    <SelectContent>{analyses.map((a) => <SelectItem key={a.id} value={a.id}>{a.base_ref} → {a.target_ref}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <p className="text-sm font-semibold">{selectedAnalysis.summary}</p>
+                <p className="text-xs text-[var(--muted-foreground)]">{selectedAnalysis.base_ref} → {selectedAnalysis.target_ref} · {statusLabel[selectedAnalysis.status]}</p>
+                <ul className="flex flex-col gap-1 mt-1">
+                  {selectedAnalysis.recommended_scope.slice(0, 5).map((s) => <li key={s} className="text-sm text-[var(--muted-foreground)]">· {s}</li>)}
                 </ul>
               </div>
-            ) : (
-              <p className="empty-state">暂无 Diff 分析结果</p>
-            )}
-          </section>
-        </div>
-
-        <section className="audit-pane" aria-label="Diff 模块影响">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Impacted Modules</span>
-              <h3>模块影响和风险</h3>
-            </div>
-            <FolderKanban size={18} aria-hidden="true" />
-          </div>
-          <div className="data-list">
-            {selectedAnalysis?.module_impacts.map((impact) => (
-              <div className="impact-row" key={`${impact.module_key}-${impact.risk_level}`}>
-                <div>
-                  <strong>{impact.module_key} · {impact.module_name}</strong>
-                  <span>{impact.changed_file_count} files · confidence {impact.confidence}%</span>
-                  <small>{impact.recommended_tests.join(" · ")}</small>
-                </div>
-                <div className={`risk-pill ${impact.risk_level}`}>{riskLabel[impact.risk_level]}</div>
-              </div>
-            ))}
-            {!selectedAnalysis || selectedAnalysis.module_impacts.length === 0 ? <p className="empty-state">暂无模块影响</p> : null}
-          </div>
-        </section>
-
-        <section className="audit-pane" aria-label="Diff 文件证据">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Evidence</span>
-              <h3>文件和结构证据</h3>
-            </div>
-            <FileText size={18} aria-hidden="true" />
-          </div>
-          <div className="data-list">
-            {selectedAnalysis?.file_changes.map((file) => {
-              const pathKey = `${file.change_type}-${file.path}`;
-              const hunks = file.diff_hunks ?? [];
-              const expanded = expandedDiffPaths.includes(pathKey);
-              return (
-                <div className="data-row wide diff-file-row" key={pathKey}>
-                  <div className="diff-file-head">
-                    <div>
-                      <strong>{changeTypeLabel[file.change_type]} · {file.path}</strong>
-                      <span>{file.module_key ?? "UNMAPPED"} · {file.language} · {file.directory} · +{file.additions} -{file.deletions}</span>
-                      <small>
-                        {file.structure_changes.slice(0, 5).map((item) => `${item.type}:${item.name}`).join(" · ") || file.evidence.join(" · ")}
-                      </small>
-                    </div>
-                    {hunks.length ? (
-                      <button className="ghost-button small icon-label" type="button" onClick={() => toggleDiffPath(pathKey)}>
-                        {expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
-                        <Code2 size={14} aria-hidden="true" />
-                        <span>{expanded ? "收起 diff" : "查看 diff"}</span>
-                      </button>
-                    ) : null}
-                  </div>
-                  {expanded ? (
-                    <div className="diff-hunk-list">
-                      {hunks.map((hunk, index) => (
-                        <section className="diff-hunk" key={`${hunk.header}-${index}`}>
-                          <div className="diff-hunk-header">{hunk.header}</div>
-                          <pre>
-                            {hunk.lines.map((line, lineIndex) => (
-                              <span className={`diff-line ${diffLineClass(line)}`} key={`${lineIndex}-${line}`}>
-                                {line || " "}
-                              </span>
-                            ))}
-                          </pre>
-                        </section>
-                      ))}
-                      {file.patch_truncated ? <small className="diff-truncated">Diff 内容已按长度截断。</small> : null}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-            {!selectedAnalysis || selectedAnalysis.file_changes.length === 0 ? <p className="empty-state">暂无文件证据</p> : null}
-          </div>
-        </section>
-
-        <section className="audit-pane" aria-label="Diff 分析历史">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">History</span>
-              <h3>DiffAnalysis Jobs</h3>
-            </div>
-            <History size={18} aria-hidden="true" />
-          </div>
-          <div className="data-list">
-            {analyses.map((analysis) => (
-              <div className="data-row module-row" key={analysis.id}>
-                <div>
-                  <strong>{analysis.base_ref} → {analysis.target_ref} · {riskLabel[analysis.risk_level]}</strong>
-                  <span>{statusLabel[analysis.status]} · {analysis.file_changes.length} files · job {analysis.job_id.slice(0, 8)}</span>
-                  <small>{analysis.summary || analysis.error_summary}</small>
-                </div>
-                <button className="ghost-button" type="button" onClick={() => setSelectedAnalysisId(analysis.id)}>
-                  查看
-                </button>
-              </div>
-            ))}
-            {analyses.length === 0 ? <p className="empty-state">暂无 DiffAnalysis Job</p> : null}
-          </div>
-        </section>
+            ) : <p className="text-sm text-[var(--muted-foreground)]">暂无 Diff 分析结果</p>}
+          </CardContent>
+        </Card>
       </div>
-    </section>
+
+      {selectedAnalysis && (
+        <>
+          <Card>
+            <CardHeader><CardTitle>模块影响和风险</CardTitle></CardHeader>
+            <CardContent className="p-0">
+              {selectedAnalysis.module_impacts.map((impact) => (
+                <div key={`${impact.module_key}-${impact.risk_level}`} className="flex items-center justify-between gap-3 px-5 py-3 border-b last:border-0">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">{impact.module_key} · {impact.module_name}</p>
+                    <p className="text-xs text-[var(--muted-foreground)]">{impact.changed_file_count} files · confidence {impact.confidence}%</p>
+                    <p className="text-xs text-[var(--muted-foreground)]">{impact.recommended_tests.join(" · ")}</p>
+                  </div>
+                  <Badge variant={riskVariant[impact.risk_level] ?? "secondary"}>{riskLabel[impact.risk_level]}</Badge>
+                </div>
+              ))}
+              {selectedAnalysis.module_impacts.length === 0 && <p className="px-5 py-4 text-sm text-[var(--muted-foreground)]">暂无模块影响</p>}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>文件和结构证据</CardTitle></CardHeader>
+            <CardContent className="p-0">
+              {selectedAnalysis.file_changes.map((fc) => {
+                const key = fc.path;
+                const expanded = expandedPaths.includes(key);
+                return (
+                  <div key={key} className="border-b last:border-0">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedPaths((p) => expanded ? p.filter((x) => x !== key) : [...p, key])}
+                      className="w-full flex items-center gap-2 px-5 py-3 text-left hover:bg-[var(--muted)]/40 transition-colors"
+                    >
+                      {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      <span className="font-mono text-xs flex-1 truncate">{fc.path}</span>
+                      <Badge variant="outline" className="shrink-0">{changeTypeLabel[fc.change_type] ?? fc.change_type}</Badge>
+                    </button>
+                    {expanded && (fc.diff_hunks ?? []).length > 0 && (
+                      <pre className="px-5 pb-3 text-xs font-mono overflow-x-auto bg-[var(--muted)]/30">
+                        {(fc.diff_hunks ?? []).flatMap((h) => h.lines).map((line, i) => (
+                          <div key={i} className={diffLineClass(line)}>{line}</div>
+                        ))}
+                      </pre>
+                    )}
+                  </div>
+                );
+              })}
+              {selectedAnalysis.file_changes.length === 0 && <p className="px-5 py-4 text-sm text-[var(--muted-foreground)]">暂无文件证据</p>}
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
   );
 }

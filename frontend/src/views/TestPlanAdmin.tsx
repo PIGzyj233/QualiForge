@@ -1,21 +1,34 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ClipboardCheck, FileText, History, Plus } from "lucide-react";
+import { ClipboardCheck, Plus } from "lucide-react";
 import { useParams } from "react-router-dom";
-import { createPlanItem, createTestPlan, listPlanItems, listTestPlans, PlanItemRecord, TestPlanRecord, updatePlanItemExecution, uploadPlanItemEvidence } from "../api/planning";
-import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
-import { listTestCases, TestCaseRecord } from "../api/cases";
-import { Pagination } from "../components/Pagination";
-import { usePagination } from "../hooks/usePagination";
-import { statusLabel, executionStatuses, ExecutionStatus } from "../lib/labels";
-import { pickExistingId } from "../lib/selection";
+import {
+  createPlanItem, createTestPlan, listPlanItems, listTestPlans,
+  type PlanItemRecord, type TestPlanRecord, updatePlanItemExecution, uploadPlanItemEvidence
+} from "@/api/planning";
+import { listTestCases, type TestCaseRecord } from "@/api/cases";
+import { useCurrentWorkspace, useCurrentProject } from "@/stores/workspace-store";
+import { useSessionStore } from "@/stores/session-store";
+import { Pagination } from "@/components/Pagination";
+import { usePagination } from "@/hooks/usePagination";
+import { statusLabel, executionStatuses, type ExecutionStatus } from "@/lib/labels";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { StatusPill } from "@/components/StatusPill";
 
-export function TestPlanAdmin({ session }: { session: Session }) {
-  const actorEmail = session.user.email;
-  const { wid: routeWorkspaceId = "", pid: routeProjectId = "" } = useParams<{ wid: string; pid: string }>();
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState("");
+export function TestPlanAdmin() {
+  const session = useSessionStore((s) => s.session);
+  const ws = useCurrentWorkspace();
+  const proj = useCurrentProject();
+  const { wid = "", pid = "" } = useParams<{ wid: string; pid: string }>();
+  const actorEmail = session?.user.email ?? "";
+  const wid_ = (wid || ws?.id) ?? "";
+  const pid_ = (pid || proj?.id) ?? "";
+
   const [plans, setPlans] = useState<TestPlanRecord[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [planItems, setPlanItems] = useState<PlanItemRecord[]>([]);
@@ -24,16 +37,16 @@ export function TestPlanAdmin({ session }: { session: Session }) {
   const [planType, setPlanType] = useState<TestPlanRecord["plan_type"]>("release");
   const [versionRef, setVersionRef] = useState("v2");
   const [scopeSummary, setScopeSummary] = useState("Checkout payment and refund scope");
-  const [ownerEmail, setOwnerEmail] = useState(session.user.email);
+  const [ownerEmail, setOwnerEmail] = useState(actorEmail);
   const [itemSourceType, setItemSourceType] = useState<PlanItemRecord["source_type"]>("formal_case");
   const [selectedCaseId, setSelectedCaseId] = useState("");
   const [itemTitle, setItemTitle] = useState("Manual payment observability check");
   const [itemRationale, setItemRationale] = useState("Release scope item");
-  const [itemSnapshot, setItemSnapshot] = useState("{\"steps\":[\"Open dashboard\",\"Verify payment metrics\"]}");
+  const [itemSnapshot, setItemSnapshot] = useState('{"steps":["Open dashboard","Verify payment metrics"]}');
   const [executionFilter, setExecutionFilter] = useState<"all" | "failed_blocked" | ExecutionStatus>("all");
   const [selectedExecutionItemId, setSelectedExecutionItemId] = useState("");
   const [executionStatus, setExecutionStatus] = useState<ExecutionStatus>("not_run");
-  const [executionAssignee, setExecutionAssignee] = useState(session.user.email);
+  const [executionAssignee, setExecutionAssignee] = useState(actorEmail);
   const [actualResult, setActualResult] = useState("");
   const [failureReason, setFailureReason] = useState("");
   const [defectLinksText, setDefectLinksText] = useState("");
@@ -42,555 +55,264 @@ export function TestPlanAdmin({ session }: { session: Session }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  function setExecutionFormFromItem(item: PlanItemRecord | undefined) {
-    if (!item) {
-      setSelectedExecutionItemId("");
-      setExecutionStatus("not_run");
-      setExecutionAssignee(session.user.email);
-      setActualResult("");
-      setFailureReason("");
-      setDefectLinksText("");
-      return;
-    }
+  function setExecForm(item: PlanItemRecord | undefined) {
+    if (!item) { setSelectedExecutionItemId(""); setExecutionStatus("not_run"); setActualResult(""); setFailureReason(""); setDefectLinksText(""); return; }
     setSelectedExecutionItemId(item.id);
     setExecutionStatus(executionStatuses.includes(item.status as ExecutionStatus) ? (item.status as ExecutionStatus) : "not_run");
-    setExecutionAssignee(item.assignee_email || session.user.email);
-    setActualResult(item.actual_result);
-    setFailureReason(item.failure_reason);
+    setExecutionAssignee(item.assignee_email || actorEmail);
+    setActualResult(item.actual_result); setFailureReason(item.failure_reason);
     setDefectLinksText(item.defect_links.join("\n"));
   }
 
-  async function refreshPlanItems(workspaceId: string, projectId: string, planId: string) {
-    if (!planId) {
-      setPlanItems([]);
-      setExecutionFormFromItem(undefined);
-      return;
-    }
-    const nextItems = await listPlanItems(workspaceId, projectId, planId);
-    setPlanItems(nextItems);
-    setExecutionFormFromItem(nextItems.find((item) => item.id === selectedExecutionItemId) ?? nextItems[0]);
-  }
-
-  async function refreshPlanProject(workspaceId: string, projectId: string, preferredPlanId?: string) {
-    const [nextPlans, nextCases] = await Promise.all([
-      listTestPlans(workspaceId, projectId),
-      listTestCases(workspaceId, projectId, undefined, "approved")
-    ]);
-    setPlans(nextPlans);
-    setApprovedCases(nextCases);
-    const nextPlanId = pickExistingId(nextPlans, preferredPlanId, selectedPlanId);
-    setSelectedPlanId(nextPlanId);
-    if (!selectedCaseId && nextCases[0]) {
-      setSelectedCaseId(nextCases[0].id);
-    }
-    await refreshPlanItems(workspaceId, projectId, nextPlanId);
-  }
-
-  async function refreshPlanWorkspaces(preferredWorkspaceId?: string, preferredProjectId?: string) {
-    setBusy(true);
-    setMessage(null);
-    try {
-      const nextWorkspaces = await listWorkspaces(actorEmail);
-      setWorkspaces(nextWorkspaces);
-      const nextWorkspaceId = pickExistingId(nextWorkspaces, preferredWorkspaceId, selectedWorkspaceId);
-      setSelectedWorkspaceId(nextWorkspaceId);
-      if (!nextWorkspaceId) return;
-      const nextProjects = await listProjects(nextWorkspaceId);
-      setProjects(nextProjects);
-      const nextProjectId = pickExistingId(nextProjects, preferredProjectId, selectedProjectId);
-      setSelectedProjectId(nextProjectId);
-      if (nextProjectId) {
-        await refreshPlanProject(nextWorkspaceId, nextProjectId);
-      }
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "测试计划加载失败");
-    } finally {
-      setBusy(false);
-    }
+  async function loadItems(planId: string) {
+    if (!planId) { setPlanItems([]); setExecForm(undefined); return; }
+    const items = await listPlanItems(wid_, pid_, planId);
+    setPlanItems(items);
+    setExecForm(items.find((i) => i.id === selectedExecutionItemId) ?? items[0]);
   }
 
   useEffect(() => {
-    void refreshPlanWorkspaces(routeWorkspaceId || undefined, routeProjectId || undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeWorkspaceId, routeProjectId]);
+    if (!wid_ || !pid_) return;
+    void (async () => {
+      setBusy(true);
+      try {
+        const [ps, cases] = await Promise.all([listTestPlans(wid_, pid_), listTestCases(wid_, pid_, undefined, "approved")]);
+        setPlans(ps); setApprovedCases(cases);
+        const planId = ps[0]?.id ?? "";
+        setSelectedPlanId(planId);
+        if (!selectedCaseId && cases[0]) setSelectedCaseId(cases[0].id);
+        await loadItems(planId);
+      } catch (err) { setMessage(err instanceof Error ? err.message : "加载失败"); }
+      finally { setBusy(false); }
+    })();
+  }, [wid_, pid_]);
 
-  async function handleWorkspaceSwitch(workspaceId: string) {
-    setSelectedWorkspaceId(workspaceId);
-    setBusy(true);
-    setMessage(null);
+  async function handleCreatePlan(e: FormEvent) {
+    e.preventDefault();
+    if (!wid_ || !pid_) return;
+    setBusy(true); setMessage(null);
     try {
-      const nextProjects = await listProjects(workspaceId);
-      setProjects(nextProjects);
-      const nextProjectId = nextProjects[0]?.id ?? "";
-      setSelectedProjectId(nextProjectId);
-      if (nextProjectId) {
-        await refreshPlanProject(workspaceId, nextProjectId);
-      }
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "测试计划 Workspace 切换失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleProjectSwitch(projectId: string) {
-    setSelectedProjectId(projectId);
-    if (!selectedWorkspaceId || !projectId) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      await refreshPlanProject(selectedWorkspaceId, projectId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "测试计划 Project 切换失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handlePlanSwitch(planId: string) {
-    setSelectedPlanId(planId);
-    if (!selectedWorkspaceId || !selectedProjectId) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      await refreshPlanItems(selectedWorkspaceId, selectedProjectId, planId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "计划项加载失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleCreatePlan(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedWorkspaceId || !selectedProjectId) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const plan = await createTestPlan(selectedWorkspaceId, selectedProjectId, actorEmail, {
-        name: planName,
-        plan_type: planType,
-        scope_summary: scopeSummary,
-        version_ref: versionRef,
-        owner_email: ownerEmail
-      });
+      const plan = await createTestPlan(wid_, pid_, actorEmail, { name: planName, plan_type: planType, scope_summary: scopeSummary, version_ref: versionRef, owner_email: ownerEmail });
       setMessage(`已创建测试计划：${plan.name}`);
-      await refreshPlanProject(selectedWorkspaceId, selectedProjectId, plan.id);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "测试计划创建失败");
-    } finally {
-      setBusy(false);
-    }
+      const ps = await listTestPlans(wid_, pid_); setPlans(ps); setSelectedPlanId(plan.id);
+      await loadItems(plan.id);
+    } catch (err) { setMessage(err instanceof Error ? err.message : "创建失败"); }
+    finally { setBusy(false); }
   }
 
-  async function handleCreatePlanItem(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedWorkspaceId || !selectedProjectId || !selectedPlanId) return;
-    setBusy(true);
-    setMessage(null);
+  async function handleCreatePlanItem(e: FormEvent) {
+    e.preventDefault();
+    if (!wid_ || !pid_ || !selectedPlanId) return;
+    setBusy(true); setMessage(null);
     try {
       const snapshot = itemSourceType === "formal_case" ? undefined : (JSON.parse(itemSnapshot || "{}") as Record<string, unknown>);
-      const item = await createPlanItem(selectedWorkspaceId, selectedProjectId, selectedPlanId, actorEmail, {
-        source_type: itemSourceType,
-        source_id: itemSourceType === "formal_case" ? selectedCaseId : itemSourceType === "ai_temp" ? "manual-ai-temp" : null,
-        title: itemSourceType === "formal_case" ? undefined : itemTitle,
-        snapshot,
-        rationale: itemRationale
-      });
+      const item = await createPlanItem(wid_, pid_, selectedPlanId, actorEmail, { source_type: itemSourceType, source_id: itemSourceType === "formal_case" ? selectedCaseId : itemSourceType === "ai_temp" ? "manual-ai-temp" : null, title: itemSourceType === "formal_case" ? undefined : itemTitle, snapshot, rationale: itemRationale });
       setMessage(`已加入计划项：${item.title}`);
-      await refreshPlanProject(selectedWorkspaceId, selectedProjectId, selectedPlanId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "计划项创建失败");
-    } finally {
-      setBusy(false);
-    }
+      await loadItems(selectedPlanId);
+    } catch (err) { setMessage(err instanceof Error ? err.message : "创建失败"); }
+    finally { setBusy(false); }
   }
 
-  async function handleSaveExecution(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedWorkspaceId || !selectedProjectId || !selectedPlanId || !selectedExecutionItemId) return;
-    setBusy(true);
-    setMessage(null);
+  async function handleSaveExecution(e: FormEvent) {
+    e.preventDefault();
+    if (!wid_ || !pid_ || !selectedPlanId || !selectedExecutionItemId) return;
+    setBusy(true); setMessage(null);
     try {
-      const updated = await updatePlanItemExecution(selectedWorkspaceId, selectedProjectId, selectedPlanId, selectedExecutionItemId, actorEmail, {
-        status: executionStatus,
-        assignee_email: executionAssignee,
-        actual_result: actualResult,
-        failure_reason: failureReason,
-        defect_links: defectLinksText
-          .split(/\r?\n|,/)
-          .map((link) => link.trim())
-          .filter(Boolean)
-      });
-      setMessage(`已保存执行结果：${updated.title} · ${statusLabel[updated.status]}`);
-      setExecutionFormFromItem(updated);
-      await refreshPlanProject(selectedWorkspaceId, selectedProjectId, selectedPlanId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "执行结果保存失败");
-    } finally {
-      setBusy(false);
-    }
+      const updated = await updatePlanItemExecution(wid_, pid_, selectedPlanId, selectedExecutionItemId, actorEmail, { status: executionStatus, assignee_email: executionAssignee, actual_result: actualResult, failure_reason: failureReason, defect_links: defectLinksText.split(/\r?\n|,/).map((l) => l.trim()).filter(Boolean) });
+      setMessage(`已保存：${updated.title} · ${statusLabel[updated.status]}`);
+      setExecForm(updated); await loadItems(selectedPlanId);
+    } catch (err) { setMessage(err instanceof Error ? err.message : "保存失败"); }
+    finally { setBusy(false); }
   }
 
-  async function handleUploadEvidence(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedWorkspaceId || !selectedProjectId || !selectedPlanId || !selectedExecutionItemId || !evidenceFile) return;
-    setBusy(true);
-    setMessage(null);
+  async function handleUploadEvidence(e: FormEvent) {
+    e.preventDefault();
+    if (!wid_ || !pid_ || !selectedPlanId || !selectedExecutionItemId || !evidenceFile) return;
+    setBusy(true); setMessage(null);
     try {
-      const updated = await uploadPlanItemEvidence(selectedWorkspaceId, selectedProjectId, selectedPlanId, selectedExecutionItemId, actorEmail, evidenceFile, evidenceNote);
-      setMessage(`已上传证据：${evidenceFile.name}`);
-      setEvidenceFile(null);
-      setExecutionFormFromItem(updated);
-      await refreshPlanProject(selectedWorkspaceId, selectedProjectId, selectedPlanId);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "证据上传失败");
-    } finally {
-      setBusy(false);
-    }
+      const updated = await uploadPlanItemEvidence(wid_, pid_, selectedPlanId, selectedExecutionItemId, actorEmail, evidenceFile, evidenceNote);
+      setMessage(`已上传证据：${evidenceFile.name}`); setEvidenceFile(null); setExecForm(updated);
+      await loadItems(selectedPlanId);
+    } catch (err) { setMessage(err instanceof Error ? err.message : "上传失败"); }
+    finally { setBusy(false); }
   }
 
-  const selectedProject = projects.find((project) => project.id === selectedProjectId);
-  const selectedPlan = plans.find((plan) => plan.id === selectedPlanId);
-  const selectedExecutionItem = planItems.find((item) => item.id === selectedExecutionItemId);
-  const filteredPlanItems = useMemo(() => {
+  const filteredItems = useMemo(() => {
     if (executionFilter === "all") return planItems;
-    if (executionFilter === "failed_blocked") return planItems.filter((item) => item.status === "failed" || item.status === "blocked");
-    return planItems.filter((item) => item.status === executionFilter);
+    if (executionFilter === "failed_blocked") return planItems.filter((i) => i.status === "failed" || i.status === "blocked");
+    return planItems.filter((i) => i.status === executionFilter);
   }, [executionFilter, planItems]);
-  const planItemsPagination = usePagination(filteredPlanItems, 10);
-  const planProgress = useMemo(() => {
-    const counts = { total: planItems.length, not_run: 0, passed: 0, failed: 0, blocked: 0, skipped: 0 };
-    for (const item of planItems) {
-      const status = item.status === "todo" || item.status === "in_progress" ? "not_run" : item.status;
-      if (status in counts) {
-        counts[status as keyof typeof counts] += 1;
-      }
-    }
-    const finished = counts.passed + counts.failed + counts.blocked + counts.skipped;
-    return { ...counts, finished, percent: counts.total ? Math.round((finished / counts.total) * 100) : 0 };
+  const pagination = usePagination(filteredItems, 10);
+  const progress = useMemo(() => {
+    const total = planItems.length;
+    const finished = planItems.filter((i) => ["passed", "failed", "blocked", "skipped"].includes(i.status)).length;
+    return { total, finished, percent: total ? Math.round((finished / total) * 100) : 0 };
   }, [planItems]);
-  const selectedSteps = Array.isArray(selectedExecutionItem?.snapshot.steps)
-    ? selectedExecutionItem.snapshot.steps.map((step) => String(step))
-    : typeof selectedExecutionItem?.snapshot.steps === "string"
-      ? selectedExecutionItem.snapshot.steps.split(/\r?\n/).filter(Boolean)
-      : [];
+  const selectedItem = planItems.find((i) => i.id === selectedExecutionItemId);
+  const f = "flex flex-col gap-1.5";
 
   return (
-    <section className="section-block test-plan-admin">
-      <div className="section-heading">
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between">
         <div>
-          <span className="eyebrow">Test Planning</span>
-          <h2>发布测试计划</h2>
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)] mb-1">Test Planning</p>
+          <h1 className="font-heading text-2xl font-bold">发布测试计划</h1>
         </div>
-        <ClipboardCheck size={20} aria-hidden="true" />
+        <ClipboardCheck size={20} className="text-[var(--muted-foreground)]" />
       </div>
-      <div className="admin-body">
-        {message ? <div className="inline-notice">{message}</div> : null}
+      {message && <Alert><AlertDescription>{message}</AlertDescription></Alert>}
 
-        <div className="admin-toolbar">
-          <label className="select-label">
-            当前 Workspace
-            <select value={selectedWorkspaceId} onChange={(event) => void handleWorkspaceSwitch(event.target.value)} disabled={busy || workspaces.length === 0}>
-              <option value="">未选择</option>
-              {workspaces.map((workspace) => (
-                <option value={workspace.id} key={workspace.id}>
-                  {workspace.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="select-label">
-            当前 Project
-            <select value={selectedProjectId} onChange={(event) => void handleProjectSwitch(event.target.value)} disabled={busy || projects.length === 0}>
-              <option value="">未选择</option>
-              {projects.map((project) => (
-                <option value={project.id} key={project.id}>
-                  {project.key} · {project.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="admin-context">
-          <strong>{selectedProject ? `${selectedProject.key} · ${selectedProject.name}` : "尚未选择 Project"}</strong>
-          <span>{selectedPlan ? `${selectedPlan.name} · ${statusLabel[selectedPlan.plan_type]} · ${statusLabel[selectedPlan.status]}` : "创建 release 测试计划后添加范围项"}</span>
-        </div>
-
-        <div className="admin-grid">
-          <section className="admin-pane" aria-label="创建测试计划">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Plan</span>
-                <h3>创建计划</h3>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><Plus size={16} />新建测试计划</CardTitle></CardHeader>
+          <CardContent>
+            <form onSubmit={handleCreatePlan} className="flex flex-col gap-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div className={f}><Label>计划名称</Label><Input value={planName} onChange={(e) => setPlanName(e.target.value)} required /></div>
+                <div className={f}>
+                  <Label>类型</Label>
+                  <Select value={planType} onValueChange={(v) => setPlanType(v as typeof planType)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {["release", "regression", "smoke", "feature", "custom"].map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className={f}><Label>版本 Ref</Label><Input value={versionRef} onChange={(e) => setVersionRef(e.target.value)} /></div>
+                <div className={f}><Label>负责人邮箱</Label><Input value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)} /></div>
               </div>
-              <Plus size={18} aria-hidden="true" />
-            </div>
-            <form className="stack-form" onSubmit={handleCreatePlan}>
-              <label>
-                名称
-                <input value={planName} onChange={(event) => setPlanName(event.target.value)} required />
-              </label>
-              <div className="form-row">
-                <label>
-                  类型
-                  <select value={planType} onChange={(event) => setPlanType(event.target.value as TestPlanRecord["plan_type"])}>
-                    {(["release", "regression", "smoke", "feature", "custom"] as TestPlanRecord["plan_type"][]).map((item) => (
-                      <option value={item} key={item}>
-                        {statusLabel[item]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  版本
-                  <input value={versionRef} onChange={(event) => setVersionRef(event.target.value)} />
-                </label>
-              </div>
-              <label>
-                范围
-                <input value={scopeSummary} onChange={(event) => setScopeSummary(event.target.value)} />
-              </label>
-              <label>
-                Owner
-                <input value={ownerEmail} onChange={(event) => setOwnerEmail(event.target.value)} />
-              </label>
-              <button className="primary-button small" type="submit" disabled={busy || !selectedWorkspaceId || !selectedProjectId}>
-                创建计划
-              </button>
+              <div className={f}><Label>范围摘要</Label><Input value={scopeSummary} onChange={(e) => setScopeSummary(e.target.value)} /></div>
+              <Button type="submit" disabled={busy || !wid_} className="self-start">创建计划</Button>
             </form>
-          </section>
+          </CardContent>
+        </Card>
 
-          <section className="admin-pane" aria-label="添加计划项">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Scope</span>
-                <h3>添加范围项</h3>
+        <Card>
+          <CardHeader><CardTitle>添加计划项</CardTitle></CardHeader>
+          <CardContent>
+            <form onSubmit={handleCreatePlanItem} className="flex flex-col gap-3">
+              <div className={f}>
+                <Label>计划</Label>
+                <Select value={selectedPlanId} onValueChange={(v) => { setSelectedPlanId(v); void loadItems(v); }} disabled={plans.length === 0}>
+                  <SelectTrigger><SelectValue placeholder="选择计划" /></SelectTrigger>
+                  <SelectContent>{plans.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
+                </Select>
               </div>
-              <FileText size={18} aria-hidden="true" />
-            </div>
-            <form className="stack-form" onSubmit={handleCreatePlanItem}>
-              <label>
-                当前计划
-                <select value={selectedPlanId} onChange={(event) => void handlePlanSwitch(event.target.value)} disabled={busy || plans.length === 0}>
-                  <option value="">未选择</option>
-                  {plans.map((plan) => (
-                    <option value={plan.id} key={plan.id}>
-                      {plan.name} · {statusLabel[plan.plan_type]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                来源
-                <select value={itemSourceType} onChange={(event) => setItemSourceType(event.target.value as PlanItemRecord["source_type"])}>
-                  <option value="formal_case">正式用例快照</option>
-                  <option value="ai_temp">AI 临时建议</option>
-                  <option value="manual">手工临时项</option>
-                </select>
-              </label>
+              <div className={f}>
+                <Label>来源类型</Label>
+                <Select value={itemSourceType} onValueChange={(v) => setItemSourceType(v as typeof itemSourceType)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="formal_case">正式用例</SelectItem>
+                    <SelectItem value="ai_temp">AI 临时</SelectItem>
+                    <SelectItem value="manual">手动</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               {itemSourceType === "formal_case" ? (
-                <label>
-                  正式用例
-                  <select value={selectedCaseId} onChange={(event) => setSelectedCaseId(event.target.value)} disabled={approvedCases.length === 0}>
-                    <option value="">未选择</option>
-                    {approvedCases.map((testCase) => (
-                      <option value={testCase.id} key={testCase.id}>
-                        {testCase.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className={f}>
+                  <Label>用例</Label>
+                  <Select value={selectedCaseId} onValueChange={setSelectedCaseId} disabled={approvedCases.length === 0}>
+                    <SelectTrigger><SelectValue placeholder="选择用例" /></SelectTrigger>
+                    <SelectContent>{approvedCases.map((c) => <SelectItem key={c.id} value={c.id}>{c.title}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
               ) : (
                 <>
-                  <label>
-                    标题
-                    <input value={itemTitle} onChange={(event) => setItemTitle(event.target.value)} />
-                  </label>
-                  <label>
-                    Snapshot JSON
-                    <input value={itemSnapshot} onChange={(event) => setItemSnapshot(event.target.value)} />
-                  </label>
+                  <div className={f}><Label>标题</Label><Input value={itemTitle} onChange={(e) => setItemTitle(e.target.value)} /></div>
+                  <div className={f}><Label>Snapshot JSON</Label><Textarea value={itemSnapshot} onChange={(e) => setItemSnapshot(e.target.value)} rows={2} /></div>
                 </>
               )}
-              <label>
-                依据
-                <input value={itemRationale} onChange={(event) => setItemRationale(event.target.value)} />
-              </label>
-              <button className="ghost-button" type="submit" disabled={busy || !selectedPlanId || (itemSourceType === "formal_case" && !selectedCaseId)}>
-                加入计划项
-              </button>
+              <div className={f}><Label>理由</Label><Input value={itemRationale} onChange={(e) => setItemRationale(e.target.value)} /></div>
+              <Button type="submit" disabled={busy || !selectedPlanId} className="self-start">添加计划项</Button>
             </form>
-          </section>
-        </div>
-
-        <section className="audit-pane" aria-label="测试计划列表">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Plans</span>
-              <h3>计划列表</h3>
-            </div>
-            <History size={18} aria-hidden="true" />
-          </div>
-          <div className="data-list">
-            {plans.map((plan) => (
-              <div className="data-row module-row" key={plan.id}>
-                <div>
-                  <strong>{plan.name} · {statusLabel[plan.plan_type]}</strong>
-                  <span>{plan.version_ref || "no version"} · owner {plan.owner_email} · {statusLabel[plan.status]}</span>
-                  <small>{plan.scope_summary || "无范围说明"} · conclusion {plan.final_conclusion || "pending"}</small>
-                </div>
-                <button className="ghost-button" type="button" onClick={() => void handlePlanSwitch(plan.id)}>
-                  查看
-                </button>
-              </div>
-            ))}
-            {plans.length === 0 ? <p className="empty-state">暂无测试计划</p> : null}
-          </div>
-        </section>
-
-        <section className="audit-pane" aria-label="测试计划项">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Plan Items</span>
-              <h3>执行范围快照</h3>
-            </div>
-            <ClipboardCheck size={18} aria-hidden="true" />
-          </div>
-          <div className="execution-summary">
-            <strong>{planProgress.percent}%</strong>
-            <span>
-              {planProgress.finished}/{planProgress.total} 已记录 · {planProgress.passed} 通过 · {planProgress.failed} 失败 · {planProgress.blocked} 阻塞 · {planProgress.not_run} 未执行
-            </span>
-            <label className="select-label">
-              筛选
-              <select value={executionFilter} onChange={(event) => setExecutionFilter(event.target.value as typeof executionFilter)}>
-                <option value="all">全部</option>
-                <option value="failed_blocked">失败或阻塞</option>
-                {executionStatuses.map((status) => (
-                  <option value={status} key={status}>
-                    {statusLabel[status]}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="data-list">
-            {planItemsPagination.currentItems.map((item) => (
-              <div className="data-row module-row" key={item.id}>
-                <div>
-                  <strong>{item.title} · {statusLabel[item.source_type]}</strong>
-                  <span>{statusLabel[item.status] ?? item.status} · assignee {item.assignee_email || "unassigned"} · source {item.source_id?.slice(0, 8) ?? "none"}</span>
-                  <small>
-                    {item.rationale || "无依据"} · evidence {item.evidence.length} · defects {item.defect_links.length} · executed {item.executed_at ? new Date(item.executed_at).toLocaleString() : "pending"}
-                  </small>
-                </div>
-                <button className="ghost-button" type="button" onClick={() => setExecutionFormFromItem(item)}>
-                  执行
-                </button>
-              </div>
-            ))}
-            {filteredPlanItems.length === 0 ? <p className="empty-state">暂无匹配计划项</p> : null}
-          </div>
-          <Pagination
-            currentPage={planItemsPagination.currentPage}
-            totalPages={planItemsPagination.totalPages}
-            totalItems={planItemsPagination.totalItems}
-            onPageChange={planItemsPagination.goToPage}
-          />
-        </section>
-
-        <section className="audit-pane execution-pane" aria-label="单项执行">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Execution</span>
-              <h3>单项执行</h3>
-            </div>
-            <CheckCircle2 size={18} aria-hidden="true" />
-          </div>
-          {selectedExecutionItem ? (
-            <div className="execution-detail">
-              <div className="execution-card">
-                <strong>{selectedExecutionItem.title}</strong>
-                <span>{statusLabel[selectedExecutionItem.source_type]} · {statusLabel[selectedExecutionItem.status] ?? selectedExecutionItem.status}</span>
-                <small>{String(selectedExecutionItem.snapshot.expected_result ?? selectedExecutionItem.snapshot.interfaces ?? "查看步骤并录入执行结果")}</small>
-                {selectedSteps.length > 0 ? (
-                  <ol className="step-list">
-                    {selectedSteps.map((step, index) => (
-                      <li key={`${selectedExecutionItem.id}-${index}`}>{step}</li>
-                    ))}
-                  </ol>
-                ) : null}
-              </div>
-
-              <form className="stack-form" onSubmit={handleSaveExecution}>
-                <div className="form-row">
-                  <label>
-                    执行人
-                    <input value={executionAssignee} onChange={(event) => setExecutionAssignee(event.target.value)} />
-                  </label>
-                  <label>
-                    状态
-                    <select value={executionStatus} onChange={(event) => setExecutionStatus(event.target.value as ExecutionStatus)}>
-                      {executionStatuses.map((status) => (
-                        <option value={status} key={status}>
-                          {statusLabel[status]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <label>
-                  实际结果
-                  <textarea value={actualResult} onChange={(event) => setActualResult(event.target.value)} rows={3} />
-                </label>
-                <label>
-                  失败原因
-                  <textarea value={failureReason} onChange={(event) => setFailureReason(event.target.value)} rows={2} />
-                </label>
-                <label>
-                  缺陷链接
-                  <textarea value={defectLinksText} onChange={(event) => setDefectLinksText(event.target.value)} rows={2} />
-                </label>
-                <button className="primary-button small" type="submit" disabled={busy || !selectedExecutionItemId}>
-                  保存执行结果
-                </button>
-              </form>
-
-              <form className="stack-form evidence-form" onSubmit={handleUploadEvidence}>
-                <div className="form-row">
-                  <label>
-                    证据文件
-                    <input type="file" onChange={(event) => setEvidenceFile(event.target.files?.[0] ?? null)} />
-                  </label>
-                  <label>
-                    说明
-                    <input value={evidenceNote} onChange={(event) => setEvidenceNote(event.target.value)} />
-                  </label>
-                </div>
-                <button className="ghost-button" type="submit" disabled={busy || !selectedExecutionItemId || !evidenceFile}>
-                  上传证据
-                </button>
-              </form>
-
-              <div className="data-list">
-                {selectedExecutionItem.evidence.map((item) => (
-                  <div className="data-row wide" key={item.id}>
-                    <div>
-                      <strong>{item.file_name}</strong>
-                      <span>{item.note || "无说明"} · {Math.round(item.size_bytes / 1024)} KB · {item.uploaded_by}</span>
-                    </div>
-                  </div>
-                ))}
-                {selectedExecutionItem.evidence.length === 0 ? <p className="empty-state">暂无执行证据</p> : null}
-              </div>
-            </div>
-          ) : (
-            <p className="empty-state">选择计划项后录入执行结果</p>
-          )}
-        </section>
+          </CardContent>
+        </Card>
       </div>
-    </section>
+
+      {selectedPlanId && (
+        <>
+          {progress.total > 0 && (
+            <Card>
+              <CardContent className="pt-5">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-semibold">执行进度</span>
+                  <span className="text-sm text-[var(--muted-foreground)]">{progress.finished}/{progress.total} · {progress.percent}%</span>
+                </div>
+                <div className="h-2 rounded-full bg-[var(--muted)] overflow-hidden">
+                  <div className="h-full bg-[var(--primary)] transition-all" style={{ width: `${progress.percent}%` }} />
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-5 items-start">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm">计划项 ({filteredItems.length})</CardTitle>
+                  <Select value={executionFilter} onValueChange={(v) => setExecutionFilter(v as typeof executionFilter)}>
+                    <SelectTrigger className="w-32 h-7 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">全部</SelectItem>
+                      <SelectItem value="failed_blocked">失败/阻塞</SelectItem>
+                      {executionStatuses.map((s) => <SelectItem key={s} value={s}>{statusLabel[s] ?? s}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                {pagination.currentItems.map((item) => (
+                  <button key={item.id} type="button" onClick={() => setExecForm(item)}
+                    className={`w-full text-left flex items-center justify-between gap-3 px-5 py-3 border-b last:border-0 transition-colors hover:bg-[var(--muted)]/40 ${selectedExecutionItemId === item.id ? "bg-[var(--accent)]" : ""}`}>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold truncate">{item.title}</p>
+                      <p className="text-xs text-[var(--muted-foreground)]">{item.source_type} · {item.assignee_email || "未分配"}</p>
+                    </div>
+                    <StatusPill status={item.status} />
+                  </button>
+                ))}
+                {filteredItems.length === 0 && <p className="px-5 py-4 text-sm text-[var(--muted-foreground)]">暂无计划项</p>}
+                <div className="px-5"><Pagination currentPage={pagination.currentPage} totalPages={pagination.totalPages} totalItems={pagination.totalItems} onPageChange={pagination.goToPage} itemsPerPage={10} /></div>
+              </CardContent>
+            </Card>
+
+            {selectedItem && (
+              <div className="flex flex-col gap-4">
+                <Card>
+                  <CardHeader><CardTitle className="text-sm">{selectedItem.title}</CardTitle></CardHeader>
+                  <CardContent>
+                    <form onSubmit={handleSaveExecution} className="flex flex-col gap-3">
+                      <div className={f}>
+                        <Label>执行状态</Label>
+                        <Select value={executionStatus} onValueChange={(v) => setExecutionStatus(v as ExecutionStatus)}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>{executionStatuses.map((s) => <SelectItem key={s} value={s}>{statusLabel[s] ?? s}</SelectItem>)}</SelectContent>
+                        </Select>
+                      </div>
+                      <div className={f}><Label>负责人</Label><Input value={executionAssignee} onChange={(e) => setExecutionAssignee(e.target.value)} /></div>
+                      <div className={f}><Label>实际结果</Label><Textarea value={actualResult} onChange={(e) => setActualResult(e.target.value)} rows={2} /></div>
+                      <div className={f}><Label>失败原因</Label><Input value={failureReason} onChange={(e) => setFailureReason(e.target.value)} /></div>
+                      <div className={f}><Label>缺陷链接</Label><Textarea value={defectLinksText} onChange={(e) => setDefectLinksText(e.target.value)} rows={2} /></div>
+                      <Button type="submit" disabled={busy}>保存执行结果</Button>
+                    </form>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader><CardTitle className="text-sm">上传证据</CardTitle></CardHeader>
+                  <CardContent>
+                    <form onSubmit={handleUploadEvidence} className="flex flex-col gap-3">
+                      <input type="file" onChange={(e) => setEvidenceFile(e.target.files?.[0] ?? null)} className="text-sm" />
+                      <div className={f}><Label>备注</Label><Input value={evidenceNote} onChange={(e) => setEvidenceNote(e.target.value)} /></div>
+                      <Button type="submit" disabled={busy || !evidenceFile} className="self-start">上传</Button>
+                    </form>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }

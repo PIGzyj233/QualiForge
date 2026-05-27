@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { ChangeEvent, useRef } from "react";
-import type { CaseStep } from "../api/cases";
+import type { CaseStep } from "@/api/cases";
+import { Button } from "@/components/ui/button";
 
 function autoResize(el: HTMLTextAreaElement | null) {
   if (!el) return;
@@ -8,99 +9,56 @@ function autoResize(el: HTMLTextAreaElement | null) {
   el.style.height = `${Math.min(el.scrollHeight, 320)}px`;
 }
 
-export function StepsEditor({
-  steps,
-  onChange,
-  disabled
-}: {
-  steps: CaseStep[];
-  onChange: (next: CaseStep[]) => void;
-  disabled?: boolean;
-}) {
+export function StepsEditor({ steps, onChange, disabled }: { steps: CaseStep[]; onChange: (next: CaseStep[]) => void; disabled?: boolean }) {
   const rowRefs = useRef<Array<HTMLTextAreaElement | null>>([]);
 
-  function update(index: number, patch: Partial<CaseStep>) {
-    const next = steps.map((step, i) => (i === index ? { ...step, ...patch } : step));
-    onChange(next);
+  function update(i: number, patch: Partial<CaseStep>) {
+    onChange(steps.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
   }
-
-  function move(index: number, delta: number) {
-    const target = index + delta;
-    if (target < 0 || target >= steps.length) return;
+  function move(i: number, delta: number) {
+    const t = i + delta;
+    if (t < 0 || t >= steps.length) return;
     const next = [...steps];
-    [next[index], next[target]] = [next[target], next[index]];
+    [next[i], next[t]] = [next[t], next[i]];
     onChange(next);
-  }
-
-  function add() {
-    onChange([...steps, { action: "", expected: "" }]);
-  }
-
-  function remove(index: number) {
-    onChange(steps.filter((_, i) => i !== index));
   }
 
   return (
-    <div className="steps-editor">
-      <div className="steps-editor-head">
-        <h4>步骤与预期结果</h4>
-        <button type="button" className="ghost-button small" onClick={add} disabled={disabled}>
-          <Plus size={14} aria-hidden="true" />
-          新增步骤
-        </button>
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">步骤与预期结果</span>
+        <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => onChange([...steps, { action: "", expected: "" }])} disabled={disabled}>
+          <Plus size={12} />新增步骤
+        </Button>
       </div>
-
-      <div className="steps-editor-table">
-        <div className="steps-editor-row steps-editor-head-row">
-          <span>#</span>
-          <span>操作步骤</span>
-          <span>预期结果</span>
-          <span aria-label="操作"></span>
-        </div>
-        {steps.length === 0 ? (
-          <p className="empty-state">尚无步骤，点击「新增步骤」开始编写。</p>
-        ) : null}
-        {steps.map((step, index) => (
-          <div className="steps-editor-row" key={index}>
-            <span className="steps-editor-index">{index + 1}</span>
-            <textarea
-              value={step.action}
-              onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
-                update(index, { action: e.target.value });
-                autoResize(e.target);
-              }}
-              placeholder="例：打开收银台，选择微信支付"
-              rows={2}
-              disabled={disabled}
-              ref={(el) => {
-                rowRefs.current[index] = el;
-                autoResize(el);
-              }}
-            />
-            <textarea
-              value={step.expected}
-              onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
-                update(index, { expected: e.target.value });
-                autoResize(e.target);
-              }}
-              placeholder="例：跳转到微信支付二维码页面，金额一致"
-              rows={2}
-              disabled={disabled}
-            />
-            <div className="steps-editor-actions">
-              <button type="button" className="icon-button subtle" onClick={() => move(index, -1)} disabled={disabled || index === 0} title="上移">
-                <ArrowUp size={14} aria-hidden="true" />
-              </button>
-              <button type="button" className="icon-button subtle" onClick={() => move(index, 1)} disabled={disabled || index === steps.length - 1} title="下移">
-                <ArrowDown size={14} aria-hidden="true" />
-              </button>
-              <button type="button" className="icon-button subtle" onClick={() => remove(index)} disabled={disabled} title="删除">
-                <Trash2 size={14} aria-hidden="true" />
-              </button>
-            </div>
+      {steps.length === 0 && <p className="text-xs text-[var(--muted-foreground)]">尚无步骤，点击「新增步骤」开始编写。</p>}
+      {steps.map((step, i) => (
+        <div key={i} className="grid grid-cols-[24px_1fr_1fr_auto] gap-2 items-start">
+          <span className="text-xs text-[var(--muted-foreground)] pt-2 text-center">{i + 1}</span>
+          <textarea
+            value={step.action}
+            onChange={(e: ChangeEvent<HTMLTextAreaElement>) => { update(i, { action: e.target.value }); autoResize(e.target); }}
+            placeholder="操作步骤"
+            rows={2}
+            disabled={disabled}
+            ref={(el) => { rowRefs.current[i] = el; autoResize(el); }}
+            className="rounded-[var(--radius-sm)] border border-[var(--input)] bg-[var(--card)] px-2 py-1.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+          />
+          <textarea
+            value={step.expected}
+            onChange={(e: ChangeEvent<HTMLTextAreaElement>) => { update(i, { expected: e.target.value }); autoResize(e.target); }}
+            placeholder="预期结果"
+            rows={2}
+            disabled={disabled}
+            className="rounded-[var(--radius-sm)] border border-[var(--input)] bg-[var(--card)] px-2 py-1.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+          />
+          <div className="flex flex-col gap-0.5 pt-1">
+            <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => move(i, -1)} disabled={disabled || i === 0}><ArrowUp size={12} /></Button>
+            <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => move(i, 1)} disabled={disabled || i === steps.length - 1}><ArrowDown size={12} /></Button>
+            <Button type="button" variant="ghost" size="icon" className="h-6 w-6 text-[var(--destructive)]" onClick={() => onChange(steps.filter((_, idx) => idx !== i))} disabled={disabled}><Trash2 size={12} /></Button>
           </div>
-        ))}
-      </div>
+        </div>
+      ))}
     </div>
   );
 }

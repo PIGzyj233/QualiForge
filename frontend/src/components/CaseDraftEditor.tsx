@@ -1,21 +1,17 @@
 import { FormEvent, useEffect, useState } from "react";
-import type { CaseDraftRecord, CaseStep, ProjectModuleRecord, TestCasePayload } from "../api/cases";
+import type { CaseDraftRecord, CaseStep, ProjectModuleRecord, TestCasePayload } from "@/api/cases";
 import { StepsEditor } from "./StepsEditor";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 function splitList(value: string) {
-  return value
-    .split(/\r?\n|[,，;；]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  return value.split(/\r?\n|[,，;；]/).map((s) => s.trim()).filter(Boolean);
 }
 
 export function CaseDraftEditor({
-  draft,
-  modules,
-  busy,
-  onSave,
-  onSubmitReview,
-  onAddressChanges
+  draft, modules, busy, onSave, onSubmitReview, onAddressChanges
 }: {
   draft: CaseDraftRecord;
   modules: ProjectModuleRecord[];
@@ -33,84 +29,48 @@ export function CaseDraftEditor({
   const [changeComment, setChangeComment] = useState("已按意见完成修改");
 
   useEffect(() => {
-    setModuleId(draft.module_id ?? "");
-    setTitle(draft.title);
-    setSteps(draft.steps);
-    setPriority(draft.priority);
-    setRisk(draft.risk);
-    setTags(draft.tags.join(", "));
+    setModuleId(draft.module_id ?? ""); setTitle(draft.title); setSteps(draft.steps);
+    setPriority(draft.priority); setRisk(draft.risk); setTags(draft.tags.join(", "));
   }, [draft]);
 
-  async function handleSave(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await onSave({
-      module_id: moduleId || null,
-      title,
-      steps,
-      priority,
-      risk,
-      tags: splitList(tags),
-      custom_fields: draft.custom_fields
-    });
+  async function handleSave(e: FormEvent) {
+    e.preventDefault();
+    await onSave({ module_id: moduleId || null, title, steps, priority, risk, tags: splitList(tags), custom_fields: draft.custom_fields });
   }
 
   const canSubmit = Boolean(moduleId) && draft.draft_status === "editing";
+  const f = "flex flex-col gap-1.5";
 
   return (
-    <form className="stack-form case-draft-editor" onSubmit={(event) => void handleSave(event)}>
-      <label>
-        模块
-        <select value={moduleId} onChange={(event) => setModuleId(event.target.value)} disabled={busy}>
-          <option value="">未归属</option>
-          {modules.map((module) => (
-            <option value={module.id} key={module.id}>
-              {module.path_label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        标题
-        <input value={title} onChange={(event) => setTitle(event.target.value)} disabled={busy} required />
-      </label>
+    <form onSubmit={(e) => void handleSave(e)} className="flex flex-col gap-3">
+      <div className={f}>
+        <Label>模块</Label>
+        <Select value={moduleId || "__none__"} onValueChange={(v) => setModuleId(v === "__none__" ? "" : v)} disabled={busy}>
+          <SelectTrigger><SelectValue placeholder="未归属" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">未归属</SelectItem>
+            {modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.path_label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className={f}><Label>标题</Label><Input value={title} onChange={(e) => setTitle(e.target.value)} disabled={busy} required /></div>
       <StepsEditor steps={steps} onChange={setSteps} disabled={busy} />
-      <div className="form-row">
-        <label>
-          优先级
-          <input value={priority} onChange={(event) => setPriority(event.target.value)} disabled={busy} />
-        </label>
-        <label>
-          风险
-          <input value={risk} onChange={(event) => setRisk(event.target.value)} disabled={busy} />
-        </label>
+      <div className="grid grid-cols-2 gap-3">
+        <div className={f}><Label>优先级</Label><Input value={priority} onChange={(e) => setPriority(e.target.value)} disabled={busy} /></div>
+        <div className={f}><Label>风险</Label><Input value={risk} onChange={(e) => setRisk(e.target.value)} disabled={busy} /></div>
       </div>
-      <label>
-        标签
-        <input value={tags} onChange={(event) => setTags(event.target.value)} disabled={busy} />
-      </label>
-      <div className="form-row compact case-action-row">
-        <button className="ghost-button" type="submit" disabled={busy}>
-          保存草稿
-        </button>
-        {onSubmitReview ? (
-          <button className="primary-button small" type="button" disabled={busy || !canSubmit} onClick={() => void onSubmitReview()}>
-            提交评审
-          </button>
-        ) : null}
+      <div className={f}><Label>标签</Label><Input value={tags} onChange={(e) => setTags(e.target.value)} disabled={busy} /></div>
+      <div className="flex gap-2">
+        <Button variant="outline" type="submit" disabled={busy}>保存草稿</Button>
+        {onSubmitReview && <Button type="button" disabled={busy || !canSubmit} onClick={() => void onSubmitReview()}>提交评审</Button>}
       </div>
-      {onAddressChanges ? (
-        <div className="form-row compact case-action-row">
-          <label>
-            复审说明
-            <input value={changeComment} onChange={(event) => setChangeComment(event.target.value)} disabled={busy} />
-          </label>
-          <button className="primary-button small" type="button" disabled={busy || !changeComment.trim()} onClick={() => void onAddressChanges(changeComment)}>
-            标记已修改
-          </button>
+      {onAddressChanges && (
+        <div className="flex gap-2 items-end">
+          <div className={`${f} flex-1`}><Label>复审说明</Label><Input value={changeComment} onChange={(e) => setChangeComment(e.target.value)} disabled={busy} /></div>
+          <Button type="button" disabled={busy || !changeComment.trim()} onClick={() => void onAddressChanges(changeComment)}>标记已修改</Button>
         </div>
-      ) : null}
-      {!moduleId ? <span className="helper-copy">未选择模块的草稿不能提交评审。</span> : null}
+      )}
+      {!moduleId && <p className="text-xs text-[var(--muted-foreground)]">未选择模块的草稿不能提交评审。</p>}
     </form>
   );
 }
-

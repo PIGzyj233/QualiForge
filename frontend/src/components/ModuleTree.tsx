@@ -1,59 +1,42 @@
 import { FolderTree } from "lucide-react";
-import type { ModuleTreeNode } from "../api/cases";
+import type { ModuleTreeNode } from "@/api/cases";
+import { cn } from "@/lib/utils";
 
-function TreeNode({
-  node,
-  selectedModuleId,
-  onSelect
-}: {
-  node: ModuleTreeNode;
-  selectedModuleId: string;
-  onSelect: (moduleId: string) => void;
-}) {
+function TreeNode({ node, selectedModuleId, onSelect }: { node: ModuleTreeNode; selectedModuleId: string; onSelect: (id: string) => void }) {
   const active = selectedModuleId === node.id;
   return (
     <li>
-      <button className={active ? "tree-node active" : "tree-node"} type="button" onClick={() => onSelect(node.id)}>
-        <span style={{ paddingLeft: node.depth * 12 }}>{node.path_label}</span>
-        <small>{node.reference_count}</small>
+      <button
+        type="button"
+        onClick={() => onSelect(node.id)}
+        className={cn("w-full flex items-center justify-between px-2 py-1.5 rounded-[var(--radius-sm)] text-sm transition-colors hover:bg-[var(--muted)]/60", active && "bg-[var(--accent)] text-[var(--accent-foreground)] font-semibold")}
+        style={{ paddingLeft: `${8 + node.depth * 12}px` }}
+      >
+        <span className="truncate">{node.path_label}</span>
+        <small className="text-xs text-[var(--muted-foreground)] shrink-0 ml-1">{node.reference_count}</small>
       </button>
-      {node.children.length ? (
-        <ul>
-          {node.children.map((child) => (
-            <TreeNode node={child} selectedModuleId={selectedModuleId} onSelect={onSelect} key={child.id} />
-          ))}
-        </ul>
-      ) : null}
+      {node.children.length > 0 && (
+        <ul>{node.children.map((c) => <TreeNode key={c.id} node={c} selectedModuleId={selectedModuleId} onSelect={onSelect} />)}</ul>
+      )}
     </li>
   );
 }
 
-export function ModuleTree({
-  modules,
-  selectedModuleId,
-  onSelect
-}: {
-  modules: ModuleTreeNode[];
-  selectedModuleId: string;
-  onSelect: (moduleId: string) => void;
-}) {
+export function ModuleTree({ modules, selectedModuleId, onSelect }: { modules: ModuleTreeNode[]; selectedModuleId: string; onSelect: (id: string) => void }) {
   return (
-    <div className="module-tree">
-      <div className="pane-heading">
-        <div>
-          <span className="eyebrow">Modules</span>
-          <h3>模块目录</h3>
-        </div>
-        <FolderTree size={18} aria-hidden="true" />
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between px-2 mb-1">
+        <span className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">模块目录</span>
+        <FolderTree size={14} className="text-[var(--muted-foreground)]" />
       </div>
-      <button className={selectedModuleId === "" ? "tree-node active" : "tree-node"} type="button" onClick={() => onSelect("")}>
-        <span>全部</span>
+      <button
+        type="button"
+        onClick={() => onSelect("")}
+        className={cn("w-full text-left px-2 py-1.5 rounded-[var(--radius-sm)] text-sm transition-colors hover:bg-[var(--muted)]/60", selectedModuleId === "" && "bg-[var(--accent)] text-[var(--accent-foreground)] font-semibold")}
+      >
+        全部
       </button>
-      <ul>
-        {modules.map((module) => (
-          <TreeNode node={module} selectedModuleId={selectedModuleId} onSelect={onSelect} key={module.id} />
-        ))}
-      </ul>
+      <ul>{modules.map((m) => <TreeNode key={m.id} node={m} selectedModuleId={selectedModuleId} onSelect={onSelect} />)}</ul>
     </div>
   );
 }

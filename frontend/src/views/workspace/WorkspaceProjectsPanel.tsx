@@ -1,11 +1,20 @@
 import { FormEvent, useState } from "react";
 import { Archive, FolderKanban, PencilLine } from "lucide-react";
-import { createProject, ProjectRecord, updateProject } from "../../api/workspace";
-import { useWorkspaceContext } from "../../hooks/useWorkspaceContext";
-import { statusLabel } from "../../lib/labels";
+import { createProject, updateProject, type ProjectRecord } from "@/api/workspace";
+import { useCurrentWorkspace, useWorkspaceStore, refreshProjects } from "@/stores/workspace-store";
+import { useSessionStore } from "@/stores/session-store";
+import { statusLabel } from "@/lib/labels";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export function WorkspaceProjectsPanel() {
-  const { actorEmail, currentWorkspace, projects, refreshProjects } = useWorkspaceContext();
+  const session = useSessionStore((s) => s.session);
+  const ws = useCurrentWorkspace();
+  const projects = useWorkspaceStore((s) => s.projects);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("Checkout");
   const [key, setKey] = useState("CHECKOUT");
@@ -14,122 +23,83 @@ export function WorkspaceProjectsPanel() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  function reset() {
-    setEditingId(null);
-    setName("");
-    setKey("");
-    setDescription("");
-    setProjStatus("active");
-  }
+  function reset() { setEditingId(null); setName(""); setKey(""); setDescription(""); setProjStatus("active"); }
+  function edit(p: ProjectRecord) { setEditingId(p.id); setName(p.name); setKey(p.key); setDescription(p.description); setProjStatus(p.status); }
 
-  function edit(project: ProjectRecord) {
-    setEditingId(project.id);
-    setName(project.name);
-    setKey(project.key);
-    setDescription(project.description);
-    setProjStatus(project.status);
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!currentWorkspace) return;
-    setBusy(true);
-    setMessage(null);
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!ws || !session) return;
+    setBusy(true); setMessage(null);
     try {
       if (editingId) {
-        await updateProject(currentWorkspace.id, editingId, actorEmail, {
-          name,
-          description,
-          status: projStatus
-        });
+        await updateProject(ws.id, editingId, session.user.email, { name, description, status: projStatus });
         setMessage(`已更新项目 ${key}`);
       } else {
-        await createProject(currentWorkspace.id, actorEmail, { name, key, description });
+        await createProject(ws.id, session.user.email, { name, key, description });
         setMessage(`已创建项目 ${key}`);
       }
       reset();
-      await refreshProjects();
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "项目保存失败");
-    } finally {
-      setBusy(false);
-    }
+      await refreshProjects(ws.id);
+    } catch (err) { setMessage(err instanceof Error ? err.message : "项目保存失败"); }
+    finally { setBusy(false); }
   }
 
   return (
-    <section className="panel">
-      <header className="panel-head">
-        <div>
-          <span className="eyebrow">Projects</span>
-          <h2>项目</h2>
-          <p className="panel-sub">在 {currentWorkspace?.name ?? "当前 Workspace"} 下管理项目生命周期。</p>
-        </div>
-        <FolderKanban size={20} aria-hidden="true" />
-      </header>
-      {message ? <div className="inline-notice">{message}</div> : null}
-
-      <form className="card-form" onSubmit={handleSubmit}>
-        <h3>{editingId ? "编辑项目" : "新建项目"}</h3>
-        <div className="form-row">
-          <label>
-            名称
-            <input value={name} onChange={(e) => setName(e.target.value)} required />
-          </label>
-          <label>
-            Key
-            <input
-              value={key}
-              onChange={(e) => setKey(e.target.value.toUpperCase())}
-              disabled={Boolean(editingId)}
-              required
-            />
-          </label>
-        </div>
-        <label>
-          描述
-          <input value={description} onChange={(e) => setDescription(e.target.value)} />
-        </label>
-        {editingId ? (
-          <label>
-            状态
-            <select value={projStatus} onChange={(e) => setProjStatus(e.target.value as "active" | "archived")}>
-              <option value="active">Active</option>
-              <option value="archived">Archived</option>
-            </select>
-          </label>
-        ) : null}
-        <div className="form-row compact">
-          <button className="primary-button" type="submit" disabled={busy || !currentWorkspace}>
-            {editingId ? "保存" : "创建项目"}
-          </button>
-          {editingId ? (
-            <button className="ghost-button" type="button" onClick={reset}>
-              取消
-            </button>
-          ) : null}
-        </div>
-      </form>
-
-      <div className="card-list">
-        {projects.map((project) => (
-          <article className="member-card" key={project.id}>
-            <div>
-              <strong>
-                {project.key} · {project.name}
-              </strong>
-              <span>{project.description || "无描述"}</span>
-              <small>
-                {statusLabel[project.status]} · 创建于 {new Date(project.created_at).toLocaleDateString()}
-              </small>
+    <div className="flex flex-col gap-5">
+      {message && <Alert><AlertDescription>{message}</AlertDescription></Alert>}
+      <Card>
+        <CardHeader><CardTitle className="flex items-center gap-2"><FolderKanban size={16} />{editingId ? "编辑项目" : "新建项目"}</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label>名称</Label>
+                <Input value={name} onChange={(e) => setName(e.target.value)} required />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Key</Label>
+                <Input value={key} onChange={(e) => setKey(e.target.value.toUpperCase())} disabled={Boolean(editingId)} required />
+              </div>
             </div>
-            <button className="icon-button subtle" type="button" onClick={() => edit(project)} title="编辑项目">
-              <PencilLine size={16} aria-hidden="true" />
-            </button>
-            {project.status === "archived" ? <Archive size={16} aria-hidden="true" /> : null}
-          </article>
+            <div className="flex flex-col gap-1.5">
+              <Label>描述</Label>
+              <Input value={description} onChange={(e) => setDescription(e.target.value)} />
+            </div>
+            {editingId && (
+              <div className="flex flex-col gap-1.5">
+                <Label>状态</Label>
+                <Select value={projStatus} onValueChange={(v) => setProjStatus(v as "active" | "archived")}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="archived">Archived</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Button type="submit" disabled={busy || !ws}>{editingId ? "保存" : "创建项目"}</Button>
+              {editingId && <Button type="button" variant="outline" onClick={reset}>取消</Button>}
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+      <div className="flex flex-col gap-2">
+        {projects.map((p) => (
+          <div key={p.id} className="flex items-center justify-between gap-3 rounded-[var(--radius-md)] border bg-[var(--card)] px-4 py-3">
+            <div className="min-w-0">
+              <p className="font-semibold text-sm">{p.key} · {p.name}</p>
+              <p className="text-xs text-[var(--muted-foreground)]">{p.description || "无描述"}</p>
+              <p className="text-xs text-[var(--muted-foreground)]">{statusLabel[p.status]} · 创建于 {new Date(p.created_at).toLocaleDateString()}</p>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              {p.status === "archived" && <Archive size={14} className="text-[var(--muted-foreground)]" />}
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => edit(p)} title="编辑项目"><PencilLine size={15} /></Button>
+            </div>
+          </div>
         ))}
-        {projects.length === 0 ? <p className="empty-state">尚无项目</p> : null}
+        {projects.length === 0 && <p className="text-sm text-[var(--muted-foreground)]">尚无项目</p>}
       </div>
-    </section>
+    </div>
   );
 }
