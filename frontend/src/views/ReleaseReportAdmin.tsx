@@ -1,20 +1,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { FileText, History, ShieldCheck, Sparkles } from "lucide-react";
 import { useParams } from "react-router-dom";
-import {
-  confirmReleaseReportDecision,
-  createReleaseReportDraft,
-  exportReleaseReportMarkdown,
-  listProjects,
-  listReleaseReports,
-  listTestPlans,
-  listWorkspaces,
-  ProjectRecord,
-  ReleaseReportRecord,
-  Session,
-  TestPlanRecord,
-  WorkspaceRecord
-} from "../api";
+import { confirmReleaseReportDecision, createReleaseReportDraft, exportReleaseReportMarkdown, listReleaseReports, listTestPlans, ReleaseReportRecord, TestPlanRecord } from "../api/planning";
+import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
 import { statusLabel } from "../lib/labels";
 import { pickExistingId } from "../lib/selection";
 

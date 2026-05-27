@@ -63,7 +63,7 @@ QualiForge 是一个模块化单体后端 + SPA 前端的私有化部署 SaaS �
 | `git/` | `/api/workspaces/{wid}` | `gitlab.py / sandbox.py` | GitLab 接入、Git Sandbox（bare mirror / worktree） |
 | `cases/` | `/api/workspaces/{wid}/projects/{pid}` | `modules / imports / reviews / diff_analysis / ai_suggestions / domain` | 模块、映射、用例导入、评审、Diff、AI 建议 |
 | `planning/` | `/api/workspaces/{wid}/projects/{pid}` | `test_plans / release_reports` | TestPlan、PlanItem、执行结果、Report |
-| `agents/` | `/api/workspaces/{wid}` | `routes / models / temporal / workflows / activities / graph_executor / ...` | AgentConversation/Run/Message/StagedOutput、Temporal workflow、LangGraph 执行器 |
+| `agents/` | `/api/workspaces/{wid}` | `routes / models / temporal / workflows / activities / graph_executor / graph_nodes / ...` | AgentConversation/Run/Message/StagedOutput、Temporal workflow、LangGraph 执行器 |
 
 详细数据流见 `architecture/backend.md`。
 
@@ -71,7 +71,7 @@ QualiForge 是一个模块化单体后端 + SPA 前端的私有化部署 SaaS �
 
 `frontend/src/`：
 
-- `api.ts`：所有后端响应类型与 fetch helper 的单一事实源（约 64KB）。
+- `api/`：按领域拆分的后端响应类型与 fetch helper，是前端 API 的单一事实源。
 - `App.tsx`：根据 `localStorage` 里的 `qualiforge.session` 渲染 `LoginView` 或 `AppRouter`。
 - `routes/AppRouter.tsx`：react-router 路由表，按 `/w/:wid/p/:pid/...` 嵌套 layout。
 - `views/`：顶层视图（admin / panel / overview）；其中 `views/workspace/*` 与 `views/project/*` 是工作台分区，其余 `*Admin.tsx` 与各后端 slice 一一对应。
@@ -89,8 +89,8 @@ QualiForge 是一个模块化单体后端 + SPA 前端的私有化部署 SaaS �
    start_agent_run_workflow → Temporal
 3. Temporal workflow (agents/workflows.py) 调度 activities
 4. activities 在后端进程内执行：
-     - graph_executor.py 跑 LangGraph 子图
-     - 通过 graph_tools 调用 code_tools / diff_engine / case_imports
+     - graph_executor.py 组装 LangGraph 子图，graph_nodes/ 承载节点实现
+     - 通过 graph_tools 调用 git/code_tools / diff_engine / case_imports
      - 走 ai/model_gateway 调 LLM，记录 AIInvocationLog
 5. 产出 AgentStagedOutput（人未审）+ 候选用例
 6. 前端轮询 /api/.../agent/runs/{id}，渲染时间线与 staged outputs

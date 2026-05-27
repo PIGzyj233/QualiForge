@@ -1,5 +1,5 @@
 import { FolderTree } from "lucide-react";
-import type { ModuleTreeNode } from "../api";
+import type { ModuleTreeNode } from "../api/cases";
 
 function TreeNode({
   node,

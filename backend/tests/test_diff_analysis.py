@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import Settings
+from app.platform.config import Settings
 from app.main import create_app
 
 

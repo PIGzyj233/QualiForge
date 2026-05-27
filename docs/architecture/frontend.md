@@ -75,14 +75,16 @@
 
 ## 4. API 层
 
-`src/api.ts` 是**唯一**与后端打交道的文件（约 64KB）：
+`src/api/` 是**唯一**与后端打交道的目录：
 
-- 每个后端响应类型都有对应 TS interface（命名与 backend Pydantic schema 对齐）。
+- `client.ts` 统一封装 `requestJson / requestNoContent / requestFormJson` 和 `VITE_API_URL` base URL。
+- `workspace.ts / ai.ts / git.ts / planning.ts / agents.ts / cases.ts` 按后端领域包暴露响应类型与 fetch helper。
+- `cases.ts` 是 cases 领域的 barrel，内部再拆 `cases.*.ts`，避免单个文件重新膨胀成浅模块。
 - 每个端点都有 fetch helper，函数名以 `list / get / create / update / delete / submit / approve / reject ...` 等动词开头。
 - 统一附带 `actor_email` query 参数与 `Authorization: Bearer <token>`。
 - 通过 `VITE_API_URL` 覆盖 base URL；默认走 vite 代理（dev）或同源（prod）。
 
-> **约定**：后端 schema 变更必须同步改 `api.ts`；不允许在视图里就地拼字符串。
+> **约定**：后端 schema 变更必须同步改匹配的 `src/api/*` 模块；不允许在视图里就地拼字符串。
 
 ## 5. 组件
 

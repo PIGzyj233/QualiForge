@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import type { CaseDraftRecord, CaseStep, ProjectModuleRecord, TestCasePayload } from "../api";
+import type { CaseDraftRecord, CaseStep, ProjectModuleRecord, TestCasePayload } from "../api/cases";
 import { StepsEditor } from "./StepsEditor";
 
 function splitList(value: string) {

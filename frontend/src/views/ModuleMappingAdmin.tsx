@@ -1,36 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { FolderPlus, GitBranch, Network, PencilLine, Plus, Trash2 } from "lucide-react";
 import { useParams } from "react-router-dom";
-import {
-  AgentStagedOutputRecord,
-  createMappingRule,
-  createModule,
-  decideAgentStagedOutput,
-  deleteMappingRule,
-  deleteModule,
-  generateModuleTreeDraft,
-  GitRepositoryRecord,
-  listMappingRules,
-  listModuleTree,
-  listModuleTreeDrafts,
-  listProjects,
-  listRepositories,
-  listWorkspaces,
-  MappingRelationship,
-  MappingRulePreflightRecord,
-  MappingRuleType,
-  MappingSource,
-  MappingStatus,
-  ModuleMappingRuleRecord,
-  ModuleTreeNode,
-  preflightMappingRule,
-  ProjectModuleRecord,
-  ProjectRecord,
-  Session,
-  updateMappingRule,
-  updateModule,
-  WorkspaceRecord
-} from "../api";
+import { AgentStagedOutputRecord, decideAgentStagedOutput } from "../api/agents";
+import { createMappingRule, createModule, deleteMappingRule, deleteModule, generateModuleTreeDraft, listMappingRules, listModuleTree, listModuleTreeDrafts, MappingRelationship, MappingRulePreflightRecord, MappingRuleType, MappingSource, MappingStatus, ModuleMappingRuleRecord, ModuleTreeNode, preflightMappingRule, ProjectModuleRecord, updateMappingRule, updateModule } from "../api/cases";
+import { GitRepositoryRecord, listRepositories } from "../api/git";
+import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
 import { mappingRelationshipLabel, mappingRuleTypeLabel, mappingSourceLabel, mappingStatusLabel } from "../lib/labels";
 import { pickExistingId } from "../lib/selection";
 

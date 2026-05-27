@@ -3,8 +3,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, text
 
-from app.config import Settings
-from app.database import Database
+from app.platform.config import Settings
+from app.platform.database import Database
 from app.main import create_app
 
 

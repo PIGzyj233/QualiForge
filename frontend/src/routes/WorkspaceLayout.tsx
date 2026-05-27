@@ -1,7 +1,7 @@
 import { ArrowUpRight, FolderKanban, LayoutDashboard, LogOut, Settings, ShieldCheck } from "lucide-react";
 import { ReactNode } from "react";
 import { Link, NavLink, Outlet, useNavigate, useParams } from "react-router-dom";
-import { Session } from "../api";
+import { Session } from "../api/workspace";
 import { ProjectSwitcher } from "../components/ProjectSwitcher";
 import { StatusPill } from "../components/StatusPill";
 import { WorkspaceSwitcher } from "../components/WorkspaceSwitcher";

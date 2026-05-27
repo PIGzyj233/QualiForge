@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { History } from "lucide-react";
-import { AuditLogRecord, listAuditLogs } from "../../api";
+import { AuditLogRecord, listAuditLogs } from "../../api/workspace";
 import { Pagination } from "../../components/Pagination";
 import { usePagination } from "../../hooks/usePagination";
 import { useWorkspaceContext } from "../../hooks/useWorkspaceContext";

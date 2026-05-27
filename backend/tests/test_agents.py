@@ -12,9 +12,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.agents import AgentRun, AgentRunStatus, AgentStagedOutput, CoverageIndexEntry
-from app.config import Settings
+from app.platform.config import Settings
 from app.main import create_app
-from app.model_gateway import RetryableModelGatewayError
+from app.ai.model_gateway import RetryableModelGatewayError
 
 
 OWNER = "owner@qualiforge.local"
@@ -1091,7 +1091,7 @@ def test_agent_subagent_plan_honors_dynamic_disables_and_skips_unknown_requests(
 
 
 def test_agent_subagent_plan_can_request_import_and_report_subagents(tmp_path: Path) -> None:
-    from app.case_imports import ImportBatch, ImportBatchStatus, ImportCaseDraft
+    from app.cases.imports import ImportBatch, ImportBatchStatus, ImportCaseDraft
 
     model_calls: list[dict[str, Any]] = []
     client = make_client(tmp_path, successful_model_transport(model_calls))
@@ -1543,7 +1543,7 @@ def test_temporal_execute_starts_workflow_and_returns_accepted(tmp_path: Path) -
 
 
 def test_temporal_workflow_starter_includes_budget_child_tasks(tmp_path: Path, monkeypatch) -> None:
-    import app.agent_temporal as agent_temporal
+    import app.agents.temporal as agent_temporal
 
     client = make_client(tmp_path, settings_overrides={"agent_execute_sync_mode": False})
     workspace, project = create_workspace_project(client)
@@ -1600,7 +1600,7 @@ def test_temporal_workflow_starter_includes_budget_child_tasks(tmp_path: Path, m
 
 
 def test_agent_child_task_activity_scans_synced_repository(tmp_path: Path) -> None:
-    from app.agent_activities import execute_agent_child_task_activity_with_settings
+    from app.agents.activities import execute_agent_child_task_activity_with_settings
 
     client = make_client(tmp_path, settings_overrides={"database_url": f"sqlite+pysqlite:///{tmp_path / 'child-scan.db'}"})
     workspace, project = create_workspace_project(client)
@@ -1631,8 +1631,8 @@ def test_agent_child_task_activity_scans_synced_repository(tmp_path: Path) -> No
 
 
 def test_agent_child_task_activity_analyzes_import_batches(tmp_path: Path) -> None:
-    from app.agent_activities import execute_agent_child_task_activity_with_settings
-    from app.case_imports import ImportBatch, ImportBatchStatus, ImportCaseDraft
+    from app.agents.activities import execute_agent_child_task_activity_with_settings
+    from app.cases.imports import ImportBatch, ImportBatchStatus, ImportCaseDraft
 
     client = make_client(tmp_path, settings_overrides={"database_url": f"sqlite+pysqlite:///{tmp_path / 'child-import.db'}"})
     workspace, project = create_workspace_project(client)
@@ -1709,7 +1709,7 @@ def test_agent_child_task_activity_analyzes_import_batches(tmp_path: Path) -> No
 
 
 def test_temporal_unavailable_returns_clear_error_without_staged_outputs(tmp_path: Path) -> None:
-    from app.agent_temporal import AgentTemporalUnavailable
+    from app.agents.temporal import AgentTemporalUnavailable
 
     client = make_client(tmp_path, settings_overrides={"agent_execute_sync_mode": False})
     workspace, project = create_workspace_project(client)
@@ -1793,8 +1793,8 @@ def test_temporal_resume_sends_signal_with_budget_override(tmp_path: Path) -> No
 
 
 def test_temporal_failure_activity_marks_running_run_failed(tmp_path: Path) -> None:
-    from app.agent_activities import mark_agent_run_failed_with_settings
-    from app.workspaces import AuditLog
+    from app.agents.activities import mark_agent_run_failed_with_settings
+    from app.workspace.routes import AuditLog
 
     client = make_client(tmp_path, settings_overrides={"database_url": f"sqlite+pysqlite:///{tmp_path / 'temporal-failure.db'}"})
     workspace, project = create_workspace_project(client)
@@ -1830,7 +1830,7 @@ def test_temporal_failure_activity_marks_running_run_failed(tmp_path: Path) -> N
 
 
 def test_temporal_failure_activity_does_not_overwrite_cancelled_run(tmp_path: Path) -> None:
-    from app.agent_activities import mark_agent_run_failed_with_settings
+    from app.agents.activities import mark_agent_run_failed_with_settings
 
     client = make_client(tmp_path, settings_overrides={"database_url": f"sqlite+pysqlite:///{tmp_path / 'temporal-cancel-race.db'}"})
     workspace, project = create_workspace_project(client)
@@ -1865,8 +1865,8 @@ def test_temporal_failure_activity_does_not_overwrite_cancelled_run(tmp_path: Pa
 
 
 def test_temporal_child_results_persist_to_execution_detail_once(tmp_path: Path) -> None:
-    from app.agent_activities import persist_temporal_child_results
-    from app.workspaces import AuditLog
+    from app.agents.activities import persist_temporal_child_results
+    from app.workspace.routes import AuditLog
 
     client = make_client(tmp_path)
     workspace, project = create_workspace_project(client)
@@ -2040,7 +2040,7 @@ def test_successful_agent_run_writes_searchable_daily_memory(tmp_path: Path) -> 
 
 
 def test_staged_output_writer_is_idempotent_for_activity_retry(tmp_path: Path) -> None:
-    from app.agent_graph import AgentGraphExecutor
+    from app.agents.graph import AgentGraphExecutor
 
     client = make_client(tmp_path)
     workspace, project = create_workspace_project(client)
@@ -2087,7 +2087,7 @@ def test_staged_output_writer_is_idempotent_for_activity_retry(tmp_path: Path) -
 
 
 def test_module_tree_verifier_rejects_parent_cycles_and_normalized_slug_conflicts(tmp_path: Path) -> None:
-    from app.agent_graph import AgentGraphExecutor
+    from app.agents.graph import AgentGraphExecutor
 
     client = make_client(tmp_path)
     workspace, project = create_workspace_project(client)

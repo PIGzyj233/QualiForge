@@ -1,5 +1,5 @@
 import { ChevronDown } from "lucide-react";
-import { ProjectRecord } from "../api";
+import { ProjectRecord } from "../api/workspace";
 
 export function ProjectSwitcher({
   projects,

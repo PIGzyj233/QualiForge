@@ -15,7 +15,7 @@ import {
   ServerCog
 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
-import { DashboardSummary, getDashboardSummary, getHealth, HealthPayload } from "../../api";
+import { DashboardSummary, getDashboardSummary, getHealth, HealthPayload } from "../../api/workspace";
 import { Pagination } from "../../components/Pagination";
 import { StatusPill } from "../../components/StatusPill";
 import { usePagination } from "../../hooks/usePagination";

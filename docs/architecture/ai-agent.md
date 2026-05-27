@@ -8,11 +8,11 @@
 | 能力 | 状态 | 实现位置 |
 |------|------|----------|
 | Temporal 持久执行 | ✅ 已落地 | `agents/temporal.py / workflows.py / activities.py` |
-| LangGraph 主执行器 | ✅ 已落地 | `agents/graph_executor.py`（≈ 98KB） |
+| LangGraph 主执行器 | ✅ 已落地 | `agents/graph_executor.py` + `agents/graph_nodes/` |
 | 多种 specialized graph | ✅ 已落地 | `graph_analysis.py / graph_runner.py / graph_tools.py` |
 | ModelGateway（OpenAI 兼容） | ✅ 已落地 | `ai/model_gateway.py` |
 | 数据模型（Conversation/Run/Message/...) | ✅ 已落地 | `agents/models.py` |
-| 工具注册表（typed code-read tools） | ✅ 已落地 | `agents/graph_tools.py` + `app/code_tools.py` |
+| 工具注册表（typed code-read tools） | ✅ 已落地 | `agents/graph_tools.py` + `git/code_tools.py` |
 | 预算（system/default/run 三层） | ✅ 已落地 | `agents/budget.py / graph_budget.py` |
 | AI 数据策略检查 | ✅ 已落地 | 通过 `ai/config.py` 在 graph 入口校验 |
 | Markdown 记忆 + 版本 | ✅ 已落地 | `agents/memory.py`，存储在 `agent_memory_root` |
@@ -34,6 +34,7 @@ Frontend AgentWorkbenchView (React)
         └─► Temporal Workflow (workflows.py)
               └─► Activities (activities.py)
                     └─► LangGraph Supervisor (graph_executor.py)
+                          ├─► Node Modules (graph_nodes/)
                           ├─► Tool Registry (graph_tools.py)
                           ├─► (planned) Subagents
                           └─► ModelGateway (ai/model_gateway.py)
@@ -83,11 +84,12 @@ load_context → plan → tool_loop → synthesize → verify
 
 ## 5. Supervisor 与 Subagent
 
-**Supervisor**（`graph_executor.py` 内）：
+**Supervisor**（`graph_executor.py` + `graph_nodes/`）：
 
 - 决定是否启动子代理、启动几个、串/并行、是否需要 critic。
 - 保持 subagent 只读 / 分析 / 提议；staged output 仅由 supervisor 写。
 - 区分"可信指令"与"不可信分析内容"。
+- `graph_executor.py` 保持为薄编排器；节点的具体实现集中在 `graph_nodes/`，让每个节点的测试 surface 更清晰。
 
 **初始 Subagent 类型（设计 / 部分落地）**：
 
@@ -104,7 +106,7 @@ load_context → plan → tool_loop → synthesize → verify
 
 ## 6. 工具权限
 
-`agents/graph_tools.py` 与 `app/code_tools.py` 暴露 typed 工具，权限分级：
+`agents/graph_tools.py` 与 `git/code_tools.py` 暴露 typed 工具，权限分级：
 
 | 级别 | 行为 | 例子 |
 |------|------|------|
@@ -156,7 +158,7 @@ Prompt 动态组装，分层版本化：
 {
   "kind": "code_file",
   "ref_id": "repo_id:target_ref:path",
-  "label": "backend/app/ai_config.py:404-430",
+  "label": "backend/app/ai/config.py:404-430",
   "confidence": 0.86,
   "summary": "Provider creation masks API key and records audit.",
   "source": "code_search"

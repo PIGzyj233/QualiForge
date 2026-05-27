@@ -1,18 +1,23 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const source = (path) => readFileSync(join(root, path), "utf8");
+const directorySource = (path) =>
+  readdirSync(join(root, path))
+    .filter((name) => name.endsWith(".ts"))
+    .map((name) => source(`${path}/${name}`))
+    .join("\n");
 
-const api = source("src/api.ts");
+const api = directorySource("src/api");
 const view = source("src/views/AgentWorkbenchView.tsx");
-const workbench = source("src/views/Workbench.tsx");
+const router = source("src/routes/AppRouter.tsx");
 
 const checks = [
   {
     label: "Agent navigation renders the workbench",
-    pass: workbench.includes("activeNav === \"agent\"") && workbench.includes("<AgentWorkbenchView")
+    pass: router.includes('path="agent/*"') && router.includes("<AgentWorkbenchView")
   },
   {
     label: "Global run list API supports project and status filters",

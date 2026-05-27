@@ -1,6 +1,6 @@
 import { ChevronDown, Plus } from "lucide-react";
 import { FormEvent, useState } from "react";
-import { createWorkspace, Session, WorkspaceRecord } from "../api";
+import { createWorkspace, Session, WorkspaceRecord } from "../api/workspace";
 
 export function WorkspaceSwitcher({
   workspaces,

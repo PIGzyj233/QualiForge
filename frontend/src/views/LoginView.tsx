@@ -1,9 +1,6 @@
 import { FormEvent, useState } from "react";
 import { LogIn, Sparkles } from "lucide-react";
-import {
-  login,
-  Session
-} from "../api";
+import { login, Session } from "../api/workspace";
 
 export function LoginView({ onSession }: { onSession: (session: Session) => void }) {
   const [email, setEmail] = useState("owner@qualiforge.local");

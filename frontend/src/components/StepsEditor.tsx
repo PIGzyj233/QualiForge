@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { ChangeEvent, useRef } from "react";
-import type { CaseStep } from "../api";
+import type { CaseStep } from "../api/cases";
 
 function autoResize(el: HTMLTextAreaElement | null) {
   if (!el) return;

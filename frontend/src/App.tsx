@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { BrowserRouter } from "react-router-dom";
-import type { Session } from "./api";
+import type { Session } from "./api/workspace";
 import { AppRouter } from "./routes/AppRouter";
 import { LoginView } from "./views/LoginView";
 

@@ -1,4 +1,6 @@
-import type { AIDataPolicy, AIPurpose, MappingRelationship, MappingRuleType, MappingSource, MappingStatus, PlanItemRecord } from "../api";
+import type { AIDataPolicy, AIPurpose } from "../api/ai";
+import type { MappingRelationship, MappingRuleType, MappingSource, MappingStatus } from "../api/cases";
+import type { PlanItemRecord } from "../api/planning";
 
 export const statusLabel: Record<string, string> = {
   done: "已完成",

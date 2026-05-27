@@ -1,4 +1,4 @@
-import type { CaseRevisionRecord, CaseStep } from "../api";
+import type { CaseRevisionRecord, CaseStep } from "../api/cases";
 
 function normalizeSteps(value: unknown): CaseStep[] {
   if (!Array.isArray(value)) return [];

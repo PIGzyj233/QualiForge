@@ -1,26 +1,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { BrainCircuit, KeyRound, Settings2, ShieldAlert } from "lucide-react";
 import { useParams } from "react-router-dom";
-import {
-  AIDataPolicy,
-  AIInvocationRecord,
-  AIPurpose,
-  AISettingsRecord,
-  completeAIInvocation,
-  createLLMProvider,
-  getAISettings,
-  listAIInvocations,
-  listLLMProviders,
-  listModelProfiles,
-  listWorkspaces,
-  LLMProviderRecord,
-  ModelProfileRecord,
-  Session,
-  startAIInvocation,
-  updateAISettings,
-  upsertModelProfile,
-  WorkspaceRecord
-} from "../api";
+import { AIDataPolicy, AIInvocationRecord, AIPurpose, AISettingsRecord, completeAIInvocation, createLLMProvider, getAISettings, listAIInvocations, listLLMProviders, listModelProfiles, LLMProviderRecord, ModelProfileRecord, startAIInvocation, updateAISettings, upsertModelProfile } from "../api/ai";
+import { listWorkspaces, Session, WorkspaceRecord } from "../api/workspace";
 import { Pagination } from "../components/Pagination";
 import { usePagination } from "../hooks/usePagination";
 import { statusLabel, purposeLabel, policyLabel } from "../lib/labels";

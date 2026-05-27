@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Mail, Shield } from "lucide-react";
-import { listMembers, MemberRecord } from "../../api";
+import { listMembers, MemberRecord } from "../../api/workspace";
 import { useWorkspaceContext } from "../../hooks/useWorkspaceContext";
 
 export function ProjectTeamPanel() {

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { Session } from "../api";
+import { Session } from "../api/workspace";
 import { WorkspaceProvider, useWorkspaceContext } from "../hooks/useWorkspaceContext";
 import { routes } from "../lib/routes";
 import { AISuggestionAdmin } from "../views/AISuggestionAdmin";

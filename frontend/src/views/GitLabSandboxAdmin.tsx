@@ -1,22 +1,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Database, GitBranch, GitCommitHorizontal, KeyRound } from "lucide-react";
 import { useParams } from "react-router-dom";
-import {
-  bindRepository,
-  getGitLabToken,
-  GitLabTokenRecord,
-  GitRepositoryRecord,
-  JobRecord,
-  listJobs,
-  listProjects,
-  listRepositories,
-  listWorkspaces,
-  ProjectRecord,
-  Session,
-  syncRepository,
-  upsertGitLabToken,
-  WorkspaceRecord
-} from "../api";
+import { bindRepository, getGitLabToken, GitLabTokenRecord, GitRepositoryRecord, JobRecord, listJobs, listRepositories, syncRepository, upsertGitLabToken } from "../api/git";
+import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
 import { Pagination } from "../components/Pagination";
 import { usePagination } from "../hooks/usePagination";
 import { statusLabel } from "../lib/labels";

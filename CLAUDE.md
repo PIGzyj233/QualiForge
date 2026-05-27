@@ -42,11 +42,11 @@ npm run dev          # vite on :5173, proxies /api to localhost:8000
 npm run build        # tsc --noEmit on both tsconfigs + vite build
 ```
 
-There is no linter/formatter wired in either package — don't fabricate one. There is no Alembic migration tool; SQLAlchemy `Base.metadata.create_all` runs lazily on first DB use (see `app/database.py`).
+There is no linter/formatter wired in either package — don't fabricate one. There is no Alembic migration tool; SQLAlchemy `Base.metadata.create_all` runs lazily on first DB use (see `app/platform/database.py`).
 
 ## Backend architecture
 
-The FastAPI app is composed of **domain packages** under `backend/app/` (`platform/`, `workspace/`, `ai/`, `git/`, `cases/`, `planning/`, `agents/`). Each exposes one `router: APIRouter`. `app/main.py::create_app` wires them via `include_router`. Root-level shim files (`app/workspaces.py`, `app/ai_config.py`, etc.) re-export from sub-packages for backwards compatibility — new code should import the sub-package paths directly.
+The FastAPI app is composed of **domain packages** under `backend/app/` (`platform/`, `workspace/`, `ai/`, `git/`, `cases/`, `planning/`, `agents/`). Each exposes one `router: APIRouter`. `app/main.py::create_app` wires them via `include_router`. Root-level compatibility import files are not supported; import the sub-package paths directly.
 
 Key shared infrastructure:
 
@@ -72,12 +72,12 @@ Full architecture walkthrough lives in `docs/architecture/backend.md`; cross-pac
 
 Single-page React app in `frontend/src/`, routed by react-router (see `routes/AppRouter.tsx`):
 
-- `api.ts` is the **single source of truth** for backend types and fetch helpers. Every backend response shape is mirrored here. When you change a backend schema, update `api.ts` in the same change.
+- `src/api/` is the **single source of truth** for backend types and fetch helpers. Each domain module mirrors its matching backend slice; when you change a backend schema, update the matching frontend API module in the same change.
 - `App.tsx` toggles between `LoginView` and `<AppRouter>` based on a `Session` persisted to `localStorage` under `qualiforge.session`.
 - `routes/AppRouter.tsx` owns the route table. Layouts: `WorkspaceLayout` (top chrome + sidebar), `AdminLayout` (workspace admin tabs), `ProjectLayout` (project sub-nav).
 - Admin views (`views/*Admin.tsx`) are the working surfaces — one per backend slice (`AIConfigAdmin`, `GitLabSandboxAdmin`, `ModuleMappingAdmin`, `CaseImportAdmin`, `DiffAnalysisAdmin`, `AISuggestionAdmin`, `TestPlanAdmin`, `ReleaseReportAdmin`, `AgentWorkbenchView`). Top-level navigational hosts like `LibraryView`, `ReviewQueueView`, and the panels in `views/workspace/*` and `views/project/*` compose those admin components and lighter panels.
 - UI copy is **Simplified Chinese** for user-facing strings; identifiers and comments stay English. Match this when adding strings.
-- `vite.config.ts` proxies `/api` → `http://localhost:8000` in dev. `VITE_API_URL` overrides the base in `api.ts`.
+- `vite.config.ts` proxies `/api` → `http://localhost:8000` in dev. `VITE_API_URL` overrides the base in `src/api/client.ts`.
 - No state library, no UI kit, no test runner — keep additions minimal unless asked.
 
 Full route table and views inventory in `docs/architecture/frontend.md`.

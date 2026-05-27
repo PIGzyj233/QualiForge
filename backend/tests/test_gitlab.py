@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import Settings
+from app.platform.config import Settings
 from app.git.models import WorkspaceGitLabCredential
 from app.git.sandbox import git_auth_env, git_command_for_log
-from app.gitlab import ensure_safe_sandbox_path
+from app.git.gitlab import ensure_safe_sandbox_path
 from app.main import create_app
 
 

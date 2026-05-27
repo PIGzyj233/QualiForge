@@ -1,21 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, FileSearch, MessageSquareWarning, XCircle } from "lucide-react";
 import { useParams } from "react-router-dom";
-import {
-  approveReviewCycle,
-  getTestCase,
-  listModules,
-  listProjects,
-  listReviewQueue,
-  listWorkspaces,
-  ProjectModuleRecord,
-  ProjectRecord,
-  rejectReviewCycle,
-  requestReviewChanges,
-  Session,
-  TestCaseRecord,
-  WorkspaceRecord
-} from "../api";
+import { approveReviewCycle, getTestCase, listModules, listReviewQueue, ProjectModuleRecord, rejectReviewCycle, requestReviewChanges, TestCaseRecord } from "../api/cases";
+import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
 import { CaseRevisionViewer } from "../components/CaseRevisionViewer";
 import { ReviewStatusBadge } from "../components/ReviewStatusBadge";
 import { pickExistingId } from "../lib/selection";

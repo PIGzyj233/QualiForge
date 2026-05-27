@@ -2,44 +2,41 @@ from __future__ import annotations
 
 import importlib
 
-from app.config import Settings
-from app.database import Database
+from app.platform.config import Settings
+from app.platform.database import Database
 from app.main import create_app
 from app.platform.database import Base
 
 
-def test_legacy_module_paths_alias_domain_modules() -> None:
-    module_pairs = [
-        ("app.config", "app.platform.config", ["Settings"], True),
-        ("app.database", "app.platform.database", ["Database", "Base"], True),
-        ("app.telemetry", "app.platform.telemetry", ["agent_span"], True),
-        ("app.gitlab", "app.git.gitlab", ["GitRepository", "ensure_safe_sandbox_path"], True),
-        ("app.code_tools", "app.git.code_tools", ["code_search", "CodeReadResult"], True),
-        ("app.case_domain", "app.cases.domain", ["TestCase", "CaseDraft"], True),
-        ("app.case_imports", "app.cases.imports", ["ImportBatch", "safe_filename"], True),
-        ("app.case_reviews", "app.cases.reviews", ["WorkspaceReviewSettings", "build_case_response"], True),
-        ("app.diff_analysis", "app.cases.diff_analysis", ["DiffAnalysis", "run_analysis"], True),
-        ("app.ai_suggestions", "app.cases.ai_suggestions", ["AISuggestion"], True),
-        ("app.ai_config", "app.ai.config", ["WorkspaceAISettings", "AIInvocationLog"], True),
-        ("app.model_gateway", "app.ai.model_gateway", ["build_model_gateway"], True),
-        ("app.test_plans", "app.planning.test_plans", ["TestPlan", "PlanItem"], False),
-        ("app.release_reports", "app.planning.release_reports", ["ReleaseReport"], True),
-        ("app.workspaces", "app.workspace.routes", ["Workspace", "AuditLog"], True),
-        ("app.modules", "app.cases.modules", ["ProjectModule", "ModuleMappingRule"], True),
-        ("app.agent_graph", "app.agents.graph", ["AgentGraphExecutor", "execute_agent_graph"], True),
-        ("app.agent_memory", "app.agents.memory", ["list_memory_files"], True),
-        ("app.agent_temporal", "app.agents.temporal", ["AgentTemporalUnavailable"], True),
-        ("app.agent_workflows", "app.agents.workflows", ["AgentRunWorkflow"], True),
-        ("app.agent_activities", "app.agents.activities", ["mark_agent_run_failed_with_settings"], True),
+def test_domain_modules_expose_expected_public_objects() -> None:
+    module_contracts = [
+        ("app.platform.config", ["Settings"]),
+        ("app.platform.database", ["Database", "Base"]),
+        ("app.platform.telemetry", ["agent_span"]),
+        ("app.git.gitlab", ["GitRepository", "ensure_safe_sandbox_path"]),
+        ("app.git.code_tools", ["code_search", "CodeReadResult"]),
+        ("app.cases.domain", ["TestCase", "CaseDraft"]),
+        ("app.cases.imports", ["ImportBatch", "safe_filename"]),
+        ("app.cases.reviews", ["WorkspaceReviewSettings", "build_case_response"]),
+        ("app.cases.diff_analysis", ["DiffAnalysis", "run_analysis"]),
+        ("app.cases.ai_suggestions", ["AISuggestion"]),
+        ("app.ai.config", ["WorkspaceAISettings", "AIInvocationLog"]),
+        ("app.ai.model_gateway", ["build_model_gateway"]),
+        ("app.planning.test_plans", ["TestPlan", "PlanItem"]),
+        ("app.planning.release_reports", ["ReleaseReport"]),
+        ("app.workspace.routes", ["Workspace", "AuditLog"]),
+        ("app.cases.modules", ["ProjectModule", "ModuleMappingRule"]),
+        ("app.agents.graph", ["AgentGraphExecutor", "execute_agent_graph"]),
+        ("app.agents.memory", ["list_memory_files"]),
+        ("app.agents.temporal", ["AgentTemporalUnavailable"]),
+        ("app.agents.workflows", ["AgentRunWorkflow"]),
+        ("app.agents.activities", ["mark_agent_run_failed_with_settings"]),
     ]
 
-    for legacy_name, domain_name, attributes, same_module in module_pairs:
-        legacy = importlib.import_module(legacy_name)
-        domain = importlib.import_module(domain_name)
-        if same_module:
-            assert legacy is domain
+    for module_name, attributes in module_contracts:
+        module = importlib.import_module(module_name)
         for attribute in attributes:
-            assert getattr(legacy, attribute) is getattr(domain, attribute)
+            assert getattr(module, attribute)
 
 
 def test_agents_package_reexports_core_domain_objects() -> None:

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Trash2, UserPlus } from "lucide-react";
-import { addMember, listMembers, MemberRecord, removeMember } from "../../api";
+import { addMember, listMembers, MemberRecord, removeMember } from "../../api/workspace";
 import { useWorkspaceContext } from "../../hooks/useWorkspaceContext";
 
 export function WorkspaceMembersPanel() {

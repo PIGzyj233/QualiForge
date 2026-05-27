@@ -1,18 +1,9 @@
 import { FormEvent, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Code2, FileText, FolderKanban, GitCommitHorizontal, History, Network, ShieldAlert } from "lucide-react";
 import { useParams } from "react-router-dom";
-import {
-  createDiffAnalysis,
-  DiffAnalysisRecord,
-  GitRepositoryRecord,
-  listDiffAnalyses,
-  listProjects,
-  listRepositories,
-  listWorkspaces,
-  ProjectRecord,
-  Session,
-  WorkspaceRecord
-} from "../api";
+import { createDiffAnalysis, DiffAnalysisRecord, listDiffAnalyses } from "../api/cases";
+import { GitRepositoryRecord, listRepositories } from "../api/git";
+import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
 import { statusLabel, riskLabel, changeTypeLabel } from "../lib/labels";
 import { pickExistingId } from "../lib/selection";
 

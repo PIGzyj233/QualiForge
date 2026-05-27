@@ -1,26 +1,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { ClipboardCheck, FileText, PencilLine } from "lucide-react";
 import { useParams } from "react-router-dom";
-import {
-  bulkImportTestCases,
-  bulkUpdateImportDrafts,
-  CaseStep,
-  ImportBatchRecord,
-  ImportDraftRecord,
-  listImportBatches,
-  listImportDrafts,
-  listModules,
-  listProjects,
-  listTestCases,
-  listWorkspaces,
-  ProjectRecord,
-  ProjectModuleRecord,
-  Session,
-  submitImportReview,
-  TestCaseRecord,
-  uploadImportBatch,
-  WorkspaceRecord
-} from "../api";
+import { bulkImportTestCases, bulkUpdateImportDrafts, CaseStep, ImportBatchRecord, ImportDraftRecord, listImportBatches, listImportDrafts, listModules, listTestCases, ProjectModuleRecord, submitImportReview, TestCaseRecord, uploadImportBatch } from "../api/cases";
+import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
 import { Pagination } from "../components/Pagination";
 import { StepsEditor } from "../components/StepsEditor";
 import { usePagination } from "../hooks/usePagination";

@@ -9,13 +9,13 @@ from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from app.agent_activities import (
+from app.agents.activities import (
     execute_agent_child_task_activity_with_settings,
     execute_agent_graph_activity_with_settings,
     mark_agent_run_cancelled_with_settings,
     mark_agent_run_failed_with_settings,
 )
-from app.agent_workflows import AgentChildTaskWorkflow, AgentRunWorkflow
+from app.agents.workflows import AgentChildTaskWorkflow, AgentRunWorkflow
 from test_agents import (
     OWNER,
     bind_repository,

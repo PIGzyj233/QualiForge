@@ -1,27 +1,8 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Archive, FilePlus2, GitCompareArrows, History, RefreshCcw } from "lucide-react";
 import { useParams } from "react-router-dom";
-import {
-  addressReviewChanges,
-  CaseDraftRecord,
-  CaseStep,
-  createActiveEditDraft,
-  createTestCase,
-  getTestCase,
-  listModules,
-  listModuleTree,
-  listProjects,
-  listTestCases,
-  listWorkspaces,
-  ProjectModuleRecord,
-  ProjectRecord,
-  Session,
-  submitCaseDraftReview,
-  TestCasePayload,
-  TestCaseRecord,
-  updateCaseDraft,
-  WorkspaceRecord
-} from "../api";
+import { addressReviewChanges, CaseDraftRecord, CaseStep, createActiveEditDraft, createTestCase, getTestCase, listModules, listModuleTree, listTestCases, ProjectModuleRecord, submitCaseDraftReview, TestCasePayload, TestCaseRecord, updateCaseDraft } from "../api/cases";
+import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
 import { CaseDraftEditor } from "../components/CaseDraftEditor";
 import { CaseRevisionViewer } from "../components/CaseRevisionViewer";
 import { CaseStatusBadge } from "../components/CaseStatusBadge";

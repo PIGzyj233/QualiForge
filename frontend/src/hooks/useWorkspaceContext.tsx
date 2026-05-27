@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ReactNode } from "react";
 import { useLocation } from "react-router-dom";
-import { getCurrentMember, listProjects, listWorkspaces, MemberRecord, ProjectRecord, Session, WorkspaceRecord } from "../api";
+import { getCurrentMember, listProjects, listWorkspaces, MemberRecord, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
 
 export type WorkspaceContextValue = {
   session: Session;

@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 import { Archive, FolderKanban, PencilLine } from "lucide-react";
-import { createProject, ProjectRecord, updateProject } from "../../api";
+import { createProject, ProjectRecord, updateProject } from "../../api/workspace";
 import { useWorkspaceContext } from "../../hooks/useWorkspaceContext";
 import { statusLabel } from "../../lib/labels";
 

@@ -15,8 +15,7 @@
   - `POST /api/auth/login`：MVP scaffolding，返回 `local-dev-token:<email>` 假 token。
   - `GET /api/dashboard/summary`：工作台 hard-coded 12 条主线状态。
 - 按顺序 `include_router`：workspace → ai_config → gitlab → modules → case_imports → case_reviews → diff_analysis → test_plans → ai_suggestions → release_reports → agents。
-
-> `app/workspaces.py / app/ai_config.py / app/case_imports.py / ...` 这些根级文件是**兼容 shim**，把 import 重定向到子包（例如 `app.workspaces` → `app.workspace.routes`）。新代码请直接 import 子包路径。
+- 根级 `app/` 不再保留兼容导入文件；所有内部代码直接 import 领域包路径。
 
 ## 2. 共享基础设施
 
@@ -91,7 +90,8 @@
 - `temporal.py`：Temporal client + `start_agent_run_workflow`、`AgentTemporalUnavailable` 异常。
 - `workflows.py`：Temporal workflow 定义（取消信号、活动调度、重试策略）。
 - `activities.py`：Temporal activities（执行 LangGraph、持久化中间结果、写 AgentToolCall）。
-- `graph_executor.py`（98KB）：LangGraph 主执行器，承载多种 specialized graph。
+- `graph_executor.py`：LangGraph 薄编排器，负责组装节点和持有共享执行状态。
+- `graph_nodes/`：LangGraph 节点实现，按 context、tool loop、generation、verification、staging 等 locality 拆分。
 - `graph_*.py`：分析图、预算、策略、结果聚合、工具表、运行器、类型定义。
 - `budget.py`：默认/系统/运行级预算。
 - `memory.py`：Markdown 记忆文件存取与版本。
@@ -144,7 +144,7 @@ app = create_app(Settings(
 client = TestClient(app)
 ```
 
-- 跨测试**禁止**共享 `app/database`；in-memory SQLite + `StaticPool` 保证隔离。
+- 跨测试**禁止**共享 `app/platform/database`；in-memory SQLite + `StaticPool` 保证隔离。
 - 当前测试 19 个文件，覆盖每个 slice 主流程 + Temporal 集成 + 模型网关。
 
 运行：

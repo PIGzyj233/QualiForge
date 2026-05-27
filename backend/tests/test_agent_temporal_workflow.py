@@ -8,7 +8,7 @@ from temporalio.client import WorkflowFailureError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from app.agent_workflows import AgentChildTaskWorkflow, AgentRunWorkflow
+from app.agents.workflows import AgentChildTaskWorkflow, AgentRunWorkflow
 
 
 def run_async(coro):

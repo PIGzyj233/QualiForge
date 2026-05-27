@@ -1,21 +1,8 @@
 import { useEffect, useState } from "react";
 import { BrainCircuit, CheckCircle2, ChevronRight, ClipboardCheck, MessageSquare, Plus, Sparkles, XCircle } from "lucide-react";
-import {
-  AISuggestionRecord,
-  createCandidateFromSuggestion,
-  createSuggestionPlanItems,
-  DiffAnalysisRecord,
-  listDiffAnalyses,
-  generateAISuggestions,
-  listAISuggestions,
-  listTestPlans,
-  listTestCases,
-  PlanItemRecord,
-  Session,
-  TestPlanRecord,
-  TestCaseRecord,
-  updateAISuggestion
-} from "../api";
+import { AISuggestionRecord, createCandidateFromSuggestion, createSuggestionPlanItems, DiffAnalysisRecord, listDiffAnalyses, generateAISuggestions, listAISuggestions, listTestCases, TestCaseRecord, updateAISuggestion } from "../api/cases";
+import { listTestPlans, PlanItemRecord, TestPlanRecord } from "../api/planning";
+import { Session } from "../api/workspace";
 import { useWorkspaceContext } from "../hooks/useWorkspaceContext";
 import { statusLabel, riskLabel, suggestionTypeLabel } from "../lib/labels";
 

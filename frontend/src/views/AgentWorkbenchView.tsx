@@ -1,36 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, Boxes, Check, CircleStop, ClipboardCheck, FileSearch, GitBranch, ListChecks, Play, RefreshCcw, RotateCcw, Save, Search, X } from "lucide-react";
 import { useParams } from "react-router-dom";
-import {
-  AgentExecutionDetailRecord,
-  AgentMemoryFileRecord,
-  AgentMemorySearchResult,
-  AgentMemoryVersionRecord,
-  AgentRunRecord,
-  AgentRunStatus,
-  AgentStagedOutputRecord,
-  cancelAgentRun,
-  curateAgentMemory,
-  createAgentConversation,
-  createAgentRun,
-  decideAgentApproval,
-  decideAgentStagedOutput,
-  executeAgentRun,
-  getAgentExecutionDetail,
-  GitRepositoryRecord,
-  listAgentMemoryVersions,
-  listAgentRuns,
-  listProjects,
-  listRepositories,
-  listWorkspaces,
-  ProjectRecord,
-  rollbackAgentMemory,
-  resumeAgentRun,
-  Session,
-  searchAgentMemory,
-  upsertAgentBudgetPolicy,
-  WorkspaceRecord
-} from "../api";
+import { AgentExecutionDetailRecord, AgentMemoryFileRecord, AgentMemorySearchResult, AgentMemoryVersionRecord, AgentRunRecord, AgentRunStatus, AgentStagedOutputRecord, cancelAgentRun, curateAgentMemory, createAgentConversation, createAgentRun, decideAgentApproval, decideAgentStagedOutput, executeAgentRun, getAgentExecutionDetail, listAgentMemoryVersions, listAgentRuns, rollbackAgentMemory, resumeAgentRun, searchAgentMemory, upsertAgentBudgetPolicy } from "../api/agents";
+import { GitRepositoryRecord, listRepositories } from "../api/git";
+import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
 import { Pagination } from "../components/Pagination";
 import { StatusPill } from "../components/StatusPill";
 import { usePagination } from "../hooks/usePagination";

@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import Settings
+from app.platform.config import Settings
 from app.main import create_app
-from app.telemetry import agent_span, export_langfuse_generation, parse_otlp_headers
+from app.platform.telemetry import agent_span, export_langfuse_generation, parse_otlp_headers
 
 
 class FakeSpan:
@@ -50,7 +50,7 @@ def test_parse_otlp_headers_ignores_blank_or_invalid_items() -> None:
 
 def test_agent_span_records_attributes_and_exceptions(monkeypatch) -> None:
     fake_tracer = FakeTracer()
-    monkeypatch.setattr("app.telemetry.tracer", fake_tracer)
+    monkeypatch.setattr("app.platform.telemetry.tracer", fake_tracer)
 
     with agent_span("agent.test", run_id="run-1", retry=False) as span:
         span.set_attribute("custom", "value")
@@ -74,7 +74,7 @@ def test_api_request_span_records_http_metadata(monkeypatch) -> None:
     fake_tracer = FakeTracer()
     settings = Settings(database_url="sqlite+pysqlite:///:memory:", redis_url="redis://localhost:6379/15")
     client = TestClient(create_app(settings))
-    monkeypatch.setattr("app.telemetry.tracer", fake_tracer)
+    monkeypatch.setattr("app.platform.telemetry.tracer", fake_tracer)
 
     response = client.get("/api/health")
 
@@ -105,7 +105,7 @@ def test_langfuse_generation_export_uses_prompt_metadata_without_raw_prompt(monk
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr("app.telemetry.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.platform.telemetry.urllib.request.urlopen", fake_urlopen)
     settings = Settings(
         _env_file=None,
         telemetry_langfuse_enabled=True,

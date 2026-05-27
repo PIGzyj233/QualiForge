@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.config import Settings
-from app.model_gateway import (
+from app.platform.config import Settings
+from app.ai.model_gateway import (
     NonRetryableModelGatewayError,
     OpenAICompatibleModelGateway,
     RetryableModelGatewayError,

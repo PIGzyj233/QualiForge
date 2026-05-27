@@ -1,23 +1,9 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, ClipboardCheck, FileText, History, Plus } from "lucide-react";
 import { useParams } from "react-router-dom";
-import {
-  createPlanItem,
-  createTestPlan,
-  listPlanItems,
-  listProjects,
-  listTestPlans,
-  listTestCases,
-  listWorkspaces,
-  ProjectRecord,
-  PlanItemRecord,
-  Session,
-  TestPlanRecord,
-  TestCaseRecord,
-  updatePlanItemExecution,
-  uploadPlanItemEvidence,
-  WorkspaceRecord
-} from "../api";
+import { createPlanItem, createTestPlan, listPlanItems, listTestPlans, PlanItemRecord, TestPlanRecord, updatePlanItemExecution, uploadPlanItemEvidence } from "../api/planning";
+import { listProjects, listWorkspaces, ProjectRecord, Session, WorkspaceRecord } from "../api/workspace";
+import { listTestCases, TestCaseRecord } from "../api/cases";
 import { Pagination } from "../components/Pagination";
 import { usePagination } from "../hooks/usePagination";
 import { statusLabel, executionStatuses, ExecutionStatus } from "../lib/labels";
