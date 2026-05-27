@@ -7,6 +7,7 @@
 `app/main.py::create_app(settings)`：
 
 - 读取 `Settings`，初始化 telemetry 与 `Database`。
+- 初始化 `AgentWorkflowGateway`，HTTP 层只通过该边界发起 / signal / cancel durable agent workflow。
 - 注册 CORS 中间件与 `agent_span` HTTP 中间件。
 - 暴露根级端点：
   - `GET /` → 服务自描述。
@@ -87,7 +88,8 @@
 - `models.py`：ORM 模型 `AgentConversation / AgentRun / AgentMessage / AgentToolCall / AgentApproval / AgentStagedOutput`，以及 `AgentConversationStatus / AgentRunMode / AgentRunStatus / AgentMessageRole / AgentStagedOutputStatus` 枚举。
 - `schemas.py / serializers.py`：Pydantic schema 与 ORM ↔ schema 映射。
 - `routes.py`：HTTP 入口（会话、消息、运行、staged outputs、approvals）。
-- `temporal.py`：Temporal client + `start_agent_run_workflow`、`AgentTemporalUnavailable` 异常。
+- `workflow_gateway.py`：HTTP 层到 durable workflow 后端的内部边界。
+- `temporal.py`：Temporal client + `start_agent_run_workflow`、`AgentTemporalUnavailable` 异常，供 gateway 调用。
 - `workflows.py`：Temporal workflow 定义（取消信号、活动调度、重试策略）。
 - `activities.py`：Temporal activities（执行 LangGraph、持久化中间结果、写 AgentToolCall）。
 - `graph_executor.py`：LangGraph 薄编排器，负责组装节点和持有共享执行状态。
@@ -109,10 +111,10 @@
 
 当前两种后台路径：
 
-1. **Temporal workflow**：仅 `AgentRun` 使用。`start_agent_run_workflow` 把 workflow id 写回 `AgentRun.temporal_workflow_id`；workflow 通过 signal 接受取消/暂停。
+1. **Temporal workflow**：仅 `AgentRun` 使用。HTTP 路由经 `AgentWorkflowGateway` 发起 workflow，并把 workflow id 写回 `AgentRun.temporal_workflow_id`；workflow 通过 signal 接受取消/暂停。
 2. **FastAPI BackgroundTasks**：其他长任务（Git 同步、Diff 分析、批量导入）以请求内 background task 兜底；后续如需更强 durability 应迁移到 Temporal 或独立 worker。
 
-`app/worker.py` 是独立进程（`python -m app.worker`），目前只往 Redis 写 `worker:heartbeat` key，间隔 `worker_heartbeat_seconds`。
+`app/agent_worker.py` 是独立 Agent Temporal Worker 进程（`python -m app.agent_worker`），负责 poll `agent_task_queue` 并写 Redis heartbeat key。`app/worker.py` 仅作为旧入口兼容 shim。
 
 ## 6. ModelGateway
 

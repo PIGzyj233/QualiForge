@@ -102,6 +102,7 @@ from app.agents.state import (
     mark_run_succeeded,
     mark_run_waiting,
 )
+from app.agents.workflow_gateway import AgentWorkflowUnavailable, get_agent_workflow_gateway
 from app.platform.telemetry import (
     AGENT_APPROVAL_WAIT_SECONDS,
     AGENT_STAGED_OUTPUT_DECISIONS_TOTAL,
@@ -405,11 +406,9 @@ def execute_agent_run(
 
     settings = request.app.state.settings
     if not settings.agent_execute_sync_mode:
-        from app.agents.temporal import AgentTemporalUnavailable, start_agent_run_workflow
-
-        starter = getattr(request.app.state, "agent_workflow_starter", start_agent_run_workflow)
+        gateway = get_agent_workflow_gateway(request.app.state)
         try:
-            started = starter(
+            started = gateway.start_run(
                 db=db,
                 settings=settings,
                 run=run,
@@ -419,7 +418,7 @@ def execute_agent_run(
                 candidate_limit=payload.candidate_limit,
                 actor_email=actor_email,
             )
-        except AgentTemporalUnavailable as exc:
+        except AgentWorkflowUnavailable as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         response.status_code = status.HTTP_202_ACCEPTED
         db.refresh(run)
@@ -564,12 +563,11 @@ def resume_agent_run(
             resume_reason=payload.resume_reason,
         )
         db.commit()
-        from app.agents.temporal import AgentTemporalUnavailable, signal_agent_run_resume
 
-        signal_resume = getattr(request.app.state, "agent_workflow_resume_signaler", signal_agent_run_resume)
+        gateway = get_agent_workflow_gateway(request.app.state)
         try:
-            signal_resume(db=db, settings=settings, run=run, actor_email=actor_email, resume_reason=payload.resume_reason)
-        except AgentTemporalUnavailable as exc:
+            gateway.signal_resume(db=db, settings=settings, run=run, actor_email=actor_email, resume_reason=payload.resume_reason)
+        except AgentWorkflowUnavailable as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         db.refresh(run)
         return AgentRunExecuteResponse(
@@ -645,17 +643,15 @@ def cancel_agent_run(
     db.commit()
     db.refresh(run)
     if not request.app.state.settings.agent_execute_sync_mode and run.temporal_workflow_id:
-        from app.agents.temporal import AgentTemporalUnavailable, cancel_agent_run_workflow
-
-        cancel_workflow = getattr(request.app.state, "agent_workflow_canceller", cancel_agent_run_workflow)
+        gateway = get_agent_workflow_gateway(request.app.state)
         try:
-            cancel_workflow(
+            gateway.cancel(
                 settings=request.app.state.settings,
                 workflow_id=run.temporal_workflow_id,
                 cancel_reason=payload.cancel_reason or "Agent run cancelled by user",
                 actor_email=actor_email,
             )
-        except AgentTemporalUnavailable:
+        except AgentWorkflowUnavailable:
             # The product cancellation state is still authoritative; Temporal may
             # already be down or the workflow may have completed between requests.
             pass

@@ -271,7 +271,7 @@ AI 任务开始前必须检查数据策略。日志只记录输入摘要与数�
 
 耗时工作走后台：Git clone/sync、tag diff 分析、代码结构索引、Excel/CSV 导入解析、AI 用例整理、AI 候选用例生成、报告草稿、Markdown 导出。
 
-MVP 引入 Temporal 承担 `AgentRun` 持久执行；其他长任务目前以 FastAPI BackgroundTasks 兜底，Worker 进程承担 Redis 心跳与未来 job 调度。
+MVP 引入 Temporal 承担 `AgentRun` 持久执行；Agent Temporal Worker 独立 poll `qualiforge-agent-runs` 并写 Redis heartbeat。其他长任务目前以 FastAPI BackgroundTasks 兜底，后续可按 durability 需求迁入 Temporal。
 
 `AgentRun` 与 `Job` 的状态机、记录字段、重试策略见 `architecture/ai-agent.md` 与 `architecture/data-model.md`。
 

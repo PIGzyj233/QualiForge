@@ -23,6 +23,7 @@ from app.agents.models import (
 )
 from app.agents.serializers import run_to_response, staged_output_to_response
 from app.agents.schemas import AgentRunExecuteResponse, AgentStagedOutputResponse
+from app.agents.workflow_gateway import AgentWorkflowUnavailable, get_agent_workflow_gateway
 from app.cases.domain import CaseDraft, CaseRevision, TestCase
 from app.cases.mapping_evaluator import (
     PATH_RULE_TYPES,
@@ -1153,11 +1154,9 @@ def generate_module_tree_draft(
     db.commit()
 
     if not request.app.state.settings.agent_execute_sync_mode:
-        from app.agents.temporal import AgentTemporalUnavailable, start_agent_run_workflow
-
-        starter = getattr(request.app.state, "agent_workflow_starter", start_agent_run_workflow)
+        gateway = get_agent_workflow_gateway(request.app.state)
         try:
-            started = starter(
+            started = gateway.start_run(
                 db=db,
                 settings=request.app.state.settings,
                 run=run,
@@ -1167,7 +1166,7 @@ def generate_module_tree_draft(
                 candidate_limit=1,
                 actor_email=actor_email,
             )
-        except AgentTemporalUnavailable as exc:
+        except AgentWorkflowUnavailable as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
         response.status_code = status.HTTP_202_ACCEPTED
         db.refresh(run)

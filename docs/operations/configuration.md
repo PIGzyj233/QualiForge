@@ -13,9 +13,9 @@ QualiForge 通过 Pydantic `BaseSettings` 读取配置，env prefix 统一为 `Q
 | `QUALIFORGE_ENVIRONMENT` | `local` | 运行环境标识 |
 | `QUALIFORGE_SECRET_KEY` | `dev-secret-change-me` | **必须改**：用于加密敏感字段（token） |
 | `QUALIFORGE_DATABASE_URL` | `postgresql://qualiforge:qualiforge@localhost:5432/qualiforge` | `postgresql://` 会被自动改写为 `postgresql+psycopg://` |
-| `QUALIFORGE_REDIS_URL` | `redis://localhost:6379/0` | 心跳与未来 job queue |
+| `QUALIFORGE_REDIS_URL` | `redis://localhost:6379/0` | Agent Worker heartbeat 与未来 job queue |
 | `QUALIFORGE_CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | 逗号分隔 |
-| `QUALIFORGE_WORKER_HEARTBEAT_SECONDS` | `15` | worker 写 Redis 心跳间隔 |
+| `QUALIFORGE_WORKER_HEARTBEAT_SECONDS` | `15` | Agent Worker 写 Redis heartbeat 间隔 |
 
 ## 2. Git Sandbox
 
@@ -53,7 +53,7 @@ QualiForge 通过 Pydantic `BaseSettings` 读取配置，env prefix 统一为 `Q
 |------|--------|------|
 | `QUALIFORGE_TEMPORAL_ADDRESS` | `localhost:7233`（compose 中 `temporal:7233`） | Temporal frontend gRPC |
 | `QUALIFORGE_TEMPORAL_NAMESPACE` | `default` | Namespace |
-| `QUALIFORGE_AGENT_TASK_QUEUE` | `qualiforge-agent-runs` | Worker 监听队列 |
+| `QUALIFORGE_AGENT_TASK_QUEUE` | `qualiforge-agent-runs` | Agent Temporal Worker 监听队列 |
 | `QUALIFORGE_AGENT_EXECUTE_SYNC_MODE` | `True`（本地）/ `false`（compose） | 同步模式跳过 Temporal，直接在请求中执行（仅用于本地快测） |
 | `QUALIFORGE_AGENT_WORKFLOW_TIMEOUT_MINUTES` | `30` | workflow wall-clock |
 | `QUALIFORGE_AGENT_ACTIVITY_START_TO_CLOSE_TIMEOUT_MINUTES` | `25` | 单 activity 超时 |

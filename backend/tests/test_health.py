@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import app, create_app
+from app.platform.config import Settings
 
 
 client = TestClient(app)
@@ -42,3 +43,49 @@ def test_local_login_accepts_private_deployment_email() -> None:
 
     assert response.status_code == 200
     assert response.json()["user"]["role"] == "WorkspaceOwner"
+
+
+def test_detailed_health_skips_temporal_and_agent_worker_in_sync_mode(monkeypatch) -> None:
+    async def fake_redis(_settings):
+        return {"status": "ok", "detail": "reachable"}
+
+    monkeypatch.setattr("app.main.check_redis", fake_redis)
+    settings = Settings(_env_file=None, database_url="sqlite+pysqlite:///:memory:", agent_execute_sync_mode=True)
+    local_client = TestClient(create_app(settings))
+
+    response = local_client.get("/api/health/detailed")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["services"]["database"]["status"] == "ok"
+    assert payload["services"]["redis"]["status"] == "ok"
+    assert payload["services"]["temporal"]["status"] == "skipped"
+    assert payload["services"]["agent_worker"]["status"] == "skipped"
+    assert payload["services"]["worker"]["status"] == "skipped"
+
+
+def test_detailed_health_reports_degraded_when_async_agent_worker_missing(monkeypatch) -> None:
+    async def fake_redis(_settings):
+        return {"status": "ok", "detail": "reachable"}
+
+    async def fake_temporal(_settings):
+        return {"status": "ok", "detail": "reachable"}
+
+    async def fake_agent_worker(_settings):
+        return {"status": "unavailable", "detail": "heartbeat missing"}
+
+    monkeypatch.setattr("app.main.check_redis", fake_redis)
+    monkeypatch.setattr("app.main.check_temporal", fake_temporal)
+    monkeypatch.setattr("app.main.check_agent_worker", fake_agent_worker)
+    settings = Settings(_env_file=None, database_url="sqlite+pysqlite:///:memory:", agent_execute_sync_mode=False)
+    local_client = TestClient(create_app(settings))
+
+    response = local_client.get("/api/health/detailed")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "degraded"
+    assert payload["services"]["temporal"]["status"] == "ok"
+    assert payload["services"]["agent_worker"]["status"] == "unavailable"
+    assert payload["services"]["worker"]["status"] == "unavailable"

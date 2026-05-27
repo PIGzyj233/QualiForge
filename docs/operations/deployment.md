@@ -10,7 +10,7 @@ QualiForge 私有化部署优先，所有组件通过根 `docker-compose.yml` �
 | `redis` | `redis:7-alpine` | `6379` | — | `redis-cli ping` |
 | `temporal` | `temporalio/temporal:latest`，`server start-dev --ip 0.0.0.0` | `7233` (gRPC) / `8233` (Web UI) | — | `temporal operator cluster health` |
 | `backend` | `./backend` 构建 | `8000` | `git_sandbox_data:/data/git-sandbox`、`import_data:/data/imports`、`agent_memory_data:/data/agent-memory` | `urllib /api/health` |
-| `worker` | `./backend` 构建，`uv run --no-sync python -m app.worker` | — | 同 backend | — |
+| `worker` | `./backend` 构建，`uv run --no-sync python -m app.agent_worker` | — | 同 backend | `/api/health/detailed` 通过 Redis heartbeat 检查 |
 | `web` | `./frontend` 构建（nginx） | `5173:80` | — | depends_on backend healthy |
 
 依赖：`backend` 与 `worker` 都 `depends_on postgres/redis/temporal` 健康；`web` 仅依赖 `backend` 健康。
@@ -64,14 +64,14 @@ docker compose up --build
 2. `docker compose pull` 拉取基础镜像（postgres / redis / temporal / nginx）。
 3. `docker compose up --build -d`。
 4. 后端首次 import session 会触发 `Base.metadata.create_all` 自动追加新列；若有删除列或破坏性变更，先备份再操作（项目暂无 Alembic）。
-5. 验证：`/api/health/detailed` 全部 ok；`docker compose logs backend | grep ERROR`；Temporal Web UI 观察 `qualiforge-agent-runs` 队列。
+5. 验证：`/api/health/detailed` 中 database / redis / temporal / agent_worker 全部 ok；`docker compose logs backend | grep ERROR`；Temporal Web UI 观察 `qualiforge-agent-runs` 队列。
 
 ## 7. Temporal Smoke Test
 
 `scripts/smoke_temporal_compose.py` 用于在 compose 启动后快速验证 Agent 链路：
 
 ```powershell
-docker compose up -d postgres redis temporal backend
+docker compose up -d postgres redis temporal backend worker
 python scripts/smoke_temporal_compose.py
 ```
 
@@ -79,7 +79,7 @@ python scripts/smoke_temporal_compose.py
 
 1. 通过后端 API 创建一个临时 Workspace / Project。
 2. 触发一个 `AgentRun(mode=execute)`。
-3. 轮询直到 workflow 完成或超时。
+3. 轮询直到 workflow 进入等待、resume signal 生效，并在取消后变为 cancelled。
 4. 校验 `temporal_workflow_id` 已写回数据库。
 
 CI 之前的快速回归首选这个脚本。
@@ -98,7 +98,7 @@ CI 之前的快速回归首选这个脚本。
 
 当前是单实例模型。要扩到多实例需先解决：
 
-- Temporal worker 进程独立部署（现在跟 backend 同进程注册 activity）。
+- Agent Temporal Worker 可以横向复制，但需要为 AI 调用配额与本地卷访问制定并发策略。
 - AI 调用配额与速率限制需 Workspace 级隔离（roadmap §4.3 SaaS 准备项）。
 - Postgres 主从 / 备份策略；对象存储从本地卷切换到 S3/MinIO。
 

@@ -13,6 +13,7 @@ _SUBMODULES = {
     "serializers",
     "state",
     "temporal",
+    "workflow_gateway",
     "workflows",
 }
 

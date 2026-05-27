@@ -12,12 +12,45 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.agents import AgentRun, AgentRunStatus, AgentStagedOutput, CoverageIndexEntry
+from app.agents.workflow_gateway import AgentWorkflowUnavailable
 from app.platform.config import Settings
 from app.main import create_app
 from app.ai.model_gateway import RetryableModelGatewayError
 
 
 OWNER = "owner@qualiforge.local"
+
+
+class FakeAgentWorkflowGateway:
+    def __init__(
+        self,
+        *,
+        fail_start: AgentWorkflowUnavailable | None = None,
+        fail_cancel: AgentWorkflowUnavailable | None = None,
+    ) -> None:
+        self.fail_start = fail_start
+        self.fail_cancel = fail_cancel
+        self.started: list[dict[str, Any]] = []
+        self.signalled: list[dict[str, Any]] = []
+        self.cancelled: list[dict[str, Any]] = []
+
+    def start_run(self, **kwargs):
+        if self.fail_start is not None:
+            raise self.fail_start
+        stored_run = kwargs["run"]
+        stored_run.temporal_workflow_id = f"agent-run-{stored_run.id}"
+        stored_run.current_phase = "temporal_queued"
+        kwargs["db"].commit()
+        self.started.append(kwargs)
+        return {"summary": "Agent workflow started"}
+
+    def signal_resume(self, **kwargs) -> None:
+        self.signalled.append(kwargs)
+
+    def cancel(self, **kwargs) -> None:
+        if self.fail_cancel is not None:
+            raise self.fail_cancel
+        self.cancelled.append(kwargs)
 
 
 def make_client(
@@ -777,17 +810,8 @@ def test_module_tree_draft_generation_respects_temporal_async_mode(tmp_path: Pat
     source = create_refund_fixture_repo(tmp_path)
     repository = bind_repository(client, workspace["id"], project["id"], source)
     synced_repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
-    started: list[dict[str, Any]] = []
-
-    def workflow_starter(**kwargs):
-        stored_run = kwargs["run"]
-        stored_run.temporal_workflow_id = f"agent-run-{stored_run.id}"
-        stored_run.current_phase = "temporal_queued"
-        kwargs["db"].commit()
-        started.append(kwargs)
-        return {"summary": "Agent workflow started"}
-
-    client.app.state.agent_workflow_starter = workflow_starter
+    gateway = FakeAgentWorkflowGateway()
+    client.app.state.agent_workflow_gateway = gateway
 
     response = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/module-tree-drafts/generate?actor_email={OWNER}",
@@ -800,7 +824,7 @@ def test_module_tree_draft_generation_respects_temporal_async_mode(tmp_path: Pat
     assert payload["run"]["current_phase"] == "temporal_queued"
     assert payload["run"]["budget_snapshot"]["output_type"] == "module_tree_draft"
     assert payload["staged_outputs"] == []
-    assert started[0]["repository_id"] == synced_repository["id"]
+    assert gateway.started[0]["repository_id"] == synced_repository["id"]
 
 
 def test_critic_rejects_low_confidence_evidence_candidate(tmp_path: Path) -> None:
@@ -1517,17 +1541,8 @@ def test_temporal_execute_starts_workflow_and_returns_accepted(tmp_path: Path) -
     repository = bind_repository(client, workspace["id"], project["id"], source)
     repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
     run = create_agent_run(client, workspace["id"], project["id"])
-    started: list[dict[str, Any]] = []
-
-    def workflow_starter(**kwargs):
-        stored_run = kwargs["run"]
-        stored_run.temporal_workflow_id = f"agent-run-{stored_run.id}"
-        stored_run.current_phase = "temporal_queued"
-        kwargs["db"].commit()
-        started.append(kwargs)
-        return {"summary": "Agent workflow started"}
-
-    client.app.state.agent_workflow_starter = workflow_starter
+    gateway = FakeAgentWorkflowGateway()
+    client.app.state.agent_workflow_gateway = gateway
 
     response = client.post(
         f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
@@ -1539,7 +1554,7 @@ def test_temporal_execute_starts_workflow_and_returns_accepted(tmp_path: Path) -
     assert payload["run"]["temporal_workflow_id"] == f"agent-run-{run['id']}"
     assert payload["run"]["current_phase"] == "temporal_queued"
     assert payload["staged_outputs"] == []
-    assert started[0]["repository_id"] == repository["id"]
+    assert gateway.started[0]["repository_id"] == repository["id"]
 
 
 def test_temporal_workflow_starter_includes_budget_child_tasks(tmp_path: Path, monkeypatch) -> None:
@@ -1709,16 +1724,12 @@ def test_agent_child_task_activity_analyzes_import_batches(tmp_path: Path) -> No
 
 
 def test_temporal_unavailable_returns_clear_error_without_staged_outputs(tmp_path: Path) -> None:
-    from app.agents.temporal import AgentTemporalUnavailable
-
     client = make_client(tmp_path, settings_overrides={"agent_execute_sync_mode": False})
     workspace, project = create_workspace_project(client)
     run = create_agent_run(client, workspace["id"], project["id"])
-
-    def workflow_starter(**_kwargs):
-        raise AgentTemporalUnavailable("Temporal unavailable: test")
-
-    client.app.state.agent_workflow_starter = workflow_starter
+    client.app.state.agent_workflow_gateway = FakeAgentWorkflowGateway(
+        fail_start=AgentWorkflowUnavailable("Temporal unavailable: test")
+    )
 
     response = client.post(
         f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/execute?actor_email={OWNER}",
@@ -1742,12 +1753,8 @@ def test_temporal_cancel_marks_run_cancelled_and_invokes_workflow_cancel(tmp_pat
         stored.current_phase = "generate_candidates"
         stored.temporal_workflow_id = f"agent-run-{run['id']}"
         db.commit()
-    cancelled_workflows: list[dict] = []
-
-    def workflow_canceller(**kwargs):
-        cancelled_workflows.append(dict(kwargs))
-
-    client.app.state.agent_workflow_canceller = workflow_canceller
+    gateway = FakeAgentWorkflowGateway()
+    client.app.state.agent_workflow_gateway = gateway
 
     response = client.post(
         f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/cancel?actor_email={OWNER}",
@@ -1756,9 +1763,34 @@ def test_temporal_cancel_marks_run_cancelled_and_invokes_workflow_cancel(tmp_pat
 
     assert response.status_code == 200, response.json()
     assert response.json()["status"] == "cancelled"
-    assert cancelled_workflows[0]["workflow_id"] == f"agent-run-{run['id']}"
-    assert cancelled_workflows[0]["cancel_reason"] == "Stop durable run"
-    assert cancelled_workflows[0]["actor_email"] == OWNER
+    assert gateway.cancelled[0]["workflow_id"] == f"agent-run-{run['id']}"
+    assert gateway.cancelled[0]["cancel_reason"] == "Stop durable run"
+    assert gateway.cancelled[0]["actor_email"] == OWNER
+
+
+def test_temporal_cancel_keeps_product_state_when_gateway_cancel_fails(tmp_path: Path) -> None:
+    client = make_client(tmp_path, settings_overrides={"agent_execute_sync_mode": False})
+    workspace, project = create_workspace_project(client)
+    run = create_agent_run(client, workspace["id"], project["id"])
+    with client.app.state.database.session_factory() as db:
+        stored = db.get(AgentRun, run["id"])
+        assert stored is not None
+        stored.status = AgentRunStatus.running.value
+        stored.current_phase = "generate_candidates"
+        stored.temporal_workflow_id = f"agent-run-{run['id']}"
+        db.commit()
+    client.app.state.agent_workflow_gateway = FakeAgentWorkflowGateway(
+        fail_cancel=AgentWorkflowUnavailable("Temporal unavailable: test")
+    )
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/cancel?actor_email={OWNER}",
+        json={"cancel_reason": "Stop durable run even if Temporal is unavailable"},
+    )
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["status"] == "cancelled"
+    assert response.json()["failure_reason"] == "Stop durable run even if Temporal is unavailable"
 
 
 def test_temporal_resume_sends_signal_with_budget_override(tmp_path: Path) -> None:
@@ -1773,12 +1805,8 @@ def test_temporal_resume_sends_signal_with_budget_override(tmp_path: Path) -> No
         stored.failure_reason = "model budget exceeded"
         stored.temporal_workflow_id = f"agent-run-{run['id']}"
         db.commit()
-    signalled: list[str] = []
-
-    def resume_signaler(**kwargs):
-        signalled.append(kwargs["run"].id)
-
-    client.app.state.agent_workflow_resume_signaler = resume_signaler
+    gateway = FakeAgentWorkflowGateway()
+    client.app.state.agent_workflow_gateway = gateway
 
     response = client.post(
         f"/api/workspaces/{workspace['id']}/agent/runs/{run['id']}/resume?actor_email={OWNER}",
@@ -1789,7 +1817,7 @@ def test_temporal_resume_sends_signal_with_budget_override(tmp_path: Path) -> No
     payload = response.json()
     assert payload["summary"] == "Agent workflow resume signal sent"
     assert payload["run"]["budget_snapshot"]["max_model_calls"] == 5
-    assert signalled == [run["id"]]
+    assert [item["run"].id for item in gateway.signalled] == [run["id"]]
 
 
 def test_temporal_failure_activity_marks_running_run_failed(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.agents.routes import router as agents_router
+from app.agents.workflow_gateway import AgentWorkflowGateway
 from app.ai.config import router as ai_config_router
 from app.cases.ai_suggestions import router as ai_suggestions_router
 from app.cases.diff_analysis import router as diff_analysis_router
@@ -19,7 +20,7 @@ from app.planning.release_reports import router as release_reports_router
 from app.planning.test_plans import router as test_plans_router
 from app.platform.config import Settings, get_settings
 from app.platform.database import Database
-from app.platform.health import check_redis
+from app.platform.health import check_agent_worker, check_redis, check_temporal
 from app.platform.telemetry import agent_span, configure_telemetry, prometheus_response
 from app.workspace.routes import router as workspace_router
 
@@ -48,6 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.database = Database(settings.database_url)
+    app.state.agent_workflow_gateway = AgentWorkflowGateway()
 
     app.add_middleware(
         CORSMiddleware,
@@ -79,22 +81,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/health/detailed")
     async def detailed_health() -> dict[str, object]:
-        database, redis = await asyncio.gather(
+        database, redis, temporal, agent_worker = await asyncio.gather(
             asyncio.to_thread(app.state.database.check),
             check_redis(settings),
+            check_temporal(settings),
+            check_agent_worker(settings),
         )
-        service_statuses = [database["status"], redis["status"]]
+        services = {
+            "database": database,
+            "redis": redis,
+            "temporal": temporal,
+            "agent_worker": agent_worker,
+            "worker": agent_worker,
+        }
+        service_statuses = [service["status"] for service in services.values()]
 
         return {
-            "status": "ok" if all(status == "ok" for status in service_statuses) else "degraded",
+            "status": "ok" if all(status in {"ok", "skipped"} for status in service_statuses) else "degraded",
             "service": "backend",
             "environment": settings.environment,
             "checked_at": datetime.now(UTC).isoformat(),
-            "services": {
-                "database": database,
-                "redis": redis,
-                "worker": {"status": "configured", "detail": "worker service uses Redis for heartbeat and jobs"},
-            },
+            "services": services,
         }
 
     @app.get("/api/metrics")

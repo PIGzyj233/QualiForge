@@ -28,7 +28,7 @@ Backend (Python 3.12, `uv`-managed):
 cd backend
 uv sync
 uv run uvicorn app.main:app --reload      # api on :8000
-uv run python -m app.worker                # redis heartbeat worker
+uv run python -m app.agent_worker          # Agent Temporal Worker
 uv run pytest tests                        # full suite
 uv run pytest tests/test_workspaces.py::test_workspace_owner_can_create_and_switch_workspaces  # single test
 ```
@@ -53,7 +53,7 @@ Key shared infrastructure:
 - `app/platform/database.py` — `Base = DeclarativeBase` (every package's models inherit it), `Database` wrapper that normalizes `postgresql://` → `postgresql+psycopg://`, lazy `create_all` on first session, and special-cases SQLite (including in-memory `StaticPool` used by tests).
 - `app/workspace/routes.py` is the **foundation module**. Other packages import these helpers from it: `audit()` (writes `AuditLog`), `get_workspace_or_404`, `get_project_or_404`, `require_workspace_owner` (raises 403 if actor isn't `WorkspaceOwner`), `now_utc`, `new_id` (uuid4 hex), and the `ActorEmail` query-param alias. Don't duplicate these — import them.
 - `app/platform/config.py` — Pydantic settings with `QUALIFORGE_` env prefix. CORS origins come from a comma-separated string. Sandbox/storage paths default to `.qualiforge/...` locally and `/data/...` in Compose. Full reference in `docs/operations/configuration.md`.
-- `app/worker.py` — standalone process started via `python -m app.worker`. Currently just writes a Redis heartbeat key every `worker_heartbeat_seconds`; no task queue yet. Long-running agent work runs via Temporal (`agents/temporal.py`, `workflows.py`); other long mutations (git sync, diff analysis) currently run inline using FastAPI `BackgroundTasks`.
+- `app/agent_worker.py` — standalone Agent Temporal Worker started via `python -m app.agent_worker`; it polls `agent_task_queue` and writes the Redis heartbeat keys used by `/api/health/detailed`. `app/worker.py` remains a compatibility shim for the old module path. Other long mutations (git sync, diff analysis) currently run inline using FastAPI `BackgroundTasks`.
 
 Routing conventions:
 

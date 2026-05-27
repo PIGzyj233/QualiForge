@@ -102,6 +102,7 @@ npm run dev
 **Temporal 工作流冒烟测试（需 Docker Compose 已启动）：**
 
 ```powershell
+docker compose up -d postgres redis temporal backend worker
 python scripts/smoke_temporal_compose.py
 ```
 

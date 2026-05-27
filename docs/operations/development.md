@@ -34,7 +34,7 @@ npm run dev                              # http://localhost:5173
 
 ## 3. 全栈容器
 
-需要测试 nginx 打包后的前端、worker 心跳、Temporal 全链路时：
+需要测试 nginx 打包后的前端、Agent Temporal Worker 与 Temporal 全链路时：
 
 ```powershell
 docker compose up --build
@@ -47,7 +47,7 @@ Set-Location backend
 
 uv sync                                          # 同步依赖
 uv run uvicorn app.main:app --reload             # API 服务
-uv run python -m app.worker                      # worker 心跳（独立终端）
+uv run python -m app.agent_worker                # Agent Temporal Worker（独立终端）
 uv run pytest tests                              # 全量测试
 uv run pytest tests/test_workspaces.py           # 单文件
 uv run pytest tests/test_agents.py::test_xxx     # 单测试
@@ -70,9 +70,10 @@ npm run build        # tsc --noEmit (app + node config) + vite build
 
 ## 6. Temporal Smoke Test
 
-`scripts/smoke_temporal_compose.py` 是 Agent 链路的最小回归脚本（依赖 compose 已启动）：
+`scripts/smoke_temporal_compose.py` 是 Agent 链路的最小回归脚本。运行前需启动 API、Temporal Server 与 Agent Temporal Worker：
 
 ```powershell
+docker compose up -d postgres redis temporal backend worker
 python scripts/smoke_temporal_compose.py
 ```
 
@@ -93,7 +94,7 @@ python scripts/smoke_temporal_compose.py
 
 ## 9. 调试技巧
 
-- `/api/health/detailed`：快速看 DB / Redis / Worker 状态。
+- `/api/health/detailed`：快速看 DB / Redis / Temporal / Agent Worker 状态。
 - `/api/metrics`：Prometheus 风格指标。
 - `/api/dashboard/summary`：MVP 主线进度（hard-coded，作为 12 条主题对照表）。
 - Temporal Web UI（`http://localhost:8233`）：workflow 状态、信号、重试、子 workflow 树。

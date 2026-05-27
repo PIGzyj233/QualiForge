@@ -26,9 +26,9 @@ QualiForge 是一个模块化单体后端 + SPA 前端的私有化部署 SaaS �
 │                           │ poll task queue                   │
 │                           │                                   │
 │                  ┌────────┴─────────┐                         │
-│                  │      worker      │  (python -m app.worker) │
-│                  │  Redis heartbeat │                         │
-│                  │  + 未来 job 调度  │                         │
+│                  │      worker      │  (app.agent_worker)     │
+│                  │ Temporal polling │                         │
+│                  │ + Redis heartbeat│                         │
 │                  └──────────────────┘                         │
 │                                                               │
 │  Volumes: postgres_data, git_sandbox_data,                    │
@@ -44,12 +44,12 @@ QualiForge 是一个模块化单体后端 + SPA 前端的私有化部署 SaaS �
 |------|------|------|
 | `web` | `frontend/` Vite + React 18 + TS，构建后由 nginx 提供 | 工作台 UI；开发期 vite 直接代理 `/api` |
 | `backend` | `backend/app/` FastAPI + SQLAlchemy 2 + Pydantic v2 | 业务 API、AI 配置、Git Sandbox 命令封装、Agent API |
-| `worker` | `backend/app/worker.py` | 当前只写 Redis 心跳；预留未来 Job 调度 |
+| `worker` | `backend/app/agent_worker.py` | Agent Temporal Worker；poll `qualiforge-agent-runs` 并写 Redis heartbeat |
 | `postgres` | `postgres:18-alpine` | 唯一主数据库，存储所有业务、审计、Agent 状态 |
 | `redis` | `redis:7-alpine` | 缓存、心跳、未来 job queue |
 | `temporal` | `temporalio/temporal:latest` `start-dev` | `AgentRun` 持久执行；任务队列 `qualiforge-agent-runs` |
 
-> Temporal worker 进程当前由后端容器内启动（`agents/temporal.py`）。`docker-compose.yml` 的 `worker` 服务保留心跳职责，未来 Temporal worker 可独立成进程。
+> `backend` 只负责 HTTP API 与 workflow 编排入口；`worker` 是独立 Agent Temporal Worker 进程。`backend/app/worker.py` 仅保留旧入口兼容，实际入口为 `backend/app/agent_worker.py`。
 
 ## 3. 后端领域分层
 
@@ -86,9 +86,9 @@ QualiForge 是一个模块化单体后端 + SPA 前端的私有化部署 SaaS �
 1. 前端 AISuggestionAdmin 调用 POST /api/.../ai/suggestions
 2. cases/ai_suggestions.py 校验 actor + 数据策略，
    写 AgentRun + AgentToolCall 草案，
-   start_agent_run_workflow → Temporal
-3. Temporal workflow (agents/workflows.py) 调度 activities
-4. activities 在后端进程内执行：
+   AgentWorkflowGateway → Temporal
+3. Temporal workflow (agents/workflows.py) 由 worker poll 并调度 activities
+4. activities 在 worker 进程内执行：
      - graph_executor.py 组装 LangGraph 子图，graph_nodes/ 承载节点实现
      - 通过 graph_tools 调用 git/code_tools / diff_engine / case_imports
      - 走 ai/model_gateway 调 LLM，记录 AIInvocationLog
@@ -99,7 +99,7 @@ QualiForge 是一个模块化单体后端 + SPA 前端的私有化部署 SaaS �
 
 ## 6. 部署形态选择
 
-- **本地开发**：后端 `uv run uvicorn`、前端 `npm run dev`，依赖 `docker compose up postgres redis temporal`。
+- **本地开发**：后端 `uv run uvicorn`、前端 `npm run dev`；同步模式只需 postgres/redis，Temporal 全链路需另起 `uv run python -m app.agent_worker` 或 Compose worker。
 - **全栈本地**：`docker compose up --build`，含 web/backend/worker/postgres/redis/temporal。
 - **私有化**：相同 compose 即可，建议外置 PostgreSQL 与对象存储；`QUALIFORGE_*` 环境变量覆盖默认值（见 `operations/configuration.md`）。
 - **SaaS**：暂不支持，需补租户隔离、计费、token 加密轮换（roadmap §4.3）。
@@ -109,7 +109,7 @@ QualiForge 是一个模块化单体后端 + SPA 前端的私有化部署 SaaS �
 - OpenTelemetry trace：`platform/telemetry.py` 提供 `agent_span()`，HTTP 请求中间件自动开 span。
 - Prometheus metrics：`/api/metrics` 暴露；`telemetry_prometheus_enabled` 控制。
 - Langfuse：可选，通过 `QUALIFORGE_TELEMETRY_LANGFUSE_*` 启用，挂到 ModelGateway。
-- 健康检查：`/api/health`（轻量）与 `/api/health/detailed`（检查 DB / Redis / Worker）。
+- 健康检查：`/api/health`（轻量）与 `/api/health/detailed`（检查 DB / Redis / Temporal / Agent Worker）。
 
 ## 8. 安全边界一览
 

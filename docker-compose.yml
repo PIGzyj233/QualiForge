@@ -93,7 +93,7 @@ services:
   worker:
     build:
       context: ./backend
-    command: ["uv", "run", "--no-sync", "python", "-m", "app.worker"]
+    command: ["uv", "run", "--no-sync", "python", "-m", "app.agent_worker"]
     env_file:
       - path: .env
         required: false
