@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Archive, FilePlus2, GitCompareArrows, RefreshCcw } from "lucide-react";
+import { FilePlus2, GitCompareArrows, RefreshCcw } from "lucide-react";
 import { useParams } from "react-router-dom";
 import {
   addressReviewChanges, type CaseDraftRecord, type CaseStep, createActiveEditDraft,
@@ -18,11 +18,11 @@ import { StepsEditor } from "@/components/StepsEditor";
 import { statusLabel } from "@/lib/labels";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 const detailTabs = ["基本信息", "草稿/正式", "对比", "评审记录", "版本历史"] as const;
 
@@ -74,6 +74,7 @@ export function LibraryView() {
   const [newSteps, setNewSteps] = useState<CaseStep[]>([{ action: "打开目标功能", expected: "进入对应界面" }]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [createDraftOpen, setCreateDraftOpen] = useState(false);
 
   async function refreshDetail(caseId: string) {
     if (!caseId) { setSelectedCase(null); return; }
@@ -107,6 +108,7 @@ export function LibraryView() {
       const payload: TestCasePayload = { module_id: newModuleId || null, title: newTitle, steps: newSteps.filter((s) => s.action.trim() || s.expected.trim()), priority: "P2", risk: "medium", tags: ["manual"], custom_fields: {} };
       const created = await createTestCase(wid_, pid_, actorEmail, payload);
       setMessage(`已创建草稿：${created.title}`);
+      setCreateDraftOpen(false);
       await refreshCases(created.id);
     } catch (err) { setMessage(err instanceof Error ? err.message : "创建失败"); }
     finally { setBusy(false); }
@@ -203,35 +205,49 @@ export function LibraryView() {
         <Button type="submit" variant="outline" size="sm" className="h-8" disabled={busy}>筛选</Button>
       </form>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[200px_280px_1fr] gap-5 items-start">
+      <div className="grid grid-cols-1 gap-5 items-start xl:grid-cols-[minmax(180px,240px)_minmax(300px,0.9fr)_minmax(360px,1.2fr)]">
         {/* Module tree */}
-        <Card>
+        <Card className="min-w-0">
           <CardContent className="p-3">
             <ModuleTree modules={moduleTree} selectedModuleId={selectedModuleId} onSelect={(id) => { setSelectedModuleId(id); setBusy(true); refreshCases(undefined, id).finally(() => setBusy(false)); }} />
           </CardContent>
         </Card>
 
         {/* Case list + create */}
-        <div className="flex flex-col gap-3">
-          <Card>
-            <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><FilePlus2 size={14} />新建草稿</CardTitle></CardHeader>
-            <CardContent>
-              <form onSubmit={handleCreateCase} className="flex flex-col gap-2">
-                <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="新用例标题" required className="h-8 text-sm" />
-                <Select value={newModuleId || "__none__"} onValueChange={(v) => setNewModuleId(v === "__none__" ? "" : v)}>
-                  <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="未归属" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">未归属</SelectItem>
-                    {modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.path_label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                <StepsEditor steps={newSteps} onChange={setNewSteps} disabled={busy} />
-                <Button type="submit" size="sm" disabled={busy || !wid_}>创建草稿</Button>
-              </form>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-0">
+        <div className="flex min-w-0 flex-col gap-3 min-h-0">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Cases</p>
+              <h2 className="font-heading text-sm font-bold">用例列表</h2>
+            </div>
+            <Dialog open={createDraftOpen} onOpenChange={setCreateDraftOpen}>
+              <DialogTrigger asChild>
+                <Button type="button" variant="outline" size="sm" className="h-8 shrink-0">
+                  <FilePlus2 size={14} />
+                  新建草稿
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>新建草稿</DialogTitle>
+                </DialogHeader>
+                <form onSubmit={handleCreateCase} className="flex flex-col gap-3">
+                  <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="新用例标题" required className="h-8 text-sm" />
+                  <Select value={newModuleId || "__none__"} onValueChange={(v) => setNewModuleId(v === "__none__" ? "" : v)}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="未归属" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">未归属</SelectItem>
+                      {modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.path_label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <StepsEditor steps={newSteps} onChange={setNewSteps} disabled={busy} compact />
+                  <Button type="submit" size="sm" disabled={busy || !wid_}>创建草稿</Button>
+                </form>
+              </DialogContent>
+            </Dialog>
+          </div>
+          <Card className="flex min-h-0 flex-col overflow-hidden max-h-[min(680px,calc(100vh-320px))]">
+            <CardContent className="min-h-0 flex-1 overflow-y-auto p-0">
               {cases.map((tc) => (
                 <button key={tc.id} type="button" onClick={() => { setSelectedCaseId(tc.id); void refreshDetail(tc.id); }}
                   className={`w-full text-left px-4 py-3 border-b last:border-0 transition-colors hover:bg-[var(--muted)]/40 ${selectedCaseId === tc.id ? "bg-[var(--accent)]" : ""}`}>
@@ -247,7 +263,7 @@ export function LibraryView() {
 
         {/* Detail panel */}
         {selectedCase && selectedContent ? (
-          <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-3">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-xs text-[var(--muted-foreground)] mb-0.5">{selectedCase.module_path_label}</p>
@@ -337,7 +353,16 @@ export function LibraryView() {
             </Card>
           </div>
         ) : (
-          <p className="text-sm text-[var(--muted-foreground)]">从左侧选择一个用例查看详情。</p>
+          <Card className="min-w-0 min-h-[420px]">
+            <CardContent className="flex min-h-[420px] flex-col items-center justify-center gap-2 p-8 text-center">
+              <p className="text-sm font-medium">从左侧选择一个用例查看详情</p>
+              <p className="text-sm text-[var(--muted-foreground)]">或点击「新建草稿」创建第一条用例</p>
+              <Button type="button" variant="outline" size="sm" className="mt-2" onClick={() => setCreateDraftOpen(true)}>
+                <FilePlus2 size={14} />
+                新建草稿
+              </Button>
+            </CardContent>
+          </Card>
         )}
       </div>
     </div>
