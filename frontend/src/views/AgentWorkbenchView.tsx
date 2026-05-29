@@ -90,6 +90,20 @@ function shortJson(value: unknown) {
   return JSON.stringify(value).slice(0, 420);
 }
 
+function textValue(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function listValue(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item).trim()).filter(Boolean);
+}
+
+function recordList(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is Record<string, unknown> => item !== null && typeof item === "object" && !Array.isArray(item));
+}
+
 function subagentRunMessage(item: AgentSubagentRunRecord) {
   if (item.status === "queued") {
     return item.summary || item.input_summary || "已计划，等待前置阶段";
@@ -97,12 +111,87 @@ function subagentRunMessage(item: AgentSubagentRunRecord) {
   return item.output_summary || item.error_summary || item.summary || item.input_summary;
 }
 
+function moduleTreeDraftItems(output: AgentStagedOutputRecord) {
+  return recordList(output.payload?.items);
+}
+
 function outputMeta(output: AgentStagedOutputRecord) {
   const payload = output.payload ?? {};
+  if (output.output_type === "module_tree_draft") {
+    const items = moduleTreeDraftItems(output);
+    const commit = textValue(payload.commit_sha);
+    return [
+      output.output_type,
+      items.length > 0 ? `${items.length} 个模块` : "",
+      commit ? `commit ${commit.slice(0, 12)}` : ""
+    ].filter(Boolean).join(" · ");
+  }
   const risk = typeof payload.risk === "string" ? payload.risk : "";
   const moduleKey = typeof payload.module_key === "string" ? payload.module_key : "UNMAPPED";
   const priority = typeof payload.priority === "string" ? payload.priority : "";
   return [output.output_type, moduleKey, risk, priority].filter(Boolean).join(" · ");
+}
+
+function StagedOutputBody({ output }: { output: AgentStagedOutputRecord }) {
+  if (output.output_type !== "module_tree_draft") {
+    return (
+      <div className="text-xs leading-relaxed whitespace-pre-wrap font-mono text-[var(--foreground)] bg-[var(--muted)]/20 p-3.5 rounded-lg border border-[var(--border)]/50">
+        {shortJson(output.payload.expected_result ?? output.payload.recommendation ?? output.payload.note_type)}
+      </div>
+    );
+  }
+
+  const items = moduleTreeDraftItems(output);
+  const summary = textValue(output.payload.summary);
+  const visibleItems = items.slice(0, 12);
+
+  return (
+    <div className="rounded-lg border border-[var(--border)]/50 bg-[var(--muted)]/20 p-3.5 flex flex-col gap-3">
+      {summary ? (
+        <p className="text-xs leading-relaxed text-[var(--foreground)]">{summary}</p>
+      ) : null}
+      {visibleItems.length > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+          {visibleItems.map((item, index) => {
+            const name = textValue(item.name) || textValue(item.code) || `模块 ${index + 1}`;
+            const code = textValue(item.code);
+            const description = textValue(item.description);
+            const sourcePaths = listValue(item.source_paths);
+            const confidence = item.confidence === undefined || item.confidence === null ? "" : shortJson(item.confidence);
+            const confidenceLabel = confidence.endsWith("%") ? confidence : `${confidence}%`;
+            return (
+              <div className="min-w-0 rounded-md border border-[var(--border)]/50 bg-[var(--card)]/70 p-2.5" key={`${code || name}-${index}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <strong className="block truncate text-xs font-bold text-[var(--foreground)]">{name}</strong>
+                    {code ? <span className="mt-0.5 block truncate text-[10px] font-mono text-[var(--muted-foreground)]">{code}</span> : null}
+                  </div>
+                  {confidence ? (
+                    <span className="shrink-0 rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] font-bold text-green-600">
+                      {confidenceLabel}
+                    </span>
+                  ) : null}
+                </div>
+                {description ? (
+                  <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-[var(--muted-foreground)]">{description}</p>
+                ) : null}
+                {sourcePaths.length > 0 ? (
+                  <p className="mt-2 truncate text-[10px] font-mono text-[var(--muted-foreground)]">
+                    {sourcePaths.slice(0, 2).join(" · ")}
+                  </p>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="text-xs text-[var(--muted-foreground)]">模块树草稿未包含可展示的模块条目</p>
+      )}
+      {items.length > visibleItems.length ? (
+        <p className="text-[10px] text-[var(--muted-foreground)]">还有 {items.length - visibleItems.length} 个模块未在卡片中展开</p>
+      ) : null}
+    </div>
+  );
 }
 
 function evidenceLabel(refItem: Record<string, unknown>) {
@@ -1417,9 +1506,7 @@ export function AgentWorkbenchView() {
                             </span>
                           </div>
                           
-                          <div className="text-xs leading-relaxed whitespace-pre-wrap font-mono text-[var(--foreground)] bg-[var(--muted)]/20 p-3.5 rounded-lg border border-[var(--border)]/50">
-                            {shortJson(output.payload.expected_result ?? output.payload.recommendation ?? output.payload.note_type)}
-                          </div>
+                          <StagedOutputBody output={output} />
                           
                           {output.evidence_refs.length > 0 && (
                             <div className="text-[10px] text-[var(--muted-foreground)] bg-[var(--muted)]/5 p-2 rounded border border-[var(--border)]/40 mt-0.5 flex flex-col gap-0.5">
