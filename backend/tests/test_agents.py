@@ -669,6 +669,8 @@ def test_module_tree_draft_agent_generates_reviewable_output_and_accepts_modules
     final_payload = next(call["payload"] for call in calls if not call["payload"].get("tools"))
     prompt_payload = json.loads(final_payload["messages"][-1]["content"])
     assert any("Chinese" in rule and "module names" in rule for rule in prompt_payload["generation_rules"])
+    assert any("two-level hierarchy" in rule for rule in prompt_payload["generation_rules"])
+    assert prompt_payload["request_constraints"]["preferred_depth"] == 2
 
     accepted = client.patch(
         f"/api/workspaces/{workspace['id']}/agent/staged-outputs/{draft['id']}?actor_email={OWNER}",
@@ -764,7 +766,89 @@ def test_module_tree_draft_retries_reasoning_only_model_response(tmp_path: Path)
     assert final_payloads[0]["reasoning_effort"] == "low"
     assert final_payloads[0]["max_tokens"] == 4096
     assert final_payloads[1]["max_tokens"] == 6144
-    assert "previous module tree draft response could not be parsed" in final_payloads[1]["messages"][-1]["content"]
+    assert "previous module tree draft response could not be used" in final_payloads[1]["messages"][-1]["content"]
+    detail = client.get(
+        f"/api/workspaces/{workspace['id']}/agent/runs/{generated.json()['agent_run_id']}/execution-detail"
+    ).json()
+    module_run = next(item for item in detail["subagent_runs"] if item["subagent_name"] == "ModuleTreeDraftSubAgent")
+    assert module_run["result_snapshot"]["parse_retry_count"] == 1
+
+
+def test_module_tree_draft_retries_flat_hierarchy_when_depth_prefers_children(tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = []
+    base_transport = module_tree_model_transport(calls)
+    final_attempts = 0
+
+    def module_payload(draft_id: str, parent_draft_id: str | None, name: str, path: str) -> dict[str, Any]:
+        return {
+            "draft_id": draft_id,
+            "parent_draft_id": parent_draft_id,
+            "name": name,
+            "slug": draft_id,
+            "code": draft_id.upper(),
+            "description": f"{name} capability.",
+            "keywords": [draft_id],
+            "source_paths": [path],
+            "rationale": f"{path} supports {name}.",
+            "confidence": 90,
+            "evidence_refs": [
+                {
+                    "kind": "code_file",
+                    "ref_id": f"repo:HEAD:{path}",
+                    "label": f"{path}:1-20",
+                    "summary": f"{path} supports {name}.",
+                    "confidence": 0.9,
+                    "source": "code_read_range",
+                }
+            ],
+        }
+
+    def flat_then_hierarchical_transport(
+        url: str, headers: dict[str, str], payload: dict[str, Any], timeout_seconds: float
+    ) -> dict[str, Any]:
+        nonlocal final_attempts
+        if payload.get("tools"):
+            return base_transport(url, headers, payload, timeout_seconds)
+        calls.append({"url": url, "headers": headers, "payload": payload, "timeout": timeout_seconds})
+        final_attempts += 1
+        if final_attempts == 1:
+            modules = [
+                module_payload("capture", None, "采集模块", "src/capture.cpp"),
+                module_payload("encoding", None, "编码模块", "src/encode.cpp"),
+                module_payload("transport", None, "传输模块", "src/network.cpp"),
+                module_payload("input", None, "输入模块", "src/input.cpp"),
+            ]
+        else:
+            modules = [
+                module_payload("capture", None, "采集模块", "src/capture.cpp"),
+                module_payload("windows-capture", "capture", "Windows 采集", "src/platform/windows/display_base.cpp"),
+                module_payload("encoding", None, "编码模块", "src/encode.cpp"),
+                module_payload("nvenc-control", "encoding", "NVENC 编码控制", "src/nvenc/nvenc_base.cpp"),
+            ]
+        return {
+            "id": f"chatcmpl-module-draft-hierarchy-{final_attempts}",
+            "model": payload["model"],
+            "choices": [{"message": {"content": json.dumps({"summary": "模块树草稿。", "modules": modules})}}],
+            "usage": {"prompt_tokens": 180, "completion_tokens": 120},
+        }
+
+    client = make_client(tmp_path, flat_then_hierarchical_transport, {"agent_execute_sync_mode": True})
+    workspace, project = create_workspace_project(client)
+    source = create_refund_fixture_repo(tmp_path)
+    repository = bind_repository(client, workspace["id"], project["id"], source)
+    synced_repository = sync_repository(client, workspace["id"], project["id"], repository["id"])
+
+    generated = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/module-tree-drafts/generate?actor_email={OWNER}",
+        json={"repository_id": synced_repository["id"], "max_modules": 12, "max_depth": 3},
+    )
+
+    assert generated.status_code == 201, generated.json()
+    final_payloads = [call["payload"] for call in calls if not call["payload"].get("tools")]
+    assert len(final_payloads) == 2
+    assert "too flat" in final_payloads[1]["messages"][-1]["content"]
+    items = generated.json()["payload"]["items"]
+    assert any(item["parent_draft_id"] for item in items)
     detail = client.get(
         f"/api/workspaces/{workspace['id']}/agent/runs/{generated.json()['agent_run_id']}/execution-detail"
     ).json()
@@ -849,6 +933,8 @@ def test_module_tree_draft_uses_compact_fallback_after_invalid_retry(tmp_path: P
     final_payloads = [call["payload"] for call in calls if not call["payload"].get("tools")]
     assert [payload["max_tokens"] for payload in final_payloads] == [4096, 6144, 8192]
     assert "compact fallback mode" in final_payloads[2]["messages"][-1]["content"]
+    assert "two-level hierarchy" in final_payloads[2]["messages"][-1]["content"]
+    assert "highest-level modules" not in final_payloads[2]["messages"][-1]["content"]
     detail = client.get(
         f"/api/workspaces/{workspace['id']}/agent/runs/{generated.json()['agent_run_id']}/execution-detail"
     ).json()

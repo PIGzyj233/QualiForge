@@ -115,14 +115,56 @@ function moduleTreeDraftItems(output: AgentStagedOutputRecord) {
   return recordList(output.payload?.items);
 }
 
+type ModuleTreeNode = {
+  id: string;
+  parentId: string;
+  item: Record<string, unknown>;
+  children: ModuleTreeNode[];
+  index: number;
+};
+
+function moduleDraftId(item: Record<string, unknown>, index: number) {
+  return textValue(item.draft_id) || textValue(item.code) || textValue(item.slug) || textValue(item.name) || `module-${index}`;
+}
+
+function buildModuleTree(items: Record<string, unknown>[]) {
+  const nodes: ModuleTreeNode[] = items.map((item, index) => ({
+    id: moduleDraftId(item, index),
+    parentId: textValue(item.parent_draft_id),
+    item,
+    children: [],
+    index
+  }));
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const roots: ModuleTreeNode[] = [];
+
+  for (const node of nodes) {
+    const parent = node.parentId ? byId.get(node.parentId) : null;
+    if (parent && parent.id !== node.id) {
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  return roots;
+}
+
+function moduleTreeDepth(nodes: ModuleTreeNode[]): number {
+  if (nodes.length === 0) return 0;
+  return Math.max(...nodes.map((node) => 1 + moduleTreeDepth(node.children)));
+}
+
 function outputMeta(output: AgentStagedOutputRecord) {
   const payload = output.payload ?? {};
   if (output.output_type === "module_tree_draft") {
     const items = moduleTreeDraftItems(output);
+    const depth = moduleTreeDepth(buildModuleTree(items));
     const commit = textValue(payload.commit_sha);
     return [
       output.output_type,
       items.length > 0 ? `${items.length} 个模块` : "",
+      depth > 1 ? `${depth} 层结构` : "",
       commit ? `commit ${commit.slice(0, 12)}` : ""
     ].filter(Boolean).join(" · ");
   }
@@ -130,6 +172,64 @@ function outputMeta(output: AgentStagedOutputRecord) {
   const moduleKey = typeof payload.module_key === "string" ? payload.module_key : "UNMAPPED";
   const priority = typeof payload.priority === "string" ? payload.priority : "";
   return [output.output_type, moduleKey, risk, priority].filter(Boolean).join(" · ");
+}
+
+function ModuleTreeNodeView({ node, depth = 0 }: { node: ModuleTreeNode; depth?: number }) {
+  const item = node.item;
+  const name = textValue(item.name) || textValue(item.code) || `模块 ${node.index + 1}`;
+  const code = textValue(item.code);
+  const description = textValue(item.description);
+  const sourcePaths = listValue(item.source_paths);
+  const confidence = item.confidence === undefined || item.confidence === null ? "" : shortJson(item.confidence);
+  const confidenceLabel = confidence ? (confidence.endsWith("%") ? confidence : `${confidence}%`) : "";
+  const hasChildren = node.children.length > 0;
+
+  return (
+    <li className="min-w-0">
+      <div className={cn(
+        "min-w-0 rounded-md border border-[var(--border)]/50 p-2.5",
+        depth === 0 ? "bg-[var(--card)]/80" : "bg-[var(--background)]/60"
+      )}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex items-start gap-2">
+            <span className={cn(
+              "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold",
+              depth === 0 ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "bg-[var(--muted)] text-[var(--muted-foreground)]"
+            )}>
+              {depth + 1}
+            </span>
+            <div className="min-w-0">
+              <strong className="block truncate text-xs font-bold text-[var(--foreground)]">{name}</strong>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                {code ? <span className="truncate rounded bg-[var(--muted)]/60 px-1.5 py-0.5 text-[10px] font-mono text-[var(--muted-foreground)]">{code}</span> : null}
+                {hasChildren ? <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-bold text-blue-600">{node.children.length} 个子模块</span> : null}
+              </div>
+            </div>
+          </div>
+          {confidenceLabel ? (
+            <span className="shrink-0 rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] font-bold text-green-600">
+              {confidenceLabel}
+            </span>
+          ) : null}
+        </div>
+        {description ? (
+          <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-[var(--muted-foreground)]">{description}</p>
+        ) : null}
+        {sourcePaths.length > 0 ? (
+          <p className="mt-2 truncate text-[10px] font-mono text-[var(--muted-foreground)]">
+            {sourcePaths.slice(0, 2).join(" · ")}
+          </p>
+        ) : null}
+      </div>
+      {hasChildren ? (
+        <ol className="mt-2 ml-3 flex flex-col gap-2 border-l border-[var(--border)]/60 pl-3">
+          {node.children.map((child) => (
+            <ModuleTreeNodeView node={child} depth={depth + 1} key={child.id} />
+          ))}
+        </ol>
+      ) : null}
+    </li>
+  );
 }
 
 function StagedOutputBody({ output }: { output: AgentStagedOutputRecord }) {
@@ -143,53 +243,29 @@ function StagedOutputBody({ output }: { output: AgentStagedOutputRecord }) {
 
   const items = moduleTreeDraftItems(output);
   const summary = textValue(output.payload.summary);
-  const visibleItems = items.slice(0, 12);
+  const tree = buildModuleTree(items);
+  const depth = moduleTreeDepth(tree);
 
   return (
     <div className="rounded-lg border border-[var(--border)]/50 bg-[var(--muted)]/20 p-3.5 flex flex-col gap-3">
       {summary ? (
         <p className="text-xs leading-relaxed text-[var(--foreground)]">{summary}</p>
       ) : null}
-      {visibleItems.length > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-          {visibleItems.map((item, index) => {
-            const name = textValue(item.name) || textValue(item.code) || `模块 ${index + 1}`;
-            const code = textValue(item.code);
-            const description = textValue(item.description);
-            const sourcePaths = listValue(item.source_paths);
-            const confidence = item.confidence === undefined || item.confidence === null ? "" : shortJson(item.confidence);
-            const confidenceLabel = confidence.endsWith("%") ? confidence : `${confidence}%`;
-            return (
-              <div className="min-w-0 rounded-md border border-[var(--border)]/50 bg-[var(--card)]/70 p-2.5" key={`${code || name}-${index}`}>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <strong className="block truncate text-xs font-bold text-[var(--foreground)]">{name}</strong>
-                    {code ? <span className="mt-0.5 block truncate text-[10px] font-mono text-[var(--muted-foreground)]">{code}</span> : null}
-                  </div>
-                  {confidence ? (
-                    <span className="shrink-0 rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] font-bold text-green-600">
-                      {confidenceLabel}
-                    </span>
-                  ) : null}
-                </div>
-                {description ? (
-                  <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-[var(--muted-foreground)]">{description}</p>
-                ) : null}
-                {sourcePaths.length > 0 ? (
-                  <p className="mt-2 truncate text-[10px] font-mono text-[var(--muted-foreground)]">
-                    {sourcePaths.slice(0, 2).join(" · ")}
-                  </p>
-                ) : null}
-              </div>
-            );
-          })}
+      {tree.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold text-[var(--muted-foreground)]">
+            <span>{tree.length} 个一级模块</span>
+            {depth > 1 ? <span>{depth} 层结构</span> : <span>暂无子模块</span>}
+          </div>
+          <ol className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {tree.map((node) => (
+              <ModuleTreeNodeView node={node} key={node.id} />
+            ))}
+          </ol>
         </div>
       ) : (
         <p className="text-xs text-[var(--muted-foreground)]">模块树草稿未包含可展示的模块条目</p>
       )}
-      {items.length > visibleItems.length ? (
-        <p className="text-[10px] text-[var(--muted-foreground)]">还有 {items.length - visibleItems.length} 个模块未在卡片中展开</p>
-      ) : null}
     </div>
   );
 }

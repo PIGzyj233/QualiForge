@@ -213,6 +213,8 @@ class GraphGenerationNodesMixin:
                         messages,
                         parse_error,
                         compact_module_limit=constraints["compact_module_limit"],
+                        compact_top_level_limit=constraints["compact_top_level_limit"],
+                        preferred_depth=constraints["preferred_depth"],
                         compact=attempt_index > 1,
                     )
                 final_prompt_hash = prompt_hash_for_messages(attempt_messages)
@@ -244,6 +246,12 @@ class GraphGenerationNodesMixin:
                     span.set_attribute("model_status", "succeeded")
                 try:
                     envelope = self._parse_module_tree_draft(response.content)
+                    if self._module_tree_needs_hierarchy_retry(envelope, constraints) and attempt_index < len(max_token_attempts) - 1:
+                        parse_error = RuntimeError(
+                            "module tree draft was too flat; expected child modules with parent_draft_id"
+                        )
+                        envelope = None
+                        continue
                     break
                 except Exception as exc:
                     parse_error = exc
@@ -390,6 +398,10 @@ class GraphGenerationNodesMixin:
                 "Prefer feature/capability groupings when repository evidence supports them.",
                 "Use technical layers such as backend/frontend only when they are the clearest first-level grouping.",
                 "Use Chinese for human-facing module names and natural-language summaries whenever possible, unless request guidance explicitly asks for another language; keep code identifiers, source paths, and symbols unchanged.",
+                "Prefer a two-level hierarchy when max_depth >= 2: top-level modules are broad capability areas, child modules are concrete implementation responsibilities.",
+                f"Target {constraints['preferred_top_level_range']} top-level modules and {constraints['preferred_children_per_parent']} child modules per top-level module when repository evidence supports it.",
+                "Set parent_draft_id to the parent's draft_id for every child module; leave parent_draft_id null only for top-level modules.",
+                "If the module budget is tight, reduce child count before flattening the hierarchy.",
                 "Keep the first draft compact; avoid listing every leaf folder.",
                 f"Return no more than {constraints['max_modules']} modules; prefer {constraints['preferred_module_range']} modules for this first draft.",
                 f"Use no more than {constraints['max_source_paths_per_module']} source_paths and {constraints['max_evidence_refs_per_module']} evidence_refs per module.",
@@ -433,20 +445,31 @@ class GraphGenerationNodesMixin:
         parse_error: Exception | None,
         *,
         compact_module_limit: int,
+        compact_top_level_limit: int,
+        preferred_depth: int,
         compact: bool = False,
     ) -> list[dict[str, Any]]:
         compact_instruction = ""
         if compact:
-            compact_instruction = (
-                f" Use compact fallback mode: return at most {compact_module_limit} highest-level modules, "
-                "at most one source_path and one evidence_ref per module, and minify the JSON."
-            )
+            if preferred_depth >= 2:
+                compact_instruction = (
+                    " Use compact fallback mode: return a compact two-level hierarchy, "
+                    f"at most {compact_top_level_limit} top-level modules and at most {compact_module_limit} "
+                    "modules total. Include at least one child module for major top-level modules when evidence "
+                    "supports it, use parent_draft_id for child modules, at most one source_path and one evidence_ref "
+                    "per module, and minify the JSON."
+                )
+            else:
+                compact_instruction = (
+                    f" Use compact fallback mode: return at most {compact_module_limit} modules, "
+                    "at most one source_path and one evidence_ref per module, and minify the JSON."
+                )
         return [
             *messages,
             {
                 "role": "user",
                 "content": (
-                    "The previous module tree draft response could not be parsed as the required JSON object"
+                    "The previous module tree draft response could not be used as the required JSON object"
                     f" ({parse_error or 'missing JSON object'}). Return exactly one valid JSON object matching "
                     "required_json_schema. Do not include Markdown, comments, or prose outside the JSON. Keep any "
                     "internal reasoning brief and spend the output budget on the JSON content."
@@ -463,14 +486,23 @@ class GraphGenerationNodesMixin:
         min_files = self._bounded_int(request.get("min_files"), default=2, minimum=0, maximum=20)
         preferred_upper = min(max_modules, 12)
         preferred_lower = min(preferred_upper, 8)
+        preferred_depth = 2 if max_depth >= 2 and max_modules >= 4 else 1
+        top_level_upper = min(max_modules, 8)
+        top_level_lower = min(top_level_upper, 4)
+        children_upper = 4 if max_modules >= 12 else 2
+        compact_top_level_limit = min(top_level_upper, 6)
         return {
             "max_modules": max_modules,
             "max_depth": max_depth,
             "min_files": min_files,
             "include_tests": bool(request.get("include_tests", False)),
             "guidance": str(request.get("guidance") or ""),
+            "preferred_depth": preferred_depth,
+            "preferred_top_level_range": f"{top_level_lower}-{top_level_upper}",
+            "preferred_children_per_parent": f"1-{children_upper}",
             "preferred_module_range": f"{preferred_lower}-{preferred_upper}",
             "compact_module_limit": preferred_upper,
+            "compact_top_level_limit": compact_top_level_limit,
             "max_source_paths_per_module": 4,
             "max_evidence_refs_per_module": 2,
         }
@@ -482,6 +514,17 @@ class GraphGenerationNodesMixin:
         except (TypeError, ValueError):
             parsed = default
         return max(minimum, min(parsed, maximum))
+
+    @staticmethod
+    def _module_tree_needs_hierarchy_retry(
+        envelope: GeneratedModuleTreeDraftEnvelope,
+        constraints: dict[str, Any],
+    ) -> bool:
+        if int(constraints.get("preferred_depth") or 1) < 2:
+            return False
+        if len(envelope.modules) < 4:
+            return False
+        return not any(module.parent_draft_id for module in envelope.modules)
 
     @staticmethod
     def _module_tree_payload_from_envelope(envelope: GeneratedModuleTreeDraftEnvelope, state: AgentGraphState) -> dict[str, Any]:
