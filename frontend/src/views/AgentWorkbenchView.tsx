@@ -30,6 +30,7 @@ import {
   AgentMemoryVersionRecord, 
   AgentRunRecord, 
   AgentRunStatus, 
+  AgentSubagentRunRecord,
   AgentStagedOutputRecord,
   cancelAgentRun, 
   curateAgentMemory, 
@@ -65,6 +66,13 @@ import { pickExistingId } from "../lib/selection";
 import { cn } from "@/lib/utils";
 
 const runStatuses: Array<AgentRunStatus | "all"> = ["all", "queued", "running", "waiting_for_user", "succeeded", "failed", "cancelled"];
+const subagentStatusLabel: Record<AgentSubagentRunRecord["status"], string> = {
+  queued: "已计划",
+  running: "运行中",
+  succeeded: "成功",
+  failed: "失败",
+  skipped: "跳过"
+};
 
 function formatDate(value: string | null) {
   if (!value) return "无";
@@ -80,6 +88,13 @@ function shortJson(value: unknown) {
   if (value === null || value === undefined || value === "") return "无";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value).slice(0, 420);
+}
+
+function subagentRunMessage(item: AgentSubagentRunRecord) {
+  if (item.status === "queued") {
+    return item.summary || item.input_summary || "已计划，等待前置阶段";
+  }
+  return item.output_summary || item.error_summary || item.summary || item.input_summary;
 }
 
 function outputMeta(output: AgentStagedOutputRecord) {
@@ -1129,9 +1144,9 @@ export function AgentWorkbenchView() {
 
                         {parallelGroups.length > 0 && (
                           <div>
-                            <Label className="text-xs font-bold text-[var(--muted-foreground)] block mb-1">并行分组 (Parallel Groups)</Label>
+                            <Label className="text-xs font-bold text-[var(--muted-foreground)] block mb-1">执行分组 (Execution Groups)</Label>
                             <p className="text-xs font-medium text-[var(--foreground)] leading-relaxed bg-[var(--muted)]/30 p-2 rounded border border-[var(--border)]/50">
-                              {parallelGroups.map((group) => Array.isArray(group) ? group.join(" + ") : shortJson(group)).join(" / ")}
+                              {parallelGroups.map((group) => Array.isArray(group) ? group.join(" + ") : shortJson(group)).join(" → ")}
                             </p>
                           </div>
                         )}
@@ -1173,13 +1188,13 @@ export function AgentWorkbenchView() {
                                         item.status === "running" && "bg-info/10 text-info",
                                         item.status === "queued" && "bg-yellow-500/10 text-yellow-500"
                                       )}>
-                                        {item.status}
+                                        {subagentStatusLabel[item.status] ?? item.status}
                                       </span>
                                       <div className="text-xs min-w-0">
                                         <strong className="text-sm font-bold text-[var(--foreground)]">{item.subagent_name}</strong>
                                         <span className="text-[10px] text-[var(--muted-foreground)] font-mono ml-2">({item.stage})</span>
                                         <p className="text-xs text-[var(--muted-foreground)] mt-1.5 leading-relaxed break-all bg-[var(--card)] p-2.5 rounded border border-[var(--border)]/50">
-                                          {item.output_summary || item.error_summary || item.summary || item.input_summary}
+                                          {subagentRunMessage(item)}
                                         </p>
                                       </div>
                                       <span className="text-right text-xs font-mono text-[var(--muted-foreground)] mt-0.5">{item.duration_ms}ms</span>
