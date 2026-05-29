@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from app.agents import AgentRun, AgentRunStatus
+from app.agents.workflow_gateway import AgentWorkflowUnavailable
+from app.cases.ai_suggestions import (
+    AI_SUGGESTION_STALE_MINUTES,
+    create_ai_suggestion_agent_run,
+    execute_ai_suggestion_generation,
+    parse_llm_suggestion_json,
+)
+from app.cases.diff_models import DiffAnalysis
+from app.workspace.routes import now_utc
 from test_diff_analysis import (
     OWNER,
     bind_and_sync_repository,
@@ -14,6 +26,57 @@ from test_diff_analysis import (
     create_workspace_project,
     make_client,
 )
+
+
+class FakeAISuggestionWorkflowGateway:
+    def __init__(self, *, fail_start: AgentWorkflowUnavailable | None = None) -> None:
+        self.fail_start = fail_start
+        self.started: list[dict[str, Any]] = []
+
+    def start_ai_suggestion_run(self, **kwargs):
+        if self.fail_start is not None:
+            raise self.fail_start
+        run = kwargs["run"]
+        run.temporal_workflow_id = f"agent-run-{run.id}"
+        run.current_phase = "temporal_queued"
+        kwargs["db"].commit()
+        self.started.append(kwargs)
+        return {"summary": "AI suggestion workflow started"}
+
+
+def test_parse_llm_suggestion_json_uses_final_suggestions_object() -> None:
+    content = """
+    {"task": "Explore repository context for diff analysis a34a5ed2f2454fa4bc058e399d6ea287 (10.2.9.6..10.3.0.0)"}
+    ```json
+    {"suggestions": [{"suggestion_type": "regression", "module_key": "PAYMENT"}]}
+    ```
+    {"debug": "trailing object from model"}
+    """
+
+    assert parse_llm_suggestion_json(content) == [{"suggestion_type": "regression", "module_key": "PAYMENT"}]
+
+
+def install_fake_ai_suggestion_gateway(client: TestClient, *, fail_start: AgentWorkflowUnavailable | None = None) -> FakeAISuggestionWorkflowGateway:
+    gateway = FakeAISuggestionWorkflowGateway(fail_start=fail_start)
+    client.app.state.agent_workflow_gateway = gateway
+    return gateway
+
+
+def execute_ai_suggestion_job(client: TestClient, workspace_id: str, project_id: str, analysis_id: str, run_id: str, *, force: bool = False) -> dict[str, Any]:
+    database = client.app.state.database
+    database.init()
+    with database.session_factory() as db:
+        return execute_ai_suggestion_generation(
+            db,
+            settings=client.app.state.settings,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            analysis_id=analysis_id,
+            run_id=run_id,
+            actor_email=OWNER,
+            force=force,
+            model_gateway_transport=getattr(client.app.state, "model_gateway_transport", None),
+        )
 
 
 def successful_ai_suggestion_transport(model_calls: list[dict[str, Any]]):
@@ -170,17 +233,28 @@ def test_ai_suggestions_link_diff_mapping_cases_feedback_and_plan_items(tmp_path
         tmp_path,
         successful_ai_suggestion_transport(model_calls),
     )
+    gateway = install_fake_ai_suggestion_gateway(client)
 
     generated = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions?actor_email={OWNER}"
     )
 
-    assert generated.status_code == 201
+    assert generated.status_code == 202
+    queued = generated.json()
+    assert queued["agent_run"]["temporal_workflow_id"] == f"agent-run-{queued['agent_run']['id']}"
+    assert queued["suggestions"] == []
+    assert len(gateway.started) == 1
+    result = execute_ai_suggestion_job(client, workspace["id"], project["id"], analysis["id"], queued["agent_run"]["id"])
+    assert result["status"] == "succeeded"
+    status_response = client.get(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions/status?actor_email={OWNER}"
+    )
+    assert status_response.status_code == 200
     assert model_calls[0]["url"] == "http://model-endpoint:4000/v1/chat/completions"
     assert model_calls[0]["payload"]["model"] == "deepseek-v4-pro"
     assert model_calls[0]["payload"].get("tools")
     assert any(message.get("role") == "tool" for message in model_calls[-1]["payload"]["messages"])
-    suggestions = generated.json()
+    suggestions = status_response.json()["suggestions"]
     regression = next(item for item in suggestions if item["suggestion_type"] == "regression")
     candidate = next(item for item in suggestions if item["suggestion_type"] == "case_candidate")
 
@@ -200,9 +274,9 @@ def test_ai_suggestions_link_diff_mapping_cases_feedback_and_plan_items(tmp_path
     assert candidate["candidate_payload"]["steps"][0]["action"] == "调用 POST /checkout/refund 发起退款"
 
     invocations = client.get(f"/api/workspaces/{workspace['id']}/ai-invocations").json()
-    assert invocations[0]["provider_name"] == "deepseek"
-    assert invocations[0]["model_alias"] == "deepseek-v4-pro"
-    assert invocations[0]["usage"] == {"prompt_tokens": 180, "completion_tokens": 120}
+    final_invocation = next(item for item in invocations if item["usage"] == {"prompt_tokens": 180, "completion_tokens": 120})
+    assert final_invocation["provider_name"] == "deepseek"
+    assert final_invocation["model_alias"] == "deepseek-v4-pro"
     tool_calls = client.get(
         f"/api/workspaces/{workspace['id']}/agent/runs/{regression['source_diff']['agent_run_id']}/tool-calls"
     ).json()
@@ -215,6 +289,11 @@ def test_ai_suggestions_link_diff_mapping_cases_feedback_and_plan_items(tmp_path
     assert updated.status_code == 200
     assert updated.json()["status"] == "accepted"
     assert updated.json()["feedback_history"][0]["comment"] == "Keep this regression item"
+
+    locked_force = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions?actor_email={OWNER}&force=true"
+    )
+    assert locked_force.status_code == 409
 
     plan_items = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/ai-suggestions/{regression['id']}/plan-items?actor_email={OWNER}",
@@ -255,6 +334,7 @@ def test_ai_suggestions_are_idempotent_for_same_diff_analysis(tmp_path: Path) ->
         tmp_path,
         successful_ai_suggestion_transport(model_calls),
     )
+    gateway = install_fake_ai_suggestion_gateway(client)
 
     first = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions?actor_email={OWNER}"
@@ -263,15 +343,101 @@ def test_ai_suggestions_are_idempotent_for_same_diff_analysis(tmp_path: Path) ->
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions?actor_email={OWNER}"
     )
 
-    assert first.status_code == 201
-    assert second.status_code == 201
-    assert [item["id"] for item in second.json()] == [item["id"] for item in first.json()]
+    assert first.status_code == 202
+    assert second.status_code == 202
+    first_job = first.json()
+    second_job = second.json()
+    assert first_job["agent_run"]["id"] == second_job["agent_run"]["id"]
+    assert second_job["reused_running"] is True
+    assert len(gateway.started) == 1
+    assert model_calls == []
+    execute_ai_suggestion_job(client, workspace["id"], project["id"], analysis["id"], first_job["agent_run"]["id"])
+    existing = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions?actor_email={OWNER}"
+    )
+    assert existing.status_code == 200
+    first_suggestions = existing.json()["suggestions"]
+    assert len(first_suggestions) >= 2
     assert len(model_calls) == 3
 
     forced = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions?actor_email={OWNER}&force=true"
     )
 
-    assert forced.status_code == 201
-    assert [item["id"] for item in forced.json()] != [item["id"] for item in first.json()]
+    assert forced.status_code == 202
+    forced_job = forced.json()
+    assert forced_job["agent_run"]["id"] != first_job["agent_run"]["id"]
+    execute_ai_suggestion_job(client, workspace["id"], project["id"], analysis["id"], forced_job["agent_run"]["id"], force=True)
+    regenerated = client.get(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions/status?actor_email={OWNER}"
+    ).json()["suggestions"]
+    assert [item["id"] for item in regenerated] != [item["id"] for item in first_suggestions]
     assert len(model_calls) == 6
+
+
+def test_ai_suggestion_temporal_start_failure_marks_run_failed(tmp_path: Path) -> None:
+    client, workspace, project, _formal_case, analysis = create_analysis_with_formal_case(
+        tmp_path,
+        successful_ai_suggestion_transport([]),
+    )
+    install_fake_ai_suggestion_gateway(client, fail_start=AgentWorkflowUnavailable("Temporal unavailable: test"))
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions?actor_email={OWNER}"
+    )
+
+    assert response.status_code == 503
+    database = client.app.state.database
+    database.init()
+    with database.session_factory() as db:
+        run = db.scalar(select(AgentRun).where(AgentRun.trigger_type == "ai_suggestion"))
+        assert run is not None
+        assert run.status == AgentRunStatus.failed.value
+        assert run.current_phase == "temporal_unavailable"
+        assert "Temporal unavailable" in run.failure_reason
+
+
+def test_stale_sync_ai_suggestion_run_is_failed_and_replaced(tmp_path: Path) -> None:
+    client, workspace, project, _formal_case, analysis = create_analysis_with_formal_case(
+        tmp_path,
+        successful_ai_suggestion_transport([]),
+    )
+    gateway = install_fake_ai_suggestion_gateway(client)
+    database = client.app.state.database
+    database.init()
+    with database.session_factory() as db:
+        analysis_model = db.get(DiffAnalysis, analysis["id"])
+        assert analysis_model is not None
+        stale = create_ai_suggestion_agent_run(db, analysis_model, OWNER)
+        stale.status = AgentRunStatus.running.value
+        stale.current_phase = "ai_suggestion_code_tools"
+        stale.started_at = now_utc() - timedelta(minutes=AI_SUGGESTION_STALE_MINUTES + 1)
+        db.commit()
+        stale_id = stale.id
+
+    status_response = client.get(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions/status?actor_email={OWNER}"
+    )
+
+    assert status_response.status_code == 200
+    stale_status = status_response.json()["agent_run"]
+    assert stale_status["id"] == stale_id
+    assert stale_status["status"] == "failed"
+    assert stale_status["current_phase"] == "stale_running"
+
+    queued = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions?actor_email={OWNER}"
+    )
+
+    assert queued.status_code == 202
+    assert queued.json()["agent_run"]["id"] != stale_id
+    assert len(gateway.started) == 1
+
+
+def test_ai_suggestion_temporal_worker_registration() -> None:
+    from app.agent_worker import execute_ai_suggestion_generation_activity as registered_activity
+    from app.agents.workflows import AISuggestionWorkflow
+    from app.cases.ai_suggestions import execute_ai_suggestion_generation_activity
+
+    assert AISuggestionWorkflow.__name__ == "AISuggestionWorkflow"
+    assert registered_activity is execute_ai_suggestion_generation_activity

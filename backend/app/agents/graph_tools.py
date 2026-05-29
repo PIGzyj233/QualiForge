@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.agents import AgentRun, AgentRunStatus, AgentToolCall, AgentToolCallStatus
-from app.agents.graph_analysis import collect_coverage_records
+from app.agents.coverage import lookup_coverage_records
 from app.agents.graph_budget import BudgetTracker
 from app.agents.graph_types import (
     AgentRunCancelled,
@@ -247,7 +247,7 @@ class ToolRegistry:
                 input_model=CoverageLookupInput,
                 budget_cost=1,
                 audit_policy="record_summary",
-                handler=lambda item: collect_coverage_records(
+                handler=lambda item: lookup_coverage_records(
                     self.db,
                     run=self.run,
                     query=item.query,

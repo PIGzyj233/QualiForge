@@ -219,6 +219,74 @@ def test_diff_analysis_creates_job_and_testing_decision_view(tmp_path: Path) -> 
     assert jobs[0]["status"] == "succeeded"
 
 
+def test_diff_analysis_fetches_new_tags_before_resolving_refs(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    workspace, project = create_workspace_project(client)
+    create_module_with_rules(client, workspace["id"], project["id"])
+    source = create_diff_fixture_repo(tmp_path)
+    repository = bind_and_sync_repository(client, workspace["id"], project["id"], source)
+
+    (source / "src" / "payment" / "checkout.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "",
+                "router = APIRouter()",
+                "",
+                "@router.post('/checkout/pay')",
+                "def pay_order():",
+                "    return {'status': 'paid'}",
+                "",
+                "@router.post('/checkout/refund')",
+                "def refund_order():",
+                "    return {'status': 'refunded'}",
+                "",
+                "@router.post('/checkout/void')",
+                "def void_order():",
+                "    return {'status': 'voided'}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    git_run(source, ["add", "."])
+    git_run(source, ["commit", "-m", "target void"])
+    git_run(source, ["tag", "v3"])
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "base_ref": "v2", "target_ref": "v3"},
+    )
+
+    assert response.status_code == 201
+    analysis = response.json()
+    assert analysis["status"] == "succeeded", analysis
+    assert any("fetch --prune --tags --force origin" in entry for entry in analysis["key_logs"])
+    assert any("+@router.post('/checkout/void')" in line for item in analysis["file_changes"] for hunk in item["diff_hunks"] for line in hunk["lines"])
+
+
+def test_diff_analysis_reports_missing_refs_after_refresh_with_logs(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    workspace, project = create_workspace_project(client)
+    source = create_diff_fixture_repo(tmp_path)
+    repository = bind_and_sync_repository(client, workspace["id"], project["id"], source)
+
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "base_ref": "missing-base", "target_ref": "missing-target"},
+    )
+
+    assert response.status_code == 201
+    analysis = response.json()
+    assert analysis["status"] == "failed", analysis
+    assert "after refreshing repository refs" in analysis["error_summary"]
+    assert "base ref missing-base" in analysis["error_summary"]
+    assert "target ref missing-target" in analysis["error_summary"]
+    assert any("fetch --prune --tags --force origin" in entry for entry in analysis["key_logs"])
+    assert any("rev-parse --verify missing-base^{commit}" in entry for entry in analysis["key_logs"])
+    assert any("rev-parse --verify missing-target^{commit}" in entry for entry in analysis["key_logs"])
+
+
 def test_diff_analysis_requires_synced_repository(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     workspace, project = create_workspace_project(client)

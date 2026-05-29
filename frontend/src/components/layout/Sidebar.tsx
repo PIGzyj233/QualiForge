@@ -285,6 +285,7 @@ export function Sidebar() {
                   </NavGroup>
 
                   <NavGroup label="变更分析" icon={GitCompareArrows} collapsed={collapsed}>
+                    <NavItem to={routes.projectRepo(wid, pid)} icon={GitBranch} label="GitLab 仓库" collapsed={collapsed} />
                     <NavItem to={routes.projectDiffs(wid, pid)} icon={GitCompareArrows} label="Diff 分析" collapsed={collapsed} />
                     <NavItem to={routes.projectAI(wid, pid)} icon={BrainCircuit} label="AI 智能推荐" collapsed={collapsed} />
                   </NavGroup>
@@ -296,7 +297,6 @@ export function Sidebar() {
 
                   <NavGroup label="配置" icon={Settings} collapsed={collapsed} defaultOpen={false}>
                     <NavItem to={routes.projectModules(wid, pid)} icon={Network} label="模块目录" collapsed={collapsed} />
-                    <NavItem to={routes.projectRepo(wid, pid)} icon={GitBranch} label="代码沙箱" collapsed={collapsed} />
                     <NavItem to={routes.projectTeam(wid, pid)} icon={Users} label="项目团队" collapsed={collapsed} />
                   </NavGroup>
 

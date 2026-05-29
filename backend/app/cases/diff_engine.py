@@ -22,7 +22,7 @@ from app.cases.mapping_evaluator import (
 )
 from app.cases.modules import MappingRuleStatus, ModuleMappingRule, ProjectModule
 from app.git.models import GitRepository, Job, JobStatus
-from app.git.sandbox import ensure_safe_sandbox_path, run_git
+from app.git.sandbox import ensure_safe_sandbox_path, refresh_repository_refs, run_git
 from app.workspace.routes import now_utc
 
 
@@ -462,17 +462,26 @@ def run_analysis(
     job: Job,
 ) -> None:
     key_logs = [f"Diff analysis started for {repository.name}", f"Sandbox root: {settings_root}"]
+    analysis.key_logs = key_logs
+    job.key_logs = key_logs
     root = settings_root.expanduser()
     repository_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
     if not repository_path.exists():
         raise RuntimeError("Repository checkout does not exist; sync repository first")
 
+    refresh_repository_refs(db, repository, repository_path, key_logs)
+    repository.last_synced_at = now_utc()
+    repository.updated_at = now_utc()
+
     base_result = run_git(["git", "-C", str(repository_path), "rev-parse", "--verify", f"{analysis.base_ref}^{{commit}}"], repository.sync_timeout_seconds, key_logs)
     target_result = run_git(["git", "-C", str(repository_path), "rev-parse", "--verify", f"{analysis.target_ref}^{{commit}}"], repository.sync_timeout_seconds, key_logs)
+    missing_refs = []
     if base_result.returncode != 0:
-        raise RuntimeError(f"Base ref not found: {analysis.base_ref}")
+        missing_refs.append(f"base ref {analysis.base_ref}")
     if target_result.returncode != 0:
-        raise RuntimeError(f"Target ref not found: {analysis.target_ref}")
+        missing_refs.append(f"target ref {analysis.target_ref}")
+    if missing_refs:
+        raise RuntimeError(f"Git ref not found after refreshing repository refs: {', '.join(missing_refs)}")
     base_sha = base_result.stdout.strip()
     target_sha = target_result.stdout.strip()
 

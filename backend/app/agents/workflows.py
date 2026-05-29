@@ -14,6 +14,7 @@ with workflow.unsafe.imports_passed_through():
         mark_agent_run_cancelled_activity,
         mark_agent_run_failed_activity,
     )
+    from app.cases.ai_suggestions import execute_ai_suggestion_generation_activity
 
 
 def _activity_timeout(payload: dict[str, Any], key: str, default_seconds: int) -> timedelta:
@@ -165,3 +166,28 @@ class AgentRunWorkflow:
             )
             results.append(result)
         return results
+
+
+@workflow.defn
+class AISuggestionWorkflow:
+    @workflow.run
+    async def run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await workflow.execute_activity(
+                execute_ai_suggestion_generation_activity,
+                payload,
+                start_to_close_timeout=_activity_timeout(payload, "activity_start_to_close_timeout_seconds", 25 * 60),
+                retry_policy=RetryPolicy(maximum_attempts=max(1, int(payload.get("activity_retry_attempts") or 3))),
+            )
+        except Exception as exc:
+            return await workflow.execute_activity(
+                mark_agent_run_failed_activity,
+                {
+                    "workspace_id": payload["workspace_id"],
+                    "run_id": payload["run_id"],
+                    "actor_email": payload.get("actor_email") or "system",
+                    "failure_reason": f"Temporal activity failed after retries: {exc.__class__.__name__}: {str(exc)[:500]}",
+                    "phase": "temporal_failed",
+                },
+                start_to_close_timeout=timedelta(seconds=15),
+            )

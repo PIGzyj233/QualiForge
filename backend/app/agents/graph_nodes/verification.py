@@ -32,7 +32,8 @@ from app.agents import (
     evidence_refs_to_json,
     mark_run_succeeded,
 )
-from app.agents.graph_analysis import classify_duplicate, evidence_paths, jaccard, normalize_text, select_subagent_plan, signal_values, token_set
+from app.agents.coverage import classify_candidate_coverage
+from app.agents.graph_analysis import evidence_paths, jaccard, normalize_text, select_subagent_plan, signal_values, token_set
 from app.agents.graph_policy import (
     AGENT_MODEL_INPUT_DATA_TYPES,
     AGENT_SUPERVISOR_PROMPT_VERSION,
@@ -91,7 +92,7 @@ class GraphVerificationNodesMixin:
                 for raw in state.get("candidates", []):
                     candidate = GeneratedCaseCandidate.model_validate(raw)
                     candidate = self._validate_candidate_quality(candidate)
-                    duplicate_result = classify_duplicate(candidate, coverage_records)
+                    duplicate_result = classify_candidate_coverage(candidate, coverage_records)
                     critic_result = self._critic_candidate(candidate, duplicate_result=duplicate_result, critic_selected=critic_selected)
                     candidate_data = candidate.model_dump(mode="json")
                     candidate_data["duplicate_result"] = duplicate_result

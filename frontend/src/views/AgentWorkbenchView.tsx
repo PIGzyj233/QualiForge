@@ -5,12 +5,19 @@ import { AgentExecutionDetailRecord, AgentMemoryFileRecord, AgentMemorySearchRes
 import { GitRepositoryRecord, listRepositories } from "../api/git";
 import { listProjects, listWorkspaces, ProjectRecord, WorkspaceRecord } from "../api/workspace";
 import { useSessionStore } from "@/stores/session-store";
-import { useCurrentWorkspace, useCurrentProject } from "@/stores/workspace-store";
 import { Pagination } from "../components/Pagination";
 import { StatusPill } from "../components/StatusPill";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { usePagination } from "../hooks/usePagination";
 import { statusLabel } from "../lib/labels";
 import { pickExistingId } from "../lib/selection";
+import { cn } from "@/lib/utils";
 
 const runStatuses: Array<AgentRunStatus | "all"> = ["all", "queued", "running", "waiting_for_user", "succeeded", "failed", "cancelled"];
 
@@ -491,176 +498,219 @@ export function AgentWorkbenchView() {
     }
   }
 
+  const eyebrowClass = "text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]";
+  const detailsClass = "rounded-md border border-[var(--border)] p-3 [&>summary]:cursor-pointer [&>summary]:text-sm [&>summary]:font-semibold [&>summary]:list-none";
+
   return (
-    <section className="section-block agent-workbench">
-      <div className="section-heading">
+    <div className="flex flex-col gap-5 min-w-0">
+      <div className="flex items-center justify-between gap-4">
         <div>
-          <span className="eyebrow">Agent Runs</span>
-          <h2>Agent Workbench</h2>
+          <p className={cn(eyebrowClass, "mb-1")}>Agent Runs</p>
+          <h1 className="font-heading text-2xl font-bold">Agent Workbench</h1>
         </div>
-        <Bot size={20} aria-hidden="true" />
+        <Bot size={20} className="text-[var(--muted-foreground)] shrink-0" aria-hidden="true" />
       </div>
-      <div className="admin-body">
-        {message ? <div className="inline-notice">{message}</div> : null}
 
-        <div className="admin-toolbar agent-toolbar">
-          <label className="select-label">
-            Workspace
-            <select value={selectedWorkspaceId} onChange={(event) => void handleWorkspaceSwitch(event.target.value)} disabled={busy || workspaces.length === 0}>
-              <option value="">未选择</option>
+      {message ? (
+        <Alert>
+          <AlertDescription>{message}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3 items-end">
+        <div className="flex flex-col gap-1.5">
+          <Label>Workspace</Label>
+          <Select
+            value={selectedWorkspaceId || "__none__"}
+            onValueChange={(value) => void handleWorkspaceSwitch(value === "__none__" ? "" : value)}
+            disabled={busy || workspaces.length === 0}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="未选择" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">未选择</SelectItem>
               {workspaces.map((workspace) => (
-                <option value={workspace.id} key={workspace.id}>
+                <SelectItem value={workspace.id} key={workspace.id}>
                   {workspace.name}
-                </option>
+                </SelectItem>
               ))}
-            </select>
-          </label>
-          <label className="select-label">
-            Project
-            <select value={selectedProjectId} onChange={(event) => void handleProjectSwitch(event.target.value)} disabled={busy || projects.length === 0}>
-              <option value="">未选择</option>
-              {projects.map((project) => (
-                <option value={project.id} key={project.id}>
-                  {project.key} · {project.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className="icon-button" type="button" onClick={() => void refreshAll()} title="刷新 Agent Workbench" disabled={busy}>
-            <RefreshCcw size={18} aria-hidden="true" />
-          </button>
+            </SelectContent>
+          </Select>
         </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Project</Label>
+          <Select
+            value={selectedProjectId || "__none__"}
+            onValueChange={(value) => void handleProjectSwitch(value === "__none__" ? "" : value)}
+            disabled={busy || projects.length === 0}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="未选择" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">未选择</SelectItem>
+              {projects.map((project) => (
+                <SelectItem value={project.id} key={project.id}>
+                  {project.key} · {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button variant="outline" size="icon" type="button" onClick={() => void refreshAll()} title="刷新 Agent Workbench" disabled={busy} className="shrink-0">
+          <RefreshCcw size={18} aria-hidden="true" />
+        </Button>
+      </div>
 
-        <div className="agent-shell">
-          <section className="agent-launch-pane" aria-label="Agent run launcher">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Launch</span>
-                <h3>新建执行</h3>
-              </div>
-              <Play size={18} aria-hidden="true" />
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(220px,0.8fr)_minmax(240px,0.85fr)_minmax(320px,1.25fr)] gap-4 items-start">
+        <Card className="min-w-0" aria-label="Agent run launcher">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+            <div>
+              <p className={eyebrowClass}>Launch</p>
+              <CardTitle className="text-base">新建执行</CardTitle>
             </div>
-            <div className="stack-form">
-              <label>
-                Goal
-                <textarea value={goal} onChange={(event) => setGoal(event.target.value)} rows={4} />
-              </label>
-              <label>
-                Repository
-                <select value={selectedRepositoryId} onChange={(event) => setSelectedRepositoryId(event.target.value)} disabled={busy || repositories.length === 0}>
-                  <option value="">未选择</option>
+            <Play size={18} className="text-[var(--muted-foreground)]" aria-hidden="true" />
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <Label>Goal</Label>
+              <Textarea value={goal} onChange={(event) => setGoal(event.target.value)} rows={4} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Repository</Label>
+              <Select value={selectedRepositoryId || "__none__"} onValueChange={(value) => setSelectedRepositoryId(value === "__none__" ? "" : value)} disabled={busy || repositories.length === 0}>
+                <SelectTrigger>
+                  <SelectValue placeholder="未选择" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">未选择</SelectItem>
                   {repositories.map((repository) => (
-                    <option value={repository.id} key={repository.id}>
+                    <SelectItem value={repository.id} key={repository.id}>
                       {repository.name} · {repository.status}
-                    </option>
+                    </SelectItem>
                   ))}
-                </select>
-              </label>
-              <div className="agent-number-grid">
-                <label>
-                  Ref
-                  <input value={ref} onChange={(event) => setRef(event.target.value)} />
-                </label>
-                <label>
-                  Candidates
-                  <input type="number" min={1} max={5} value={candidateLimit} onChange={(event) => setCandidateLimit(numberValue(event.target.value, 3))} />
-                </label>
-              </div>
-              <details className="agent-advanced">
-                <summary>高级参数（预算 / 并发 / 上下文）</summary>
-                <div className="agent-number-grid">
-                  <label>
-                    Tool calls
-                    <input type="number" min={0} value={maxToolCalls} onChange={(event) => setMaxToolCalls(numberValue(event.target.value, 60))} />
-                  </label>
-                  <label>
-                    Subagents
-                    <input type="number" min={0} value={maxSubagents} onChange={(event) => setMaxSubagents(numberValue(event.target.value, 4))} />
-                  </label>
-                </div>
-                <div className="agent-number-grid">
-                  <label>
-                    Parallel
-                    <input type="number" min={1} value={maxParallelSubagents} onChange={(event) => setMaxParallelSubagents(numberValue(event.target.value, 3))} />
-                  </label>
-                  <label>
-                    Model calls
-                    <input type="number" min={0} value={maxModelCalls} onChange={(event) => setMaxModelCalls(numberValue(event.target.value, 20))} />
-                  </label>
-                </div>
-                <div className="agent-number-grid">
-                  <label>
-                    Wall minutes
-                    <input type="number" min={1} value={maxWallMinutes} onChange={(event) => setMaxWallMinutes(numberValue(event.target.value, 20))} />
-                  </label>
-                  <label>
-                    Source chars
-                    <input type="number" min={0} value={maxSourceChars} onChange={(event) => setMaxSourceChars(numberValue(event.target.value, 200000))} />
-                  </label>
-                </div>
-              </details>
-              <button className="primary-button small" type="button" onClick={() => void handleLaunch()} disabled={busy || !selectedRepositoryId || !selectedProjectId}>
-                <Play size={16} aria-hidden="true" />
-                启动
-              </button>
+                </SelectContent>
+              </Select>
             </div>
-            <details className="agent-advanced agent-policy-box">
-              <summary>项目预算默认值（保存后影响后续 Run）</summary>
-              <div className="agent-number-grid">
-                <label>
-                  Tool calls
-                  <input type="number" min={0} value={policyMaxToolCalls} onChange={(event) => setPolicyMaxToolCalls(numberValue(event.target.value, 60))} />
-                </label>
-                <label>
-                  Model calls
-                  <input type="number" min={0} value={policyMaxModelCalls} onChange={(event) => setPolicyMaxModelCalls(numberValue(event.target.value, 20))} />
-                </label>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label>Ref</Label>
+                <Input value={ref} onChange={(event) => setRef(event.target.value)} />
               </div>
-              <label>
-                Subagents
-                <input type="number" min={0} value={policyMaxSubagents} onChange={(event) => setPolicyMaxSubagents(numberValue(event.target.value, 4))} />
-              </label>
-              <button className="ghost-button" type="button" onClick={() => void handleSaveBudgetPolicy()} disabled={busy || !selectedProjectId}>
-                <Save size={16} aria-hidden="true" />
-                保存
-              </button>
+              <div className="flex flex-col gap-1.5">
+                <Label>Candidates</Label>
+                <Input type="number" min={1} max={5} value={candidateLimit} onChange={(event) => setCandidateLimit(numberValue(event.target.value, 3))} />
+              </div>
+            </div>
+            <details className={detailsClass}>
+              <summary>高级参数（预算 / 并发 / 上下文）</summary>
+              <div className="mt-3 flex flex-col gap-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Tool calls</Label>
+                    <Input type="number" min={0} value={maxToolCalls} onChange={(event) => setMaxToolCalls(numberValue(event.target.value, 60))} />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Subagents</Label>
+                    <Input type="number" min={0} value={maxSubagents} onChange={(event) => setMaxSubagents(numberValue(event.target.value, 4))} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Parallel</Label>
+                    <Input type="number" min={1} value={maxParallelSubagents} onChange={(event) => setMaxParallelSubagents(numberValue(event.target.value, 3))} />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Model calls</Label>
+                    <Input type="number" min={0} value={maxModelCalls} onChange={(event) => setMaxModelCalls(numberValue(event.target.value, 20))} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Wall minutes</Label>
+                    <Input type="number" min={1} value={maxWallMinutes} onChange={(event) => setMaxWallMinutes(numberValue(event.target.value, 20))} />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Source chars</Label>
+                    <Input type="number" min={0} value={maxSourceChars} onChange={(event) => setMaxSourceChars(numberValue(event.target.value, 200000))} />
+                  </div>
+                </div>
+              </div>
             </details>
-          </section>
-
-          <section className="agent-run-list" aria-label="Agent run list">
-            <div className="pane-heading">
-              <div>
-                <span className="eyebrow">Runs</span>
-                <h3>{selectedProject ? `${selectedProject.key} · ${runs.length}` : `${runs.length} runs`}</h3>
+            <Button type="button" onClick={() => void handleLaunch()} disabled={busy || !selectedRepositoryId || !selectedProjectId} className="self-start">
+              <Play size={16} aria-hidden="true" />
+              启动
+            </Button>
+            <details className={cn(detailsClass, "bg-[var(--muted)]/30")}>
+              <summary>项目预算默认值（保存后影响后续 Run）</summary>
+              <div className="mt-3 flex flex-col gap-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Tool calls</Label>
+                    <Input type="number" min={0} value={policyMaxToolCalls} onChange={(event) => setPolicyMaxToolCalls(numberValue(event.target.value, 60))} />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Model calls</Label>
+                    <Input type="number" min={0} value={policyMaxModelCalls} onChange={(event) => setPolicyMaxModelCalls(numberValue(event.target.value, 20))} />
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Subagents</Label>
+                  <Input type="number" min={0} value={policyMaxSubagents} onChange={(event) => setPolicyMaxSubagents(numberValue(event.target.value, 4))} />
+                </div>
+                <Button variant="outline" type="button" onClick={() => void handleSaveBudgetPolicy()} disabled={busy || !selectedProjectId} className="self-start">
+                  <Save size={16} aria-hidden="true" />
+                  保存
+                </Button>
               </div>
-              <GitBranch size={18} aria-hidden="true" />
+            </details>
+          </CardContent>
+        </Card>
+
+        <Card className="min-w-0 flex flex-col" aria-label="Agent run list">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+            <div>
+              <p className={eyebrowClass}>Runs</p>
+              <CardTitle className="text-base">{selectedProject ? `${selectedProject.key} · ${runs.length}` : `${runs.length} runs`}</CardTitle>
             </div>
-            <div className="agent-status-filter" role="tablist" aria-label="Run status filter">
+            <GitBranch size={18} className="text-[var(--muted-foreground)]" aria-hidden="true" />
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 flex-1 min-h-0">
+            <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Run status filter">
               {runStatuses.map((status) => (
-                <button
-                  className={statusFilter === status ? "status-filter active" : "status-filter"}
+                <Button
                   key={status}
                   type="button"
+                  size="sm"
+                  variant={statusFilter === status ? "default" : "outline"}
                   onClick={() => void handleFilteredRefresh(status)}
                 >
                   {status === "all" ? "全部" : statusLabel[status]}
-                </button>
+                </Button>
               ))}
             </div>
-            <div className="data-list agent-runs">
+            <div className="rounded-md border border-[var(--border)] overflow-hidden max-h-[560px] overflow-y-auto">
               {runsPagination.currentItems.map((run) => (
                 <button
-                  className={selectedRunId === run.id ? "agent-run-row active" : "agent-run-row"}
+                  className={cn(
+                    "w-full text-left px-3 py-3 border-b border-[var(--border)] last:border-b-0 transition-colors hover:bg-[var(--muted)] flex flex-col gap-1",
+                    selectedRunId === run.id && "bg-[var(--accent)] border-l-2 border-l-[var(--primary)]"
+                  )}
                   key={run.id}
                   type="button"
                   onClick={() => void handleSelectRun(run.id)}
                 >
-                  <strong>{run.goal}</strong>
-                  <span>{statusLabel[run.status] ?? run.status} · {run.current_phase} · {formatDate(run.created_at)}</span>
-                  <small>{run.temporal_workflow_id || run.langgraph_thread_id || run.id}</small>
+                  <strong className="text-sm font-semibold line-clamp-2">{run.goal}</strong>
+                  <span className="text-xs text-[var(--muted-foreground)]">
+                    {statusLabel[run.status] ?? run.status} · {run.current_phase} · {formatDate(run.created_at)}
+                  </span>
+                  <small className="text-[10px] font-mono text-[var(--muted-foreground)] truncate">
+                    {run.temporal_workflow_id || run.langgraph_thread_id || run.id}
+                  </small>
                 </button>
               ))}
-              {runs.length === 0 ? <p className="empty-state">暂无 Agent run</p> : null}
+              {runs.length === 0 ? <p className="text-sm text-[var(--muted-foreground)] p-4">暂无 Agent run</p> : null}
             </div>
             <Pagination
               currentPage={runsPagination.currentPage}
@@ -669,105 +719,102 @@ export function AgentWorkbenchView() {
               onPageChange={runsPagination.goToPage}
               itemsPerPage={8}
             />
-          </section>
+          </CardContent>
+        </Card>
 
-          <section className="agent-detail-pane" aria-label="Agent run detail">
-            <div className="agent-detail-head">
-              <div>
-                <span className="eyebrow">Detail</span>
-                <h3>{selectedRun?.goal ?? "未选择 Run"}</h3>
-                <p>{selectedRepository ? `${selectedRepository.name} · ${ref || selectedRepository.default_branch}` : "Repository"}</p>
-              </div>
-              {selectedRun ? <StatusPill status={selectedRun.status} /> : null}
+        <Card className="min-w-0" aria-label="Agent run detail">
+          <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0 pb-3">
+            <div className="min-w-0">
+              <p className={eyebrowClass}>Detail</p>
+              <CardTitle className="text-base line-clamp-2">{selectedRun?.goal ?? "未选择 Run"}</CardTitle>
+              <p className="text-xs text-[var(--muted-foreground)] mt-1">
+                {selectedRepository ? `${selectedRepository.name} · ${ref || selectedRepository.default_branch}` : "Repository"}
+              </p>
             </div>
-
+            {selectedRun ? <StatusPill status={selectedRun.status} /> : null}
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
             {selectedRun ? (
               <>
-                <div className="agent-run-actions">
-                  <button className="ghost-button" type="button" onClick={() => void handleSelectRun(selectedRun.id)} disabled={busy}>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" type="button" onClick={() => void handleSelectRun(selectedRun.id)} disabled={busy}>
                     <RefreshCcw size={16} aria-hidden="true" />
                     刷新
-                  </button>
-                  <button
-                    className="ghost-button"
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     type="button"
                     onClick={() => void handleResume()}
                     disabled={busy || !["waiting_for_user", "failed"].includes(selectedRun.status)}
                   >
                     <RotateCcw size={16} aria-hidden="true" />
                     Resume
-                  </button>
-                  <button
-                    className="ghost-button"
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     type="button"
                     onClick={() => void handleCancel()}
                     disabled={busy || ["succeeded", "failed", "cancelled"].includes(selectedRun.status)}
                   >
                     <CircleStop size={16} aria-hidden="true" />
                     Cancel
-                  </button>
+                  </Button>
                 </div>
 
-                <div className="stack-form resume-strip">
-                  <label>
-                    Resume reason
-                    <input value={resumeReason} onChange={(event) => setResumeReason(event.target.value)} />
-                  </label>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Resume reason</Label>
+                  <Input value={resumeReason} onChange={(event) => setResumeReason(event.target.value)} />
                 </div>
 
-                <div className="agent-metric-grid">
-                  <div className="metric-card compact">
-                    <span>Tool calls</span>
-                    <strong>{shortJson(budgetUsage.tool_calls)} / {shortJson(budgetLimits.max_tool_calls)}</strong>
-                  </div>
-                  <div className="metric-card compact">
-                    <span>Subagents</span>
-                    <strong>{shortJson(budgetUsage.subagents)} / {shortJson(budgetLimits.max_subagents)}</strong>
-                  </div>
-                  <div className="metric-card compact">
-                    <span>Parallel</span>
-                    <strong>{shortJson(budgetUsage.parallel_subagents)} / {shortJson(budgetLimits.max_parallel_subagents)}</strong>
-                  </div>
-                  <div className="metric-card compact">
-                    <span>Model calls</span>
-                    <strong>{shortJson(budgetUsage.model_calls)} / {shortJson(budgetLimits.max_model_calls)}</strong>
-                  </div>
-                  <div className="metric-card compact">
-                    <span>Source chars</span>
-                    <strong>{shortJson(budgetUsage.source_chars_sent)} / {shortJson(budgetLimits.max_total_source_chars_sent)}</strong>
-                  </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  {[
+                    { label: "Tool calls", value: `${shortJson(budgetUsage.tool_calls)} / ${shortJson(budgetLimits.max_tool_calls)}` },
+                    { label: "Subagents", value: `${shortJson(budgetUsage.subagents)} / ${shortJson(budgetLimits.max_subagents)}` },
+                    { label: "Parallel", value: `${shortJson(budgetUsage.parallel_subagents)} / ${shortJson(budgetLimits.max_parallel_subagents)}` },
+                    { label: "Model calls", value: `${shortJson(budgetUsage.model_calls)} / ${shortJson(budgetLimits.max_model_calls)}` },
+                    { label: "Source chars", value: `${shortJson(budgetUsage.source_chars_sent)} / ${shortJson(budgetLimits.max_total_source_chars_sent)}` }
+                  ].map((metric) => (
+                    <div key={metric.label} className="rounded-md border border-[var(--border)] bg-[var(--card)] p-3 flex flex-col gap-1">
+                      <span className="text-[10px] font-bold uppercase text-[var(--muted-foreground)]">{metric.label}</span>
+                      <strong className="text-base font-bold text-[var(--primary)]">{metric.value}</strong>
+                    </div>
+                  ))}
                 </div>
 
                 {selectedRun.failure_reason ? (
-                  <div className="inline-notice agent-warning">{selectedRun.failure_reason}</div>
+                  <Alert variant="warning">
+                    <AlertDescription>{selectedRun.failure_reason}</AlertDescription>
+                  </Alert>
                 ) : null}
 
                 {detail?.pending_approvals.length ? (
-                  <section className="audit-pane" aria-label="Pending approvals">
-                    <div className="pane-heading">
+                  <section className="flex flex-col gap-3" aria-label="Pending approvals">
+                    <div className="flex items-center justify-between gap-2">
                       <div>
-                        <span className="eyebrow">Approvals</span>
-                        <h3>{detail.pending_approvals.length} pending</h3>
+                        <p className={eyebrowClass}>Approvals</p>
+                        <h3 className="font-heading text-sm font-bold">{detail.pending_approvals.length} pending</h3>
                       </div>
-                      <ClipboardCheck size={18} aria-hidden="true" />
+                      <ClipboardCheck size={18} className="text-[var(--muted-foreground)]" aria-hidden="true" />
                     </div>
-                    <div className="agent-output-grid">
+                    <div className="grid grid-cols-1 gap-3">
                       {detail.pending_approvals.map((approval) => (
-                        <article className="agent-approval-card" key={approval.id}>
-                          <div>
-                            <strong>{approval.approval_type}</strong>
-                            <span>{approval.request_summary}</span>
-                            <small>{approval.requested_by} · {formatDate(approval.created_at)}</small>
+                        <article className="rounded-md border border-[var(--border)] p-4 flex flex-col gap-3" key={approval.id}>
+                          <div className="flex flex-col gap-1">
+                            <strong className="text-sm">{approval.approval_type}</strong>
+                            <span className="text-sm text-[var(--muted-foreground)]">{approval.request_summary}</span>
+                            <small className="text-xs text-[var(--muted-foreground)]">{approval.requested_by} · {formatDate(approval.created_at)}</small>
                           </div>
-                          <div className="agent-run-actions">
-                            <button className="ghost-button" type="button" onClick={() => void handleApprovalDecision(approval.id, "approved")} disabled={busy}>
+                          <div className="flex flex-wrap gap-2">
+                            <Button variant="outline" size="sm" type="button" onClick={() => void handleApprovalDecision(approval.id, "approved")} disabled={busy}>
                               <Check size={16} aria-hidden="true" />
                               批准
-                            </button>
-                            <button className="ghost-button" type="button" onClick={() => void handleApprovalDecision(approval.id, "rejected")} disabled={busy}>
+                            </Button>
+                            <Button variant="outline" size="sm" type="button" onClick={() => void handleApprovalDecision(approval.id, "rejected")} disabled={busy}>
                               <X size={16} aria-hidden="true" />
                               拒绝
-                            </button>
+                            </Button>
                           </div>
                         </article>
                       ))}
@@ -775,46 +822,46 @@ export function AgentWorkbenchView() {
                   </section>
                 ) : null}
 
-                <div className="agent-detail-grid">
-                  <section className="execution-card">
-                    <div className="pane-heading">
+                <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2 gap-4">
+                  <div className="rounded-md border border-[var(--border)] p-4 flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-2">
                       <div>
-                        <span className="eyebrow">Subagents</span>
-                        <h3>{shortJson(subagentPlan.selection_policy || "not planned")}</h3>
+                        <p className={eyebrowClass}>Subagents</p>
+                        <h3 className="font-heading text-sm font-bold">{shortJson(subagentPlan.selection_policy || "not planned")}</h3>
                       </div>
-                      <Boxes size={18} aria-hidden="true" />
+                      <Boxes size={18} className="text-[var(--muted-foreground)]" aria-hidden="true" />
                     </div>
-                    <div className="agent-chip-row">
+                    <div className="flex flex-wrap gap-1.5">
                       {selectedSubagents.map((name) => (
-                        <span className="agent-chip" key={name}>{name}</span>
+                        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-[var(--accent)] text-[var(--accent-foreground)]" key={name}>{name}</span>
                       ))}
-                      {selectedSubagents.length === 0 ? <p className="empty-state">暂无 subagent plan</p> : null}
+                      {selectedSubagents.length === 0 ? <p className="text-sm text-[var(--muted-foreground)]">暂无 subagent plan</p> : null}
                     </div>
-                    <small>{parallelGroups.map((group) => Array.isArray(group) ? group.join(" + ") : shortJson(group)).join(" / ") || "no parallel groups"}</small>
-                    {skippedSubagents.length > 0 ? <small>Skipped: {skippedSubagents.map((item) => shortJson(item)).join(" · ")}</small> : null}
+                    <small className="text-xs text-[var(--muted-foreground)]">{parallelGroups.map((group) => Array.isArray(group) ? group.join(" + ") : shortJson(group)).join(" / ") || "no parallel groups"}</small>
+                    {skippedSubagents.length > 0 ? <small className="text-xs text-[var(--muted-foreground)]">Skipped: {skippedSubagents.map((item) => shortJson(item)).join(" · ")}</small> : null}
                     {subagentRuns.length > 0 ? (
-                      <div className="child-workflow-list">
+                      <div className="rounded-md border border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
                         {subagentRuns.map((item) => (
-                          <div className="child-workflow-row" key={item.id}>
-                            <span>{item.status}</span>
-                            <div>
-                              <strong>{item.subagent_name} · {item.stage}</strong>
-                              <small>{[item.parallel_group, item.output_summary || item.error_summary || item.summary, `${item.duration_ms}ms`].filter(Boolean).join(" · ")}</small>
+                          <div className="grid grid-cols-[minmax(76px,112px)_1fr] gap-2 items-center p-2 text-sm" key={item.id}>
+                            <span className="text-xs font-medium">{item.status}</span>
+                            <div className="min-w-0">
+                              <strong className="text-sm block">{item.subagent_name} · {item.stage}</strong>
+                              <small className="text-xs text-[var(--muted-foreground)] break-words">{[item.parallel_group, item.output_summary || item.error_summary || item.summary, `${item.duration_ms}ms`].filter(Boolean).join(" · ")}</small>
                             </div>
                           </div>
                         ))}
                       </div>
                     ) : null}
                     {temporalChildResults.length > 0 ? (
-                      <div className="child-workflow-list">
+                      <div className="rounded-md border border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
                         {temporalChildResults.map((item, index) => {
                           const stats = childWorkflowStats(item);
                           return (
-                            <div className="child-workflow-row" key={`${shortJson(item.workflow_id)}-${index}`}>
-                              <span>{shortJson(item.status)}</span>
-                              <div>
-                                <strong>{shortJson(item.task_kind)}</strong>
-                                <small>{[shortJson(item.summary), stats, shortJson(item.workflow_id)].filter(Boolean).join(" · ")}</small>
+                            <div className="grid grid-cols-[minmax(76px,112px)_1fr] gap-2 items-center p-2 text-sm" key={`${shortJson(item.workflow_id)}-${index}`}>
+                              <span className="text-xs font-medium">{shortJson(item.status)}</span>
+                              <div className="min-w-0">
+                                <strong className="text-sm block">{shortJson(item.task_kind)}</strong>
+                                <small className="text-xs text-[var(--muted-foreground)] break-words">{[shortJson(item.summary), stats, shortJson(item.workflow_id)].filter(Boolean).join(" · ")}</small>
                               </div>
                             </div>
                           );
@@ -822,230 +869,230 @@ export function AgentWorkbenchView() {
                       </div>
                     ) : null}
                     {subagentResultEntries.length > 0 ? (
-                      <div className="child-workflow-list">
+                      <div className="rounded-md border border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
                         {subagentResultEntries.map(([name, item]) => (
-                          <div className="child-workflow-row" key={name}>
-                            <span>{shortJson(item.source || "run")}</span>
-                            <div>
-                              <strong>{name}</strong>
-                              <small>{shortJson(item.summary || childWorkflowStats({ metadata: item }) || item)}</small>
+                          <div className="grid grid-cols-[minmax(76px,112px)_1fr] gap-2 items-center p-2 text-sm" key={name}>
+                            <span className="text-xs font-medium">{shortJson(item.source || "run")}</span>
+                            <div className="min-w-0">
+                              <strong className="text-sm block">{name}</strong>
+                              <small className="text-xs text-[var(--muted-foreground)] break-words">{shortJson(item.summary || childWorkflowStats({ metadata: item }) || item)}</small>
                             </div>
                           </div>
                         ))}
                       </div>
                     ) : null}
-                  </section>
+                  </div>
 
-                  <section className="execution-card">
-                    <div className="pane-heading">
+                  <div className="rounded-md border border-[var(--border)] p-4 flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-2">
                       <div>
-                        <span className="eyebrow">Timeline</span>
-                        <h3>工具和模型调用</h3>
+                        <p className={eyebrowClass}>Timeline</p>
+                        <h3 className="font-heading text-sm font-bold">工具和模型调用</h3>
                       </div>
-                      <Boxes size={18} aria-hidden="true" />
+                      <Boxes size={18} className="text-[var(--muted-foreground)]" aria-hidden="true" />
                     </div>
-                    <div className="agent-timeline">
+                    <div className="rounded-md border border-[var(--border)] overflow-hidden max-h-80 overflow-y-auto">
                       {timeline.map((item) => (
-                        <div className="audit-row" key={item.id}>
-                          <span>{statusLabel[item.status] ?? item.status}</span>
-                          <div>
-                            <strong>{item.title}</strong>
-                            <small>{formatDate(item.at)} · {item.body}</small>
+                        <div className="grid grid-cols-[minmax(76px,112px)_1fr] gap-2 items-center p-2 border-b border-[var(--border)] last:border-b-0 text-sm" key={item.id}>
+                          <span className="text-xs font-medium">{statusLabel[item.status] ?? item.status}</span>
+                          <div className="min-w-0">
+                            <strong className="text-sm block">{item.title}</strong>
+                            <small className="text-xs text-[var(--muted-foreground)] break-words">{formatDate(item.at)} · {item.body}</small>
                           </div>
                         </div>
                       ))}
-                      {timeline.length === 0 ? <p className="empty-state">暂无调用记录</p> : null}
+                      {timeline.length === 0 ? <p className="text-sm text-[var(--muted-foreground)] p-3">暂无调用记录</p> : null}
                     </div>
-                  </section>
+                  </div>
 
-                  <section className="execution-card">
-                    <div className="pane-heading">
+                  <div className="rounded-md border border-[var(--border)] p-4 flex flex-col gap-3 lg:col-span-2 2xl:col-span-1">
+                    <div className="flex items-center justify-between gap-2">
                       <div>
-                        <span className="eyebrow">Sandbox</span>
-                        <h3>仓库沙箱</h3>
+                        <p className={eyebrowClass}>Sandbox</p>
+                        <h3 className="font-heading text-sm font-bold">仓库沙箱</h3>
                       </div>
-                      <GitBranch size={18} aria-hidden="true" />
+                      <GitBranch size={18} className="text-[var(--muted-foreground)]" aria-hidden="true" />
                     </div>
                     {detail?.repository_sandboxes.map((sandbox) => (
-                      <div className="execution-card compact-card" key={sandbox.id}>
+                      <div className="rounded-md border border-[var(--border)] bg-[var(--muted)]/30 p-3 flex flex-col gap-1 text-sm" key={sandbox.id}>
                         <strong>{sandbox.ref} · {statusLabel[sandbox.status] ?? sandbox.status}</strong>
-                        <span>{sandbox.resolved_ref || "unresolved"}</span>
-                        <small>{sandbox.error_summary || sandbox.worktree_path}</small>
+                        <span className="text-xs text-[var(--muted-foreground)]">{sandbox.resolved_ref || "unresolved"}</span>
+                        <small className="text-xs text-[var(--muted-foreground)] break-all">{sandbox.error_summary || sandbox.worktree_path}</small>
                       </div>
                     ))}
-                    {detail?.repository_sandboxes.length === 0 ? <p className="empty-state">暂无沙箱记录</p> : null}
-                  </section>
+                    {detail?.repository_sandboxes.length === 0 ? <p className="text-sm text-[var(--muted-foreground)]">暂无沙箱记录</p> : null}
+                  </div>
                 </div>
 
-                <section className="audit-pane" aria-label="Evidence and coverage">
-                  <div className="pane-heading">
+                <section className="flex flex-col gap-3" aria-label="Evidence and coverage">
+                  <div className="flex items-center justify-between gap-2">
                     <div>
-                      <span className="eyebrow">Evidence</span>
-                      <h3>证据与覆盖信号</h3>
+                      <p className={eyebrowClass}>Evidence</p>
+                      <h3 className="font-heading text-sm font-bold">证据与覆盖信号</h3>
                     </div>
-                    <FileSearch size={18} aria-hidden="true" />
+                    <FileSearch size={18} className="text-[var(--muted-foreground)]" aria-hidden="true" />
                   </div>
-                  <div className="agent-evidence-grid">
-                    <section className="execution-card">
-                      <div className="pane-heading">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="rounded-md border border-[var(--border)] p-4 flex flex-col gap-3">
+                      <div className="flex items-center justify-between gap-2">
                         <div>
-                          <span className="eyebrow">Evidence refs</span>
-                          <h3>{evidenceItems.length} refs</h3>
+                          <p className={eyebrowClass}>Evidence refs</p>
+                          <h3 className="font-heading text-sm font-bold">{evidenceItems.length} refs</h3>
                         </div>
-                        <FileSearch size={16} aria-hidden="true" />
+                        <FileSearch size={16} className="text-[var(--muted-foreground)]" aria-hidden="true" />
                       </div>
-                      <div className="evidence-list">
+                      <div className="rounded-md border border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
                         {evidenceItems.map((item) => (
-                          <div className="evidence-row" key={item.id}>
-                            <span>{item.kind}</span>
-                            <div>
-                              <strong>{item.label}</strong>
-                              <small>{item.outputTitle} · {shortJson(item.source)} · confidence {shortJson(item.confidence)}</small>
+                          <div className="grid grid-cols-[minmax(64px,96px)_1fr] gap-2 items-start p-2 text-sm" key={item.id}>
+                            <span className="text-xs font-medium">{item.kind}</span>
+                            <div className="min-w-0">
+                              <strong className="text-sm block">{item.label}</strong>
+                              <small className="text-xs text-[var(--muted-foreground)] break-words">{item.outputTitle} · {shortJson(item.source)} · confidence {shortJson(item.confidence)}</small>
                             </div>
                           </div>
                         ))}
-                        {evidenceItems.length === 0 ? <p className="empty-state">暂无 evidence ref</p> : null}
+                        {evidenceItems.length === 0 ? <p className="text-sm text-[var(--muted-foreground)] p-3">暂无 evidence ref</p> : null}
                       </div>
-                    </section>
+                    </div>
 
-                    <section className="execution-card">
-                      <div className="pane-heading">
+                    <div className="rounded-md border border-[var(--border)] p-4 flex flex-col gap-3">
+                      <div className="flex items-center justify-between gap-2">
                         <div>
-                          <span className="eyebrow">Coverage</span>
-                          <h3>{coverageItems.length} signals</h3>
+                          <p className={eyebrowClass}>Coverage</p>
+                          <h3 className="font-heading text-sm font-bold">{coverageItems.length} signals</h3>
                         </div>
-                        <ListChecks size={16} aria-hidden="true" />
+                        <ListChecks size={16} className="text-[var(--muted-foreground)]" aria-hidden="true" />
                       </div>
-                      <div className="evidence-list">
+                      <div className="rounded-md border border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]">
                         {coverageItems.map((entry) => (
-                          <div className="coverage-row" key={entry.id}>
-                            <div>
-                              <strong>{entry.module_key} · {entry.coverage_state}</strong>
-                              <small>{entry.behavior_summary}</small>
-                              <small>{entry.outputTitle} · confidence {entry.confidence} · {entry.verified_by_human ? "human verified" : "pending review"}</small>
-                            </div>
+                          <div className="p-2 text-sm flex flex-col gap-1" key={entry.id}>
+                            <strong className="text-sm">{entry.module_key} · {entry.coverage_state}</strong>
+                            <small className="text-xs text-[var(--muted-foreground)]">{entry.behavior_summary}</small>
+                            <small className="text-xs text-[var(--muted-foreground)]">{entry.outputTitle} · confidence {entry.confidence} · {entry.verified_by_human ? "human verified" : "pending review"}</small>
                           </div>
                         ))}
-                        {coverageItems.length === 0 ? <p className="empty-state">暂无 coverage signal</p> : null}
+                        {coverageItems.length === 0 ? <p className="text-sm text-[var(--muted-foreground)] p-3">暂无 coverage signal</p> : null}
                       </div>
-                    </section>
+                    </div>
                   </div>
                 </section>
 
-                <section className="audit-pane" aria-label="Staged outputs">
-                  <div className="pane-heading">
+                <section className="flex flex-col gap-3" aria-label="Staged outputs">
+                  <div className="flex items-center justify-between gap-2">
                     <div>
-                      <span className="eyebrow">Staged Outputs</span>
-                      <h3>审阅候选输出</h3>
+                      <p className={eyebrowClass}>Staged Outputs</p>
+                      <h3 className="font-heading text-sm font-bold">审阅候选输出</h3>
                     </div>
-                    <ClipboardCheck size={18} aria-hidden="true" />
+                    <ClipboardCheck size={18} className="text-[var(--muted-foreground)]" aria-hidden="true" />
                   </div>
-                  <div className="agent-output-grid">
+                  <div className="grid grid-cols-1 gap-3">
                     {detail?.staged_outputs.map((output) => (
-                      <article className="agent-output-card" key={output.id}>
-                        <div className="agent-output-head">
-                          <div>
-                            <strong>{output.title}</strong>
-                            <span>{outputMeta(output)} · {statusLabel[output.status]}</span>
+                      <article className="rounded-md border border-[var(--border)] p-4 flex flex-col gap-3" key={output.id}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex flex-col gap-1">
+                            <strong className="text-sm">{output.title}</strong>
+                            <span className="text-xs text-[var(--muted-foreground)]">{outputMeta(output)} · {statusLabel[output.status]}</span>
                           </div>
                           <StatusPill status={output.status} />
                         </div>
-                        <p>{shortJson(output.payload.expected_result ?? output.payload.recommendation ?? output.payload.note_type)}</p>
-                        <small>{output.evidence_refs.map((refItem) => shortJson(refItem.label ?? refItem.ref_id)).join(" · ") || "no evidence"}</small>
-                        <div className="agent-run-actions">
-                          <button className="ghost-button" type="button" onClick={() => void handleOutputDecision(output, "accepted")} disabled={busy || output.status !== "staged"}>
+                        <p className="text-sm">{shortJson(output.payload.expected_result ?? output.payload.recommendation ?? output.payload.note_type)}</p>
+                        <small className="text-xs text-[var(--muted-foreground)]">{output.evidence_refs.map((refItem) => shortJson(refItem.label ?? refItem.ref_id)).join(" · ") || "no evidence"}</small>
+                        <div className="flex flex-wrap gap-2">
+                          <Button variant="outline" size="sm" type="button" onClick={() => void handleOutputDecision(output, "accepted")} disabled={busy || output.status !== "staged"}>
                             <Check size={16} aria-hidden="true" />
                             采纳
-                          </button>
-                          <button className="ghost-button" type="button" onClick={() => void handleOutputDecision(output, "rejected")} disabled={busy || output.status !== "staged"}>
+                          </Button>
+                          <Button variant="outline" size="sm" type="button" onClick={() => void handleOutputDecision(output, "rejected")} disabled={busy || output.status !== "staged"}>
                             <X size={16} aria-hidden="true" />
                             拒绝
-                          </button>
+                          </Button>
                         </div>
                       </article>
                     ))}
-                    {detail?.staged_outputs.length === 0 ? <p className="empty-state">暂无 staged output</p> : null}
+                    {detail?.staged_outputs.length === 0 ? <p className="text-sm text-[var(--muted-foreground)]">暂无 staged output</p> : null}
                   </div>
                 </section>
               </>
             ) : (
-              <p className="empty-state">暂无选中 Run</p>
+              <p className="text-sm text-[var(--muted-foreground)]">暂无选中 Run</p>
             )}
-          </section>
-        </div>
+          </CardContent>
+        </Card>
+      </div>
 
-        <details className="agent-memory-panel agent-advanced" aria-label="Agent memory">
-          <summary>项目记忆 / Memory Versions（按需展开）</summary>
-          <div className="agent-memory-grid">
-            <div className="stack-form">
-              <label>
-                Curated Markdown
-                <textarea value={memoryContent} rows={6} onChange={(event) => setMemoryContent(event.target.value)} />
-              </label>
-              <button className="ghost-button" type="button" onClick={() => void handleCurateMemory()} disabled={busy || !selectedProjectId}>
-                <Save size={16} aria-hidden="true" />
-                保存记忆
-              </button>
+      <details className={cn(detailsClass, "bg-[var(--card)]")} aria-label="Agent memory">
+        <summary>项目记忆 / Memory Versions（按需展开）</summary>
+        <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label>Curated Markdown</Label>
+              <Textarea value={memoryContent} rows={6} onChange={(event) => setMemoryContent(event.target.value)} />
             </div>
-            <div className="stack-form">
-              <label>
-                Search
-                <input value={memoryQuery} onChange={(event) => setMemoryQuery(event.target.value)} />
-              </label>
-              <button className="ghost-button" type="button" onClick={() => void handleMemorySearch()} disabled={busy || !selectedWorkspaceId}>
-                <Search size={16} aria-hidden="true" />
-                搜索
-              </button>
-              <div className="agent-memory-results">
-                {memoryResults.map((result) => (
-                  <article className="compact-card execution-card" key={result.memory_file.id}>
-                    <div className="agent-output-head">
-                      <div>
-                        <strong>{result.memory_file.scope} · v{result.memory_file.current_version}</strong>
-                        <span>{result.snippet}</span>
-                      </div>
-                      <button className="ghost-button compact-action" type="button" onClick={() => void handleMemoryVersionSelect(result.memory_file)} disabled={busy}>
-                        版本
-                      </button>
+            <Button variant="outline" type="button" onClick={() => void handleCurateMemory()} disabled={busy || !selectedProjectId} className="self-start">
+              <Save size={16} aria-hidden="true" />
+              保存记忆
+            </Button>
+          </div>
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label>Search</Label>
+              <Input value={memoryQuery} onChange={(event) => setMemoryQuery(event.target.value)} />
+            </div>
+            <Button variant="outline" type="button" onClick={() => void handleMemorySearch()} disabled={busy || !selectedWorkspaceId} className="self-start">
+              <Search size={16} aria-hidden="true" />
+              搜索
+            </Button>
+            <div className="flex flex-col gap-2 max-h-64 overflow-y-auto">
+              {memoryResults.map((result) => (
+                <article className="rounded-md border border-[var(--border)] bg-[var(--muted)]/20 p-3 flex flex-col gap-2" key={result.memory_file.id}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex flex-col gap-1">
+                      <strong className="text-sm">{result.memory_file.scope} · v{result.memory_file.current_version}</strong>
+                      <span className="text-xs text-[var(--muted-foreground)] line-clamp-2">{result.snippet}</span>
                     </div>
-                    <small>{result.memory_file.path}</small>
+                    <Button variant="outline" size="sm" type="button" onClick={() => void handleMemoryVersionSelect(result.memory_file)} disabled={busy}>
+                      版本
+                    </Button>
+                  </div>
+                  <small className="text-xs font-mono text-[var(--muted-foreground)] truncate">{result.memory_file.path}</small>
+                </article>
+              ))}
+              {memoryResults.length === 0 ? <p className="text-sm text-[var(--muted-foreground)]">暂无 memory result</p> : null}
+            </div>
+            <section className="rounded-md border border-[var(--border)] p-4 flex flex-col gap-3" aria-label="Memory version history">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className={eyebrowClass}>Versions</p>
+                  <h3 className="font-heading text-sm font-bold">{selectedMemoryFile ? `${selectedMemoryFile.scope} · v${selectedMemoryFile.current_version}` : "未选择 memory"}</h3>
+                </div>
+                <RotateCcw size={16} className="text-[var(--muted-foreground)]" aria-hidden="true" />
+              </div>
+              <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
+                {memoryVersions.map((version) => (
+                  <article className="flex items-start justify-between gap-2 p-2 rounded-md border border-[var(--border)] text-sm" key={version.id}>
+                    <div className="min-w-0 flex flex-col gap-0.5">
+                      <strong className="text-sm">v{version.version} · {version.patch_summary || "memory update"}</strong>
+                      <small className="text-xs text-[var(--muted-foreground)]">{formatDate(version.created_at)} · {version.editor || "system"} · {version.reason || "no reason"}</small>
+                      <small className="text-xs font-mono text-[var(--muted-foreground)]">{version.checksum.slice(0, 12)}</small>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      type="button"
+                      onClick={() => void handleMemoryRollback(version.version)}
+                      disabled={busy || !selectedMemoryFile || version.version === selectedMemoryFile.current_version}
+                      className="shrink-0"
+                    >
+                      回滚
+                    </Button>
                   </article>
                 ))}
-                {memoryResults.length === 0 ? <p className="empty-state">暂无 memory result</p> : null}
+                {memoryVersions.length === 0 ? <p className="text-sm text-[var(--muted-foreground)]">暂无 version history</p> : null}
               </div>
-              <section className="execution-card memory-version-panel" aria-label="Memory version history">
-                <div className="pane-heading">
-                  <div>
-                    <span className="eyebrow">Versions</span>
-                    <h3>{selectedMemoryFile ? `${selectedMemoryFile.scope} · v${selectedMemoryFile.current_version}` : "未选择 memory"}</h3>
-                  </div>
-                  <RotateCcw size={16} aria-hidden="true" />
-                </div>
-                <div className="memory-version-list">
-                  {memoryVersions.map((version) => (
-                    <article className="memory-version-row" key={version.id}>
-                      <div>
-                        <strong>v{version.version} · {version.patch_summary || "memory update"}</strong>
-                        <small>{formatDate(version.created_at)} · {version.editor || "system"} · {version.reason || "no reason"}</small>
-                        <small>{version.checksum.slice(0, 12)}</small>
-                      </div>
-                      <button
-                        className="ghost-button compact-action"
-                        type="button"
-                        onClick={() => void handleMemoryRollback(version.version)}
-                        disabled={busy || !selectedMemoryFile || version.version === selectedMemoryFile.current_version}
-                      >
-                        回滚
-                      </button>
-                    </article>
-                  ))}
-                  {memoryVersions.length === 0 ? <p className="empty-state">暂无 version history</p> : null}
-                </div>
-              </section>
-            </div>
+            </section>
           </div>
-        </details>
-      </div>
-    </section>
+        </div>
+      </details>
+    </div>
   );
 }

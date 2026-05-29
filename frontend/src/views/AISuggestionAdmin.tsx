@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { BrainCircuit, ChevronRight, Sparkles } from "lucide-react";
 import {
   type AISuggestionRecord, createCandidateFromSuggestion, createSuggestionPlanItems,
-  type DiffAnalysisRecord, generateAISuggestions, listAISuggestions, listDiffAnalyses,
+  type DiffAnalysisRecord, generateAISuggestions, getAISuggestionStatus, listDiffAnalyses,
   listTestCases, type TestCaseRecord, updateAISuggestion
 } from "@/api/cases";
+import type { AgentRunRecord } from "@/api/agents";
 import { listTestPlans, type TestPlanRecord } from "@/api/planning";
 import { useCurrentWorkspace, useCurrentProject } from "@/stores/workspace-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -34,18 +35,39 @@ export function AISuggestionAdmin() {
   const [plans, setPlans] = useState<TestPlanRecord[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [feedbackText, setFeedbackText] = useState("");
+  const [jobRun, setJobRun] = useState<AgentRunRecord | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   const selectedSuggestion = suggestions.find((s) => s.id === selectedSuggestionId);
+  const generationRunning = Boolean(
+    jobRun &&
+    ["queued", "running"].includes(jobRun.status) &&
+    jobRun.budget_snapshot?.diff_analysis_id === selectedAnalysisId
+  );
 
-  async function loadSuggestions(analysisId: string) {
-    if (!wid || !pid || !analysisId) { setSuggestions([]); setSelectedSuggestionId(""); return; }
-    const list = await listAISuggestions(wid, pid, analysisId);
+  function applySuggestions(list: AISuggestionRecord[]) {
     setSuggestions(list);
-    const sid = list[0]?.id ?? "";
+    const sid = list.some((s) => s.id === selectedSuggestionId) ? selectedSuggestionId : (list[0]?.id ?? "");
     setSelectedSuggestionId(sid);
     setSelectedCaseIds(list.find((s) => s.id === sid)?.selected_case_ids ?? []);
+  }
+
+  async function loadSuggestionStatus(analysisId: string) {
+    if (!wid || !pid || !analysisId) {
+      setSuggestions([]);
+      setSelectedSuggestionId("");
+      setJobRun(null);
+      return;
+    }
+    const job = await getAISuggestionStatus(wid, pid, analysisId, actorEmail);
+    setJobRun(job.agent_run);
+    applySuggestions(job.suggestions);
+    if (job.agent_run?.status === "failed") {
+      setMessage(job.agent_run.failure_reason || job.message);
+    } else if (job.agent_run?.status === "cancelled") {
+      setMessage(job.agent_run.failure_reason || job.message);
+    }
   }
 
   useEffect(() => {
@@ -58,19 +80,32 @@ export function AISuggestionAdmin() {
         const aid = anals[0]?.id ?? "";
         setSelectedAnalysisId(aid);
         setSelectedPlanId(ps[0]?.id ?? "");
-        if (aid) await loadSuggestions(aid);
+        if (aid) await loadSuggestionStatus(aid);
       } catch (err) { setMessage(err instanceof Error ? err.message : "加载失败"); }
       finally { setBusy(false); }
     })();
   }, [wid, pid]);
 
+  useEffect(() => {
+    if (!generationRunning || !selectedAnalysisId) return;
+    const timer = window.setInterval(() => {
+      void loadSuggestionStatus(selectedAnalysisId);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [generationRunning, selectedAnalysisId, wid, pid, actorEmail]);
+
   async function generate() {
     if (!wid || !pid || !selectedAnalysisId) return;
     setBusy(true); setMessage(null);
     try {
-      const next = await generateAISuggestions(wid, pid, selectedAnalysisId, actorEmail, { force: suggestions.length > 0 });
-      setMessage(`已生成 ${next.length} 条建议`);
-      await loadSuggestions(selectedAnalysisId);
+      const job = await generateAISuggestions(wid, pid, selectedAnalysisId, actorEmail, { force: suggestions.length > 0 });
+      setJobRun(job.agent_run);
+      applySuggestions(job.suggestions);
+      if (job.agent_run && ["queued", "running"].includes(job.agent_run.status)) {
+        setMessage(job.reused_running ? "AI 建议已在后台生成中" : "AI 建议已提交后台生成");
+      } else {
+        setMessage(`已加载 ${job.suggestions.length} 条建议`);
+      }
     } catch (err) { setMessage(err instanceof Error ? err.message : "生成失败"); }
     finally { setBusy(false); }
   }
@@ -81,7 +116,7 @@ export function AISuggestionAdmin() {
     try {
       const updated = await updateAISuggestion(wid, pid, selectedSuggestion.id, actorEmail, { status, feedback_comment: feedbackText || undefined, selected_case_ids: selectedSuggestion.suggestion_type === "regression" ? selectedCaseIds : undefined });
       setMessage(`已反馈：${statusLabel[updated.status]}`);
-      await loadSuggestions(selectedAnalysisId);
+      await loadSuggestionStatus(selectedAnalysisId);
     } catch (err) { setMessage(err instanceof Error ? err.message : "反馈失败"); }
     finally { setBusy(false); }
   }
@@ -92,7 +127,7 @@ export function AISuggestionAdmin() {
     try {
       const r = await createCandidateFromSuggestion(wid, pid, selectedSuggestion.id, actorEmail);
       setMessage(`已创建 AI 候选草稿 "${r.test_case.title}"`);
-      await loadSuggestions(selectedAnalysisId);
+      await loadSuggestionStatus(selectedAnalysisId);
     } catch (err) { setMessage(err instanceof Error ? err.message : "创建失败"); }
     finally { setBusy(false); }
   }
@@ -132,7 +167,7 @@ export function AISuggestionAdmin() {
             <div className="flex flex-col gap-1.5">
               {analyses.map((a) => (
                 <label key={a.id} className={`flex items-center gap-3 rounded-[var(--radius-sm)] border px-3 py-2.5 cursor-pointer transition-colors ${selectedAnalysisId === a.id ? "border-[var(--primary)] bg-[var(--accent)]" : "hover:bg-[var(--muted)]/40"}`}>
-                  <input type="radio" name="diff" checked={selectedAnalysisId === a.id} onChange={() => { setSelectedAnalysisId(a.id); void loadSuggestions(a.id); }} className="accent-[var(--primary)]" />
+                  <input type="radio" name="diff" checked={selectedAnalysisId === a.id} onChange={() => { setSelectedAnalysisId(a.id); void loadSuggestionStatus(a.id); }} className="accent-[var(--primary)]" />
                   <div className="min-w-0">
                     <p className="text-sm font-semibold">{a.base_ref} → {a.target_ref}</p>
                     <p className="text-xs text-[var(--muted-foreground)]">风险 {riskLabel[a.risk_level]} · {a.module_impacts.length} 个模块受影响 · {new Date(a.created_at).toLocaleDateString()}</p>
@@ -141,9 +176,16 @@ export function AISuggestionAdmin() {
               ))}
             </div>
           )}
-          <Button disabled={busy || !selectedAnalysisId} onClick={generate} className="self-start">
-            <Sparkles size={14} />{suggestions.length ? "重新生成 AI 建议" : "生成 AI 建议"}
-          </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button disabled={busy || generationRunning || !selectedAnalysisId} onClick={generate} className="self-start">
+              <Sparkles size={14} />{generationRunning ? "AI 建议生成中" : suggestions.length ? "重新生成 AI 建议" : "生成 AI 建议"}
+            </Button>
+            {jobRun && (
+              <Badge variant={jobRun.status === "failed" ? "destructive" : "secondary"}>
+                {jobRun.current_phase || jobRun.status}
+              </Badge>
+            )}
+          </div>
         </CardContent>
       </Card>
 

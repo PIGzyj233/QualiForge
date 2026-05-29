@@ -57,7 +57,7 @@ export function CommandPalette() {
           { label: "测试计划", icon: ListChecks, path: routes.projectPlans(wid, pid) },
           { label: "发布报告", icon: FileText, path: routes.projectReports(wid, pid) },
           { label: "模块目录", icon: Network, path: routes.projectModules(wid, pid) },
-          { label: "代码沙箱", icon: GitBranch, path: routes.projectRepo(wid, pid) },
+          { label: "GitLab 仓库 / 代码沙箱", icon: GitBranch, path: routes.projectRepo(wid, pid) },
           { label: "项目团队", icon: Users, path: routes.projectTeam(wid, pid) }
         ]
       : [];

@@ -171,7 +171,7 @@ def test_existing_checkout_sync_fetches_with_basic_auth_env(tmp_path: Path, monk
         ["git", "-C", repository["mirror_path"], "remote", "set-url", "origin", "https://gitlab.example.com/team/checkout-api.git"],
         None,
     )
-    assert calls[1][0] == ["git", "-C", repository["mirror_path"], "fetch", "--prune", "--tags", "origin"]
+    assert calls[1][0] == ["git", "-C", repository["mirror_path"], "fetch", "--prune", "--tags", "--force", "origin"]
     assert calls[1][1] == {
         "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_KEY_0": "http.extraHeader",

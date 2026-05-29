@@ -14,7 +14,8 @@ from app.agents.activities import (
     mark_agent_run_cancelled_activity,
     mark_agent_run_failed_activity,
 )
-from app.agents.workflows import AgentChildTaskWorkflow, AgentRunWorkflow
+from app.agents.workflows import AISuggestionWorkflow, AgentChildTaskWorkflow, AgentRunWorkflow
+from app.cases.ai_suggestions import execute_ai_suggestion_generation_activity
 from app.platform.config import get_settings
 from app.platform.health import AGENT_WORKER_HEARTBEAT_KEY, LEGACY_WORKER_HEARTBEAT_KEY
 from app.platform.telemetry import configure_telemetry
@@ -28,11 +29,7 @@ async def run_agent_worker() -> None:
     settings = get_settings()
     configure_telemetry(settings)
     logger.info("QualiForge agent worker started in %s environment", settings.environment)
-    if not settings.agent_execute_sync_mode:
-        await asyncio.gather(run_heartbeat(settings), run_temporal_worker(settings))
-        return
-
-    await run_heartbeat(settings)
+    await asyncio.gather(run_heartbeat(settings), run_temporal_worker(settings))
 
 
 async def run_heartbeat(settings) -> None:
@@ -58,10 +55,11 @@ async def run_temporal_worker(settings) -> None:
         worker = Worker(
             client,
             task_queue=settings.agent_task_queue,
-            workflows=[AgentRunWorkflow, AgentChildTaskWorkflow],
+            workflows=[AgentRunWorkflow, AgentChildTaskWorkflow, AISuggestionWorkflow],
             activities=[
                 execute_agent_child_task_activity,
                 execute_agent_graph_activity,
+                execute_ai_suggestion_generation_activity,
                 mark_agent_run_cancelled_activity,
                 mark_agent_run_failed_activity,
             ],

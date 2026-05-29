@@ -25,6 +25,10 @@ const riskVariant: Record<string, "destructive" | "warning" | "success" | "secon
   critical: "destructive", high: "destructive", medium: "warning", low: "success", none: "secondary"
 };
 
+function formatDateTime(value: string | null) {
+  return value ? new Date(value).toLocaleString() : "尚未同步";
+}
+
 export function DiffAnalysisAdmin() {
   const session = useSessionStore((s) => s.session);
   const ws = useCurrentWorkspace();
@@ -61,14 +65,19 @@ export function DiffAnalysisAdmin() {
     setBusy(true); setMessage(null);
     try {
       const a = await createDiffAnalysis(wid_, pid_, actorEmail, { repository_id: selectedRepositoryId, base_ref: baseRef, target_ref: targetRef });
-      setMessage(`已完成 Diff 分析：${riskLabel[a.risk_level]} · ${a.file_changes.length} files`);
-      setSelectedAnalysisId(a.id);
       await refresh();
+      setSelectedAnalysisId(a.id);
+      if (a.status === "failed") {
+        setMessage(`Diff 分析失败：${a.error_summary || "请查看任务日志"}`);
+      } else {
+        setMessage(`已完成 Diff 分析：${riskLabel[a.risk_level]} · ${a.file_changes.length} files`);
+      }
     } catch (err) { setMessage(err instanceof Error ? err.message : "Diff 分析失败"); }
     finally { setBusy(false); }
   }
 
   const selectedAnalysis = analyses.find((a) => a.id === selectedAnalysisId);
+  const selectedRepository = repositories.find((r) => r.id === selectedRepositoryId);
 
   return (
     <div className="flex flex-col gap-5">
@@ -92,6 +101,11 @@ export function DiffAnalysisAdmin() {
                   <SelectTrigger><SelectValue placeholder="选择 Repository" /></SelectTrigger>
                   <SelectContent>{repositories.map((r) => <SelectItem key={r.id} value={r.id}>{r.name} · {statusLabel[r.status]}</SelectItem>)}</SelectContent>
                 </Select>
+                {selectedRepository && (
+                  <p className="text-xs text-[var(--muted-foreground)]">
+                    上次同步：{formatDateTime(selectedRepository.last_synced_at)}。运行前会自动刷新远端 tag/ref。
+                  </p>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1.5"><Label>Base ref/tag</Label><Input value={baseRef} onChange={(e) => setBaseRef(e.target.value)} required /></div>
@@ -106,7 +120,11 @@ export function DiffAnalysisAdmin() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="flex items-center gap-2"><ShieldAlert size={16} />推荐测试范围</CardTitle>
-              {selectedAnalysis && <Badge variant={riskVariant[selectedAnalysis.risk_level] ?? "secondary"}>{riskLabel[selectedAnalysis.risk_level]}</Badge>}
+              {selectedAnalysis && (
+                <Badge variant={selectedAnalysis.status === "failed" ? "destructive" : (riskVariant[selectedAnalysis.risk_level] ?? "secondary")}>
+                  {selectedAnalysis.status === "failed" ? statusLabel[selectedAnalysis.status] : riskLabel[selectedAnalysis.risk_level]}
+                </Badge>
+              )}
             </div>
           </CardHeader>
           <CardContent>
@@ -120,9 +138,18 @@ export function DiffAnalysisAdmin() {
                 </div>
                 <p className="text-sm font-semibold">{selectedAnalysis.summary}</p>
                 <p className="text-xs text-[var(--muted-foreground)]">{selectedAnalysis.base_ref} → {selectedAnalysis.target_ref} · {statusLabel[selectedAnalysis.status]}</p>
-                <ul className="flex flex-col gap-1 mt-1">
-                  {selectedAnalysis.recommended_scope.slice(0, 5).map((s) => <li key={s} className="text-sm text-[var(--muted-foreground)]">· {s}</li>)}
-                </ul>
+                {selectedAnalysis.status === "failed" ? (
+                  <div className="flex flex-col gap-1 mt-1">
+                    <p className="text-sm text-[var(--destructive)]">{selectedAnalysis.error_summary || "Diff 分析失败"}</p>
+                    {selectedAnalysis.key_logs.slice(-6).map((log, index) => (
+                      <p key={`${selectedAnalysis.id}-log-${index}`} className="text-xs font-mono text-[var(--muted-foreground)] truncate">{log}</p>
+                    ))}
+                  </div>
+                ) : (
+                  <ul className="flex flex-col gap-1 mt-1">
+                    {selectedAnalysis.recommended_scope.slice(0, 5).map((s) => <li key={s} className="text-sm text-[var(--muted-foreground)]">· {s}</li>)}
+                  </ul>
+                )}
               </div>
             ) : <p className="text-sm text-[var(--muted-foreground)]">暂无 Diff 分析结果</p>}
           </CardContent>

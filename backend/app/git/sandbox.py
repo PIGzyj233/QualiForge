@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -214,6 +215,38 @@ def run_git(
     )
 
 
+def refresh_repository_refs(
+    db: Session,
+    repository: GitRepository,
+    repository_path: Path,
+    key_logs: list[str],
+) -> None:
+    credential = get_gitlab_credential(db, repository.workspace_id)
+    auth_env = git_auth_env(credential, repository.remote_url)
+
+    set_url = run_git(
+        ["git", "-C", str(repository_path), "remote", "set-url", "origin", repository.remote_url],
+        repository.sync_timeout_seconds,
+        key_logs,
+    )
+    if set_url.returncode != 0:
+        stderr = set_url.stderr.strip()[:500] or f"git exited with {set_url.returncode}"
+        raise RuntimeError(stderr)
+
+    fetch = run_git(
+        ["git", "-C", str(repository_path), "fetch", "--prune", "--tags", "--force", "origin"],
+        repository.sync_timeout_seconds,
+        key_logs,
+        env_overrides=auth_env,
+    )
+    fetch_output = "\n".join(part.strip() for part in (fetch.stdout, fetch.stderr) if part.strip())
+    if fetch_output and fetch.returncode == 0:
+        key_logs.append(fetch_output[:1000])
+    if fetch.returncode != 0:
+        stderr = fetch.stderr.strip()[:500] or f"git exited with {fetch.returncode}"
+        raise RuntimeError(stderr)
+
+
 def run_repository_sync(database: Database, settings: Settings, job_id: str) -> None:
     with database.session_factory() as db:
         job = db.get(Job, job_id)
@@ -243,24 +276,15 @@ def run_repository_sync(database: Database, settings: Settings, job_id: str) -> 
                 previous_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
             repository_path.parent.mkdir(parents=True, exist_ok=True)
 
-            credential = get_gitlab_credential(db, repository.workspace_id)
-            auth_env = git_auth_env(credential, repository.remote_url)
-
             if repository_path.exists() and is_full_checkout(repository_path):
-                set_url = run_git(
-                    ["git", "-C", str(repository_path), "remote", "set-url", "origin", repository.remote_url],
-                    repository.sync_timeout_seconds,
-                    job.key_logs,
-                )
-                if set_url.returncode != 0:
-                    stderr = set_url.stderr.strip()[:500] or f"git exited with {set_url.returncode}"
-                    raise RuntimeError(stderr)
-                command = ["git", "-C", str(repository_path), "fetch", "--prune", "--tags", "origin"]
-                result = run_git(command, repository.sync_timeout_seconds, job.key_logs, env_overrides=auth_env)
+                refresh_repository_refs(db, repository, repository_path, job.key_logs)
+                result = subprocess.CompletedProcess([], 0, stdout="", stderr="")
             else:
                 if repository_path.exists():
                     remove_tree_readonly(repository_path)
                 command = ["git", "clone", "--no-single-branch", "--", repository.remote_url, str(repository_path)]
+                credential = get_gitlab_credential(db, repository.workspace_id)
+                auth_env = git_auth_env(credential, repository.remote_url)
                 result = run_git(command, repository.sync_timeout_seconds, job.key_logs, env_overrides=auth_env)
             if result.stdout.strip():
                 job.key_logs = [*job.key_logs, result.stdout.strip()[:1000]]

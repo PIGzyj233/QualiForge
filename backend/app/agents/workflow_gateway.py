@@ -43,6 +43,34 @@ class AgentWorkflowGateway:
         except AgentTemporalUnavailable as exc:
             raise AgentWorkflowUnavailable(str(exc)) from exc
 
+    def start_ai_suggestion_run(
+        self,
+        *,
+        db: Session,
+        settings: Settings,
+        run: AgentRun,
+        workspace_id: str,
+        project_id: str,
+        analysis_id: str,
+        actor_email: str,
+        force: bool,
+    ) -> dict[str, str]:
+        from app.agents.temporal import AgentTemporalUnavailable, start_ai_suggestion_workflow
+
+        try:
+            return start_ai_suggestion_workflow(
+                db=db,
+                settings=settings,
+                run=run,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                analysis_id=analysis_id,
+                actor_email=actor_email,
+                force=force,
+            )
+        except AgentTemporalUnavailable as exc:
+            raise AgentWorkflowUnavailable(str(exc)) from exc
+
     def signal_resume(
         self,
         *,

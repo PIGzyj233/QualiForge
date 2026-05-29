@@ -1,6 +1,6 @@
 import { requestJson } from "./client";
 import type { PlanItemRecord, TestPlanRecord } from "./planning";
-import type { AISuggestionRecord, DiffAnalysisRecord, AISuggestionStatus, TestCaseRecord } from "./cases.types";
+import type { AISuggestionJobResponse, AISuggestionRecord, DiffAnalysisRecord, AISuggestionStatus, TestCaseRecord } from "./cases.types";
 
 export function createDiffAnalysis(
   workspaceId: string,
@@ -32,11 +32,22 @@ export function generateAISuggestions(
   analysisId: string,
   actorEmail: string,
   options: { force?: boolean } = {}
-): Promise<AISuggestionRecord[]> {
+): Promise<AISuggestionJobResponse> {
   const forceSuffix = options.force ? "&force=true" : "";
-  return requestJson<AISuggestionRecord[]>(
+  return requestJson<AISuggestionJobResponse>(
     `/workspaces/${workspaceId}/projects/${projectId}/diff-analyses/${analysisId}/ai-suggestions?actor_email=${encodeURIComponent(actorEmail)}${forceSuffix}`,
     { method: "POST" }
+  );
+}
+
+export function getAISuggestionStatus(
+  workspaceId: string,
+  projectId: string,
+  analysisId: string,
+  actorEmail: string
+): Promise<AISuggestionJobResponse> {
+  return requestJson<AISuggestionJobResponse>(
+    `/workspaces/${workspaceId}/projects/${projectId}/diff-analyses/${analysisId}/ai-suggestions/status?actor_email=${encodeURIComponent(actorEmail)}`
   );
 }
 

@@ -12,7 +12,7 @@ from app.agents import AgentRun
 from app.platform.config import Settings
 from app.platform.telemetry import agent_span
 from app.workspace.routes import audit
-from app.agents.workflows import AgentRunWorkflow
+from app.agents.workflows import AISuggestionWorkflow, AgentRunWorkflow
 
 
 class AgentTemporalUnavailable(RuntimeError):
@@ -57,6 +57,29 @@ def _workflow_payload(
         "ref": ref,
         "candidate_limit": candidate_limit,
         "actor_email": actor_email,
+        "activity_start_to_close_timeout_seconds": settings.agent_activity_start_to_close_timeout_minutes * 60,
+        "activity_heartbeat_timeout_seconds": settings.agent_activity_heartbeat_timeout_seconds,
+        "activity_retry_attempts": settings.agent_activity_retry_attempts,
+    }
+
+
+def _ai_suggestion_workflow_payload(
+    *,
+    settings: Settings,
+    workspace_id: str,
+    project_id: str,
+    analysis_id: str,
+    run_id: str,
+    actor_email: str,
+    force: bool,
+) -> dict[str, Any]:
+    return {
+        "workspace_id": workspace_id,
+        "project_id": project_id,
+        "analysis_id": analysis_id,
+        "run_id": run_id,
+        "actor_email": actor_email,
+        "force": force,
         "activity_start_to_close_timeout_seconds": settings.agent_activity_start_to_close_timeout_minutes * 60,
         "activity_heartbeat_timeout_seconds": settings.agent_activity_heartbeat_timeout_seconds,
         "activity_retry_attempts": settings.agent_activity_retry_attempts,
@@ -148,6 +171,60 @@ def start_agent_run_workflow(
     )
     db.commit()
     return {"workflow_id": workflow_id, "summary": "Agent workflow started"}
+
+
+def start_ai_suggestion_workflow(
+    *,
+    db: Session,
+    settings: Settings,
+    run: AgentRun,
+    workspace_id: str,
+    project_id: str,
+    analysis_id: str,
+    actor_email: str,
+    force: bool,
+) -> dict[str, str]:
+    workflow_id = agent_run_workflow_id(run.id)
+    payload = _ai_suggestion_workflow_payload(
+        settings=settings,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        analysis_id=analysis_id,
+        run_id=run.id,
+        actor_email=actor_email,
+        force=force,
+    )
+
+    async def _start() -> None:
+        client = await _connect(settings)
+        try:
+            await client.start_workflow(
+                AISuggestionWorkflow.run,
+                payload,
+                id=workflow_id,
+                task_queue=settings.agent_task_queue,
+                execution_timeout=timedelta(minutes=settings.agent_workflow_timeout_minutes),
+            )
+        except WorkflowAlreadyStartedError:
+            return
+
+    with agent_span("temporal.workflow.start", run_id=run.id, workflow_id=workflow_id, task_queue=settings.agent_task_queue):
+        _run_temporal(_start())
+    run.temporal_workflow_id = workflow_id
+    run.current_phase = "temporal_queued"
+    db.flush()
+    audit(
+        db,
+        workspace_id=workspace_id,
+        actor_email=actor_email,
+        action="agent_run.workflow_started",
+        entity_type="AgentRun",
+        entity_id=run.id,
+        summary=f"Started AI suggestion Temporal workflow {workflow_id}",
+        after={"temporal_workflow_id": workflow_id, "task_queue": settings.agent_task_queue, "diff_analysis_id": analysis_id},
+    )
+    db.commit()
+    return {"workflow_id": workflow_id, "summary": "AI suggestion workflow started"}
 
 
 def signal_agent_run_resume(

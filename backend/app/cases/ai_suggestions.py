@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from hashlib import sha256
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
+from temporalio import activity
 
 from app.ai.config import AIDataPolicyName, AIInvocationLog, AIInvocationStatus, AIPurpose, get_or_create_ai_settings, is_internal_api_base_url
 from app.ai.model_gateway import ModelGatewayAuditEvent, ModelGatewayError, build_model_gateway, resolve_model_gateway_api_base_url, urllib_transport
@@ -22,6 +24,8 @@ from app.agents import (
     AgentRunMode,
     AgentRunStatus,
 )
+from app.agents.schemas import AgentRunResponse
+from app.agents.serializers import run_to_response
 from app.agents.graph_budget import BudgetTracker
 from app.agents.graph_types import AgentBudgetExceeded
 from app.cases.domain import CaseDraft, CaseDraftSource, TestCase, TestCaseLifecycle
@@ -30,7 +34,8 @@ from app.cases.review_workflow import build_case_response
 from app.cases.step_models import steps_expected_text
 from app.git.models import GitRepository, RepositoryStatus
 from app.git.sandbox import ensure_safe_sandbox_path, remove_tree_readonly, run_git
-from app.platform.database import Base
+from app.platform.config import Settings
+from app.platform.database import Base, Database
 from app.cases.diff_models import DiffAnalysis, DiffAnalysisStatus
 from app.planning.test_plans import (
     PlanItem,
@@ -129,6 +134,14 @@ class AISuggestionResponse(BaseModel):
     updated_at: datetime
 
 
+class AISuggestionJobResponse(BaseModel):
+    agent_run: AgentRunResponse | None
+    suggestions: list[AISuggestionResponse]
+    reused_existing: bool = False
+    reused_running: bool = False
+    message: str
+
+
 class AISuggestionPlanItemResponse(BaseModel):
     plan: dict[str, Any]
     items: list[dict[str, Any]]
@@ -165,6 +178,7 @@ AI_SUGGESTION_TOOL_BUDGET = {
     "max_total_source_chars_sent": 80000,
     "max_wall_time_minutes": 4,
 }
+AI_SUGGESTION_STALE_MINUTES = max(10, int(AI_SUGGESTION_TOOL_BUDGET["max_wall_time_minutes"]) * 2)
 
 AI_SUGGESTION_CODE_TOOLS: list[dict[str, Any]] = [
     {
@@ -303,6 +317,112 @@ def get_suggestion_or_404(db: Session, workspace_id: str, project_id: str, sugge
     if suggestion is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI suggestion not found")
     return suggestion
+
+
+def list_ai_suggestion_models(db: Session, workspace_id: str, project_id: str, analysis_id: str) -> list[AISuggestion]:
+    return list(
+        db.scalars(
+            select(AISuggestion)
+            .where(AISuggestion.workspace_id == workspace_id, AISuggestion.project_id == project_id, AISuggestion.diff_analysis_id == analysis_id)
+            .order_by(AISuggestion.created_at, AISuggestion.suggestion_type)
+        ).all()
+    )
+
+
+def ai_suggestion_job_response(
+    *,
+    run: AgentRun | None,
+    suggestions: list[AISuggestion],
+    reused_existing: bool = False,
+    reused_running: bool = False,
+    message: str,
+) -> AISuggestionJobResponse:
+    return AISuggestionJobResponse(
+        agent_run=run_to_response(run) if run is not None else None,
+        suggestions=[suggestion_to_response(suggestion) for suggestion in suggestions],
+        reused_existing=reused_existing,
+        reused_running=reused_running,
+        message=message,
+    )
+
+
+def ai_suggestion_is_locked(suggestion: AISuggestion) -> bool:
+    return (
+        suggestion.status != AISuggestionStatus.suggested.value
+        or bool(suggestion.candidate_case_id)
+        or bool(suggestion.plan_item_ids)
+        or bool(suggestion.feedback_history)
+    )
+
+
+def assert_ai_suggestions_can_regenerate(existing: list[AISuggestion]) -> None:
+    if any(ai_suggestion_is_locked(suggestion) for suggestion in existing):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot regenerate AI suggestions after feedback, candidate creation, or plan item creation",
+        )
+
+
+def agent_run_matches_ai_suggestion_analysis(run: AgentRun, analysis_id: str) -> bool:
+    snapshot = run.budget_snapshot if isinstance(run.budget_snapshot, dict) else {}
+    return str(snapshot.get("diff_analysis_id") or "") == analysis_id or f"diff analysis {analysis_id}" in run.goal
+
+
+def ai_suggestion_runs_for_analysis(db: Session, analysis: DiffAnalysis) -> list[AgentRun]:
+    candidates = db.scalars(
+        select(AgentRun)
+        .where(
+            AgentRun.workspace_id == analysis.workspace_id,
+            AgentRun.project_id == analysis.project_id,
+            AgentRun.trigger_type == "ai_suggestion",
+        )
+        .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+    ).all()
+    return [run for run in candidates if agent_run_matches_ai_suggestion_analysis(run, analysis.id)]
+
+
+def cleanup_stale_ai_suggestion_runs(db: Session, analysis: DiffAnalysis, *, actor_email: str = "system") -> None:
+    threshold = now_utc() - timedelta(minutes=AI_SUGGESTION_STALE_MINUTES)
+    changed = False
+    for run in ai_suggestion_runs_for_analysis(db, analysis):
+        if run.status not in {AgentRunStatus.queued.value, AgentRunStatus.running.value}:
+            continue
+        if run.temporal_workflow_id:
+            continue
+        started = run.started_at or run.created_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        if started > threshold:
+            continue
+        run.status = AgentRunStatus.failed.value
+        run.current_phase = "stale_running"
+        run.failure_reason = "AI suggestion generation was interrupted before a Temporal workflow was started"
+        run.completed_at = now_utc()
+        audit(
+            db,
+            workspace_id=analysis.workspace_id,
+            actor_email=actor_email,
+            action="agent_run.failed",
+            entity_type="AgentRun",
+            entity_id=run.id,
+            summary=run.failure_reason,
+            after={"status": run.status, "phase": run.current_phase, "diff_analysis_id": analysis.id},
+        )
+        changed = True
+    if changed:
+        db.commit()
+
+
+def active_ai_suggestion_run(db: Session, analysis: DiffAnalysis) -> AgentRun | None:
+    for run in ai_suggestion_runs_for_analysis(db, analysis):
+        if run.status in {AgentRunStatus.queued.value, AgentRunStatus.running.value}:
+            return run
+    return None
+
+
+def latest_ai_suggestion_run(db: Session, analysis: DiffAnalysis) -> AgentRun | None:
+    runs = ai_suggestion_runs_for_analysis(db, analysis)
+    return runs[0] if runs else None
 
 
 def case_revision_snapshot(db: Session, test_case: TestCase) -> dict[str, Any]:
@@ -448,7 +568,7 @@ def build_llm_context(db: Session, analysis: DiffAnalysis) -> dict[str, Any]:
     }
 
 
-def create_ai_suggestion_agent_run(db: Session, analysis: DiffAnalysis, actor_email: str) -> AgentRun:
+def create_ai_suggestion_agent_run(db: Session, analysis: DiffAnalysis, actor_email: str, *, force: bool = False) -> AgentRun:
     conversation = AgentConversation(
         workspace_id=analysis.workspace_id,
         project_id=analysis.project_id,
@@ -464,11 +584,17 @@ def create_ai_suggestion_agent_run(db: Session, analysis: DiffAnalysis, actor_em
         goal=f"Explore repository context for diff analysis {analysis.id} ({analysis.base_ref}..{analysis.target_ref})",
         mode=AgentRunMode.execute.value,
         trigger_type="ai_suggestion",
-        status=AgentRunStatus.running.value,
-        current_phase="ai_suggestion_code_tools",
+        status=AgentRunStatus.queued.value,
+        current_phase="created",
         created_by=actor_email,
-        budget_snapshot=dict(AI_SUGGESTION_TOOL_BUDGET),
-        started_at=now_utc(),
+        budget_snapshot={
+            **AI_SUGGESTION_TOOL_BUDGET,
+            "output_type": "ai_suggestions",
+            "diff_analysis_id": analysis.id,
+            "force": force,
+            "base_ref": analysis.base_ref,
+            "target_ref": analysis.target_ref,
+        },
     )
     db.add(run)
     db.flush()
@@ -476,17 +602,33 @@ def create_ai_suggestion_agent_run(db: Session, analysis: DiffAnalysis, actor_em
     return run
 
 
-def mark_ai_suggestion_agent_run(db: Session, run: AgentRun, status_value: str, failure_reason: str = "") -> None:
+def mark_ai_suggestion_agent_run_running(db: Session, run: AgentRun, *, phase: str = "ai_suggestion_code_tools") -> None:
+    run.status = AgentRunStatus.running.value
+    run.failure_reason = ""
+    run.current_phase = phase
+    run.started_at = run.started_at or now_utc()
+    run.completed_at = None
+    db.commit()
+
+
+def mark_ai_suggestion_agent_run(
+    db: Session,
+    run: AgentRun,
+    status_value: str,
+    failure_reason: str = "",
+    *,
+    phase: str | None = None,
+) -> None:
     run.status = status_value
     run.failure_reason = failure_reason[:700]
-    run.current_phase = "completed" if status_value == AgentRunStatus.succeeded.value else "failed"
+    run.current_phase = phase or ("completed" if status_value == AgentRunStatus.succeeded.value else "failed")
     run.completed_at = now_utc()
     db.commit()
 
 
 def prepare_ai_suggestion_tool_sandbox(
     db: Session,
-    request: Request,
+    settings: Settings,
     analysis: DiffAnalysis,
     run: AgentRun,
 ) -> tuple[AgentRepositorySandbox, Path, str]:
@@ -496,7 +638,7 @@ def prepare_ai_suggestion_tool_sandbox(
     if repository.status != RepositoryStatus.synced.value:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Repository must be synced before AI suggestions")
 
-    root = Path(request.app.state.settings.git_sandbox_root).expanduser()
+    root = Path(settings.git_sandbox_root).expanduser()
     repository_path = ensure_safe_sandbox_path(root, Path(repository.mirror_path))
     if not repository_path.exists():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Repository checkout does not exist; sync repository first")
@@ -711,22 +853,22 @@ def append_final_suggestion_request(messages: list[dict[str, Any]], context: dic
 
 def run_ai_suggestion_tool_loop(
     db: Session,
-    request: Request,
+    settings: Settings,
     analysis: DiffAnalysis,
     actor_email: str,
+    run: AgentRun,
     gateway: Any,
     context: dict[str, Any],
     data_policy: str,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     from app.agents.graph_tools import ToolRegistry
 
-    run = create_ai_suggestion_agent_run(db, analysis, actor_email)
     sandbox: AgentRepositorySandbox | None = None
     observations: list[dict[str, Any]] = []
     final_prompt_hash = ""
     try:
-        sandbox, worktree_path, resolved_ref = prepare_ai_suggestion_tool_sandbox(db, request, analysis, run)
-        budget = BudgetTracker(db=db, settings=request.app.state.settings, run=run, requested_candidate_limit=2)
+        sandbox, worktree_path, resolved_ref = prepare_ai_suggestion_tool_sandbox(db, settings, analysis, run)
+        budget = BudgetTracker(db=db, settings=settings, run=run, requested_candidate_limit=2)
         tools = ToolRegistry(
             db=db,
             run=run,
@@ -743,7 +885,7 @@ def run_ai_suggestion_tool_loop(
             call_prompt_hash = prompt_hash_for_messages(messages)
             response = gateway.chat(
                 messages,
-                model=request.app.state.settings.model_gateway_default_model,
+                model=settings.model_gateway_default_model,
                 temperature=0,
                 max_tokens=1400,
                 reasoning_effort="low",
@@ -784,7 +926,7 @@ def run_ai_suggestion_tool_loop(
         final_prompt_hash = prompt_hash_for_messages(final_messages)
         final_response = gateway.chat(
             final_messages,
-            model=request.app.state.settings.model_gateway_default_model,
+            model=settings.model_gateway_default_model,
             temperature=0.2,
             max_tokens=4096,
             reasoning_effort="low",
@@ -800,7 +942,8 @@ def run_ai_suggestion_tool_loop(
                 subagent_name="AISuggestionGenerator",
             ),
         )
-        mark_ai_suggestion_agent_run(db, run, AgentRunStatus.succeeded.value)
+        run.current_phase = "ai_suggestion_model_complete"
+        db.commit()
         return final_response.content, observations, {
             "agent_run_id": run.id,
             "resolved_ref": resolved_ref,
@@ -824,21 +967,33 @@ def run_ai_suggestion_tool_loop(
         cleanup_ai_suggestion_tool_sandbox(db, sandbox)
 
 
+def iter_json_objects(content: str) -> Iterator[dict[str, Any]]:
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(content):
+        start = content.find("{", index)
+        if start == -1:
+            break
+        try:
+            payload, offset = decoder.raw_decode(content[start:])
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        if isinstance(payload, dict):
+            yield payload
+        index = start + max(offset, 1)
+
+
 def parse_llm_suggestion_json(content: str) -> list[dict[str, Any]]:
-    cleaned = content.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:].strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end < start:
+    saw_json_object = False
+    for payload in iter_json_objects(content.strip()):
+        saw_json_object = True
+        suggestions = payload.get("suggestions")
+        if isinstance(suggestions, list):
+            return [item for item in suggestions if isinstance(item, dict)]
+    if not saw_json_object:
         raise ValueError("model response did not contain a JSON object")
-    payload = json.loads(cleaned[start : end + 1])
-    suggestions = payload.get("suggestions")
-    if not isinstance(suggestions, list):
-        raise ValueError("model response JSON must contain a suggestions list")
-    return [item for item in suggestions if isinstance(item, dict)]
+    raise ValueError("model response JSON must contain a suggestions list")
 
 
 def llm_override_key(item: dict[str, Any]) -> tuple[str, str]:
@@ -974,11 +1129,13 @@ def record_ai_suggestion_rejection(
     reason: str,
     data_policy: str,
     prompt_hash: str = "",
+    agent_run_id: str | None = None,
 ) -> None:
     invocation = AIInvocationLog(
         workspace_id=analysis.workspace_id,
         provider_id=None,
         model_profile_id=None,
+        agent_run_id=agent_run_id,
         actor_email=actor_email,
         purpose=AIPurpose.case_generation.value,
         data_policy=data_policy,
@@ -1011,14 +1168,15 @@ def record_ai_suggestion_rejection(
 
 def generate_llm_overrides(
     db: Session,
-    request: Request,
+    settings: Settings,
     analysis: DiffAnalysis,
+    run: AgentRun,
     actor_email: str,
+    model_gateway_transport: Any | None = None,
 ) -> tuple[dict[tuple[str, str], dict[str, Any]], str, dict[str, Any]]:
-    app_settings = request.app.state.settings
     workspace_ai_settings = get_or_create_ai_settings(db, analysis.workspace_id, actor_email)
     includes_source_code = True
-    api_base_url = resolve_model_gateway_api_base_url(app_settings)
+    api_base_url = resolve_model_gateway_api_base_url(settings)
     reason = suggestion_policy_rejection_reason(
         policy=workspace_ai_settings.data_policy,
         api_base_url=api_base_url,
@@ -1031,25 +1189,27 @@ def generate_llm_overrides(
             db,
             analysis=analysis,
             actor_email=actor_email,
-            provider_name=app_settings.model_gateway_provider,
-            model_alias=app_settings.model_gateway_default_model,
+            provider_name=settings.model_gateway_provider,
+            model_alias=settings.model_gateway_default_model,
             reason=reason,
             data_policy=workspace_ai_settings.data_policy,
             prompt_hash=prompt_hash,
+            agent_run_id=run.id,
         )
         db.commit()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=reason)
 
     gateway = build_model_gateway(
-        app_settings,
-        transport=getattr(request.app.state, "model_gateway_transport", None) or urllib_transport,
+        settings,
+        transport=model_gateway_transport or urllib_transport,
     )
     try:
         content, observations, source_metadata = run_ai_suggestion_tool_loop(
             db,
-            request,
+            settings,
             analysis,
             actor_email,
+            run,
             gateway,
             context,
             workspace_ai_settings.data_policy,
@@ -1201,73 +1361,221 @@ def build_suggestions(
     return suggestions
 
 
-@router.post("/diff-analyses/{analysis_id}/ai-suggestions", response_model=list[AISuggestionResponse], status_code=status.HTTP_201_CREATED)
+def execute_ai_suggestion_generation(
+    db: Session,
+    *,
+    settings: Settings,
+    workspace_id: str,
+    project_id: str,
+    analysis_id: str,
+    run_id: str,
+    actor_email: str,
+    force: bool = False,
+    model_gateway_transport: Any | None = None,
+) -> dict[str, Any]:
+    run = db.get(AgentRun, run_id)
+    if run is None or run.workspace_id != workspace_id:
+        raise RuntimeError("AI suggestion agent run not found")
+    analysis = get_diff_analysis_or_404(db, workspace_id, project_id, analysis_id)
+
+    try:
+        if analysis.status != DiffAnalysisStatus.succeeded.value:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Diff analysis must succeed before AI suggestions")
+
+        mark_ai_suggestion_agent_run_running(db, run)
+        existing = list_ai_suggestion_models(db, workspace_id, project_id, analysis.id)
+        if existing and force:
+            assert_ai_suggestions_can_regenerate(existing)
+            for suggestion in existing:
+                db.delete(suggestion)
+            db.flush()
+        elif existing:
+            mark_ai_suggestion_agent_run(db, run, AgentRunStatus.succeeded.value)
+            return {
+                "run_id": run.id,
+                "status": run.status,
+                "summary": f"AI suggestions already exist for diff analysis {analysis.id}",
+                "suggestion_count": len(existing),
+            }
+
+        llm_overrides, llm_prompt_hash, llm_source_metadata = generate_llm_overrides(
+            db,
+            settings,
+            analysis,
+            run,
+            actor_email,
+            model_gateway_transport=model_gateway_transport,
+        )
+        suggestions = build_suggestions(
+            db,
+            analysis,
+            actor_email,
+            llm_overrides=llm_overrides,
+            llm_prompt_hash=llm_prompt_hash,
+            llm_source_metadata=llm_source_metadata,
+        )
+        audit(
+            db,
+            workspace_id=workspace_id,
+            actor_email=actor_email,
+            action="ai_suggestions.generated",
+            entity_type="DiffAnalysis",
+            entity_id=analysis.id,
+            summary=f"Generated {len(suggestions)} AI suggestions from diff",
+            after={"diff_analysis_id": analysis.id, "suggestion_count": len(suggestions), "agent_run_id": run.id},
+        )
+        mark_ai_suggestion_agent_run(db, run, AgentRunStatus.succeeded.value)
+        return {
+            "run_id": run.id,
+            "status": run.status,
+            "summary": f"Generated {len(suggestions)} AI suggestions from diff",
+            "suggestion_count": len(suggestions),
+        }
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        db.rollback()
+        run = db.get(AgentRun, run_id) or run
+        mark_ai_suggestion_agent_run(db, run, AgentRunStatus.failed.value, detail, phase="ai_suggestion_failed")
+        return {"run_id": run.id, "status": run.status, "summary": detail, "suggestion_count": 0}
+    except Exception as exc:
+        detail = str(exc)[:700] or exc.__class__.__name__
+        db.rollback()
+        run = db.get(AgentRun, run_id) or run
+        mark_ai_suggestion_agent_run(db, run, AgentRunStatus.failed.value, detail, phase="ai_suggestion_failed")
+        return {"run_id": run.id, "status": run.status, "summary": detail, "suggestion_count": 0}
+
+
+def execute_ai_suggestion_generation_with_settings(payload: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
+    database = Database(settings.database_url)
+    database.init()
+    with database.session_factory() as db:
+        return execute_ai_suggestion_generation(
+            db,
+            settings=settings,
+            workspace_id=str(payload["workspace_id"]),
+            project_id=str(payload["project_id"]),
+            analysis_id=str(payload["analysis_id"]),
+            run_id=str(payload["run_id"]),
+            actor_email=str(payload.get("actor_email") or "system"),
+            force=bool(payload.get("force")),
+        )
+
+
+@activity.defn
+def execute_ai_suggestion_generation_activity(payload: dict[str, Any]) -> dict[str, Any]:
+    return execute_ai_suggestion_generation_with_settings(payload, settings=Settings())
+
+
+@router.post("/diff-analyses/{analysis_id}/ai-suggestions", response_model=AISuggestionJobResponse)
 def generate_ai_suggestions(
     workspace_id: str,
     project_id: str,
     analysis_id: str,
     db: DbSession,
     request: Request,
+    response: Response,
     actor_email: ActorEmail,
     force: bool = Query(default=False),
-) -> list[AISuggestionResponse]:
+) -> AISuggestionJobResponse:
     get_workspace_or_404(db, workspace_id)
     get_project_or_404(db, workspace_id, project_id)
-    analysis = get_diff_analysis_or_404(db, workspace_id, project_id, analysis_id)
+    analysis = db.scalar(
+        select(DiffAnalysis)
+        .where(DiffAnalysis.id == analysis_id, DiffAnalysis.workspace_id == workspace_id, DiffAnalysis.project_id == project_id)
+        .with_for_update()
+    )
+    if analysis is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Diff analysis not found")
     if analysis.status != DiffAnalysisStatus.succeeded.value:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Diff analysis must succeed before AI suggestions")
-    existing = list(db.scalars(select(AISuggestion).where(AISuggestion.diff_analysis_id == analysis.id)).all())
+
+    cleanup_stale_ai_suggestion_runs(db, analysis, actor_email=actor_email)
+    existing = list_ai_suggestion_models(db, workspace_id, project_id, analysis.id)
     if existing and not force:
-        return [suggestion_to_response(suggestion) for suggestion in existing]
+        response.status_code = status.HTTP_200_OK
+        return ai_suggestion_job_response(
+            run=latest_ai_suggestion_run(db, analysis),
+            suggestions=existing,
+            reused_existing=True,
+            message=f"Loaded {len(existing)} existing AI suggestions",
+        )
     if existing and force:
-        locked = [
-            suggestion
-            for suggestion in existing
-            if suggestion.status != AISuggestionStatus.suggested.value
-            or suggestion.candidate_case_id
-            or suggestion.plan_item_ids
-            or suggestion.feedback_history
-        ]
-        if locked:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Cannot regenerate AI suggestions after feedback, candidate creation, or plan item creation",
-            )
-        for suggestion in existing:
-            db.delete(suggestion)
-        db.flush()
-    llm_overrides, llm_prompt_hash, llm_source_metadata = generate_llm_overrides(db, request, analysis, actor_email)
-    suggestions = build_suggestions(
-        db,
-        analysis,
-        actor_email,
-        llm_overrides=llm_overrides,
-        llm_prompt_hash=llm_prompt_hash,
-        llm_source_metadata=llm_source_metadata,
+        assert_ai_suggestions_can_regenerate(existing)
+
+    running = active_ai_suggestion_run(db, analysis)
+    if running is not None:
+        response.status_code = status.HTTP_202_ACCEPTED
+        return ai_suggestion_job_response(
+            run=running,
+            suggestions=existing,
+            reused_running=True,
+            message="AI suggestion workflow is already running",
+        )
+
+    run = create_ai_suggestion_agent_run(db, analysis, actor_email, force=force)
+    from app.agents.workflow_gateway import AgentWorkflowUnavailable, get_agent_workflow_gateway
+
+    gateway = get_agent_workflow_gateway(request.app.state)
+    try:
+        started = gateway.start_ai_suggestion_run(
+            db=db,
+            settings=request.app.state.settings,
+            run=run,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            analysis_id=analysis.id,
+            actor_email=actor_email,
+            force=force,
+        )
+    except AgentWorkflowUnavailable as exc:
+        mark_ai_suggestion_agent_run(db, run, AgentRunStatus.failed.value, str(exc), phase="temporal_unavailable")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    db.refresh(run)
+    response.status_code = status.HTTP_202_ACCEPTED
+    return ai_suggestion_job_response(
+        run=run,
+        suggestions=existing,
+        message=started.get("summary", "AI suggestion workflow started"),
     )
-    audit(
-        db,
-        workspace_id=workspace_id,
-        actor_email=actor_email,
-        action="ai_suggestions.generated",
-        entity_type="DiffAnalysis",
-        entity_id=analysis.id,
-        summary=f"Generated {len(suggestions)} AI suggestions from diff",
-        after={"diff_analysis_id": analysis.id, "suggestion_count": len(suggestions)},
-    )
-    db.commit()
-    return [suggestion_to_response(suggestion) for suggestion in suggestions]
 
 
 @router.get("/diff-analyses/{analysis_id}/ai-suggestions", response_model=list[AISuggestionResponse])
 def list_ai_suggestions(workspace_id: str, project_id: str, analysis_id: str, db: DbSession) -> list[AISuggestionResponse]:
     get_diff_analysis_or_404(db, workspace_id, project_id, analysis_id)
-    suggestions = db.scalars(
-        select(AISuggestion)
-        .where(AISuggestion.workspace_id == workspace_id, AISuggestion.project_id == project_id, AISuggestion.diff_analysis_id == analysis_id)
-        .order_by(AISuggestion.created_at, AISuggestion.suggestion_type)
-    ).all()
+    suggestions = list_ai_suggestion_models(db, workspace_id, project_id, analysis_id)
     return [suggestion_to_response(suggestion) for suggestion in suggestions]
+
+
+@router.get("/diff-analyses/{analysis_id}/ai-suggestions/status", response_model=AISuggestionJobResponse)
+def get_ai_suggestion_status(
+    workspace_id: str,
+    project_id: str,
+    analysis_id: str,
+    db: DbSession,
+    actor_email: str = Query(default="system"),
+) -> AISuggestionJobResponse:
+    analysis = get_diff_analysis_or_404(db, workspace_id, project_id, analysis_id)
+    cleanup_stale_ai_suggestion_runs(db, analysis, actor_email=actor_email)
+    suggestions = list_ai_suggestion_models(db, workspace_id, project_id, analysis_id)
+    run = latest_ai_suggestion_run(db, analysis)
+    reused_running = bool(run and run.status in {AgentRunStatus.queued.value, AgentRunStatus.running.value})
+    if reused_running:
+        message = "AI suggestion workflow is running"
+    elif suggestions:
+        message = f"Loaded {len(suggestions)} AI suggestions"
+    elif run and run.status == AgentRunStatus.failed.value:
+        message = run.failure_reason or "AI suggestion workflow failed"
+    elif run and run.status == AgentRunStatus.cancelled.value:
+        message = run.failure_reason or "AI suggestion workflow was cancelled"
+    else:
+        message = "No AI suggestions generated yet"
+    return ai_suggestion_job_response(
+        run=run,
+        suggestions=suggestions,
+        reused_existing=bool(suggestions and not reused_running),
+        reused_running=reused_running,
+        message=message,
+    )
 
 
 @router.patch("/ai-suggestions/{suggestion_id}", response_model=AISuggestionResponse)

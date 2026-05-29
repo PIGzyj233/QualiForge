@@ -1,4 +1,5 @@
 import type { TestCasePayload } from "./cases.common.types";
+import type { AgentRunRecord } from "./agents";
 
 export type DiffStructureChange = {
   type: string;
@@ -98,4 +99,12 @@ export type AISuggestionRecord = {
   created_by: string;
   created_at: string;
   updated_at: string;
+};
+
+export type AISuggestionJobResponse = {
+  agent_run: AgentRunRecord | null;
+  suggestions: AISuggestionRecord[];
+  reused_existing: boolean;
+  reused_running: boolean;
+  message: string;
 };

@@ -15,7 +15,7 @@ from app.agents.budget import (
     budget_response_for_run,
     build_agent_run_budget_snapshot,
 )
-from app.agents.coverage import add_coverage_entries
+from app.agents.coverage import add_coverage_entries, transition_staged_output_coverage
 from app.agents.models import (
     AgentApproval,
     AgentApprovalStatus,
@@ -1038,7 +1038,6 @@ def decide_staged_output(
     output.decision_summary = payload.decision_summary
     if payload.status == AgentStagedOutputStatus.accepted:
         output.accepted_at = now
-        next_coverage_state = "candidate"
         action = "agent_staged_output.accepted"
         if output.output_type == AgentStagedOutputType.module_tree_draft.value:
             require_workspace_owner(db, workspace_id, actor_email)
@@ -1054,20 +1053,17 @@ def decide_staged_output(
             output.payload = {**dict(output.payload or {}), "acceptance_result": acceptance_result}
     elif payload.status == AgentStagedOutputStatus.rejected:
         output.rejected_at = now
-        next_coverage_state = "rejected"
         action = "agent_staged_output.rejected"
     else:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Decision must accept or reject staged output")
     AGENT_STAGED_OUTPUT_DECISIONS_TOTAL.labels(output_type=output.output_type, status=output.status).inc()
 
-    coverage_entries = db.scalars(
-        select(CoverageIndexEntry).where(CoverageIndexEntry.source_type == "staged_output", CoverageIndexEntry.source_id == output.id)
-    ).all()
-    for entry in coverage_entries:
-        entry.coverage_state = next_coverage_state
-        entry.updated_at = now
-        entry.verified_by_human = payload.status == AgentStagedOutputStatus.accepted
-    output.coverage_entries = [coverage_snapshot(entry) for entry in coverage_entries]
+    next_coverage_state, _coverage_entries = transition_staged_output_coverage(
+        db,
+        output=output,
+        decision_status=payload.status,
+        changed_at=now,
+    )
 
     audit(
         db,
