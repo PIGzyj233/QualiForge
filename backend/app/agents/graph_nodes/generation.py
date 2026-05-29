@@ -176,8 +176,8 @@ class GraphGenerationNodesMixin:
         run = self._run(state)
         self._check_cancelled(run, "module_tree_design:start")
         self._set_run_phase(run, "generate_module_tree_draft")
-        self.budget.check_model()
         gateway = build_model_gateway(self.settings, transport=self.model_gateway_transport)
+        constraints = self._module_tree_constraints(run)
         messages = [
             {
                 "role": "system",
@@ -187,7 +187,7 @@ class GraphGenerationNodesMixin:
                     "should be useful to QA and product reviewers, not merely a dump of every folder. Return valid JSON only."
                 ),
             },
-            {"role": "user", "content": self._module_tree_prompt(state)},
+            {"role": "user", "content": self._module_tree_prompt(state, constraints=constraints)},
         ]
         prompt_hash = prompt_hash_for_messages(messages)
         plan = state.get("subagent_plan") or {}
@@ -199,31 +199,58 @@ class GraphGenerationNodesMixin:
             parallel_group=self._subagent_group(plan, "ModuleTreeDraftSubAgent"),
             input_summary="Generate module tree draft from LLM-selected repository evidence",
         )
+        response = None
+        envelope: GeneratedModuleTreeDraftEnvelope | None = None
+        parse_error: Exception | None = None
+        final_prompt_hash = prompt_hash
+        attempts_used = 0
         try:
-            with agent_span(
-                "agent.model_call",
-                run_id=run.id,
-                subagent="ModuleTreeDraftSubAgent",
-                model=self.settings.model_gateway_default_model,
-                prompt_hash=prompt_hash,
-                prompt_version=AGENT_SUPERVISOR_PROMPT_VERSION,
-            ) as span:
-                response = gateway.chat(
-                    messages,
+            max_token_attempts = (4096, 6144, 8192)
+            for attempt_index, max_tokens in enumerate(max_token_attempts):
+                attempt_messages = messages
+                if attempt_index > 0:
+                    attempt_messages = self._module_tree_retry_messages(
+                        messages,
+                        parse_error,
+                        compact_module_limit=constraints["compact_module_limit"],
+                        compact=attempt_index > 1,
+                    )
+                final_prompt_hash = prompt_hash_for_messages(attempt_messages)
+                self.budget.check_model()
+                attempts_used = attempt_index + 1
+                with agent_span(
+                    "agent.model_call",
+                    run_id=run.id,
+                    subagent="ModuleTreeDraftSubAgent",
                     model=self.settings.model_gateway_default_model,
-                    temperature=0,
-                    max_tokens=3000,
-                    response_format={"type": "json_object"},
-                    invocation_logger=lambda event: self._record_model_invocation(
-                        run,
-                        event,
-                        prompt_hash=prompt_hash,
-                        prompt_version=AGENT_SUPERVISOR_PROMPT_VERSION,
-                        subagent_name="ModuleTreeDraftSubAgent",
-                    ),
-                )
-                span.set_attribute("model_status", "succeeded")
-            envelope = self._parse_module_tree_draft(response.content)
+                    prompt_hash=final_prompt_hash,
+                    prompt_version=AGENT_SUPERVISOR_PROMPT_VERSION,
+                ) as span:
+                    response = gateway.chat(
+                        attempt_messages,
+                        model=self.settings.model_gateway_default_model,
+                        temperature=0,
+                        max_tokens=max_tokens,
+                        reasoning_effort="low",
+                        response_format={"type": "json_object"},
+                        invocation_logger=lambda event, prompt_hash=final_prompt_hash: self._record_model_invocation(
+                            run,
+                            event,
+                            prompt_hash=prompt_hash,
+                            prompt_version=AGENT_SUPERVISOR_PROMPT_VERSION,
+                            subagent_name="ModuleTreeDraftSubAgent",
+                        ),
+                    )
+                    span.set_attribute("model_status", "succeeded")
+                try:
+                    envelope = self._parse_module_tree_draft(response.content)
+                    break
+                except Exception as exc:
+                    parse_error = exc
+                    if attempt_index == len(max_token_attempts) - 1:
+                        raise
+            if envelope is None or response is None:
+                raise RuntimeError("Module tree draft generation did not produce a parsed response")
         except Exception as exc:
             self._record_subagent_run(
                 run,
@@ -238,8 +265,9 @@ class GraphGenerationNodesMixin:
         payload = self._module_tree_payload_from_envelope(envelope, state)
         result_snapshot = {
             "module_count": len(payload["items"]),
-            "prompt_hash": prompt_hash,
+            "prompt_hash": final_prompt_hash,
             "summary": envelope.summary,
+            "parse_retry_count": max(0, attempts_used - 1),
         }
         self._record_subagent_run(
             run,
@@ -337,7 +365,7 @@ class GraphGenerationNodesMixin:
         )
         self.db.commit()
 
-    def _module_tree_prompt(self, state: AgentGraphState) -> str:
+    def _module_tree_prompt(self, state: AgentGraphState, *, constraints: dict[str, Any]) -> str:
         tool_results = state.get("tool_results", {})
         compact_interactions = []
         for interaction in tool_results.get("llm_tool_interactions", [])[:20]:
@@ -356,11 +384,16 @@ class GraphGenerationNodesMixin:
             "initial_files": tool_results.get("files", [])[:300],
             "llm_selected_tool_observations": compact_interactions,
             "llm_analysis_notes": tool_results.get("llm_final_notes", ""),
+            "request_constraints": constraints,
             "generation_rules": [
                 "Create a practical module tree for human QA/product confirmation.",
                 "Prefer feature/capability groupings when repository evidence supports them.",
                 "Use technical layers such as backend/frontend only when they are the clearest first-level grouping.",
+                "Use Chinese for human-facing module names and natural-language summaries whenever possible, unless request guidance explicitly asks for another language; keep code identifiers, source paths, and symbols unchanged.",
                 "Keep the first draft compact; avoid listing every leaf folder.",
+                f"Return no more than {constraints['max_modules']} modules; prefer {constraints['preferred_module_range']} modules for this first draft.",
+                f"Use no more than {constraints['max_source_paths_per_module']} source_paths and {constraints['max_evidence_refs_per_module']} evidence_refs per module.",
+                "Keep description, rationale, and evidence summaries concise so the JSON can finish within the output budget.",
                 "Each module must cite concrete repository evidence.",
                 "Do not include generated, vendor, build output, or dependency directories as product modules.",
             ],
@@ -393,6 +426,62 @@ class GraphGenerationNodesMixin:
             },
         }
         return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _module_tree_retry_messages(
+        messages: list[dict[str, Any]],
+        parse_error: Exception | None,
+        *,
+        compact_module_limit: int,
+        compact: bool = False,
+    ) -> list[dict[str, Any]]:
+        compact_instruction = ""
+        if compact:
+            compact_instruction = (
+                f" Use compact fallback mode: return at most {compact_module_limit} highest-level modules, "
+                "at most one source_path and one evidence_ref per module, and minify the JSON."
+            )
+        return [
+            *messages,
+            {
+                "role": "user",
+                "content": (
+                    "The previous module tree draft response could not be parsed as the required JSON object"
+                    f" ({parse_error or 'missing JSON object'}). Return exactly one valid JSON object matching "
+                    "required_json_schema. Do not include Markdown, comments, or prose outside the JSON. Keep any "
+                    "internal reasoning brief and spend the output budget on the JSON content."
+                    f"{compact_instruction}"
+                ),
+            },
+        ]
+
+    def _module_tree_constraints(self, run: AgentRun) -> dict[str, Any]:
+        snapshot = dict(run.budget_snapshot or {})
+        request = dict(snapshot.get("module_tree_draft_request") or {})
+        max_modules = self._bounded_int(request.get("max_modules"), default=12, minimum=1, maximum=24)
+        max_depth = self._bounded_int(request.get("max_depth"), default=3, minimum=1, maximum=4)
+        min_files = self._bounded_int(request.get("min_files"), default=2, minimum=0, maximum=20)
+        preferred_upper = min(max_modules, 12)
+        preferred_lower = min(preferred_upper, 8)
+        return {
+            "max_modules": max_modules,
+            "max_depth": max_depth,
+            "min_files": min_files,
+            "include_tests": bool(request.get("include_tests", False)),
+            "guidance": str(request.get("guidance") or ""),
+            "preferred_module_range": f"{preferred_lower}-{preferred_upper}",
+            "compact_module_limit": preferred_upper,
+            "max_source_paths_per_module": 4,
+            "max_evidence_refs_per_module": 2,
+        }
+
+    @staticmethod
+    def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(parsed, maximum))
 
     @staticmethod
     def _module_tree_payload_from_envelope(envelope: GeneratedModuleTreeDraftEnvelope, state: AgentGraphState) -> dict[str, Any]:

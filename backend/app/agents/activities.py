@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from app.agents import (
     AgentRun,
     AgentRunStateError,
     AgentRunStatus,
+    AgentStagedOutput,
     apply_agent_run_budget_override,
     mark_run_cancelled,
     mark_run_failed,
@@ -340,13 +342,54 @@ def _activity_checkpoint(phase: str) -> None:
         raise AgentRunCancelled("Temporal cancellation requested")
 
 
-def _activity_result_from_run(run: AgentRun, summary: str | None = None) -> dict[str, Any]:
+def _activity_result_from_run(run: AgentRun, summary: str | None = None, *, staged_output_count: int = 0) -> dict[str, Any]:
     return {
         "run_id": run.id,
         "status": run.status,
         "summary": summary or run.failure_reason or f"Agent run is {run.status}",
-        "staged_output_count": 0,
+        "staged_output_count": staged_output_count,
     }
+
+
+def _duplicate_run_wait_seconds(payload: dict[str, Any], *, settings: Settings) -> int:
+    try:
+        configured = int(payload.get("duplicate_activity_wait_seconds") or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    if configured > 0:
+        return max(1, min(configured, 10 * 60))
+
+    try:
+        start_to_close = int(
+            payload.get("activity_start_to_close_timeout_seconds")
+            or settings.agent_activity_start_to_close_timeout_minutes * 60
+        )
+    except (TypeError, ValueError):
+        start_to_close = settings.agent_activity_start_to_close_timeout_minutes * 60
+    try:
+        heartbeat_timeout = int(payload.get("activity_heartbeat_timeout_seconds") or settings.agent_activity_heartbeat_timeout_seconds)
+    except (TypeError, ValueError):
+        heartbeat_timeout = settings.agent_activity_heartbeat_timeout_seconds
+
+    model_attempt_window = max(1, settings.model_gateway_timeout_seconds) * max(1, min(settings.model_gateway_max_attempts, 3))
+    desired_wait = max(30, heartbeat_timeout, model_attempt_window + 60)
+    return max(5, min(desired_wait, max(5, start_to_close - 5)))
+
+
+def _wait_for_existing_agent_run_activity(db, *, run: AgentRun, payload: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    deadline = time.monotonic() + _duplicate_run_wait_seconds(payload, settings=settings)
+    while time.monotonic() < deadline:
+        db.expire(run)
+        if run.status != AgentRunStatus.running.value:
+            staged_output_count = len(
+                db.scalars(select(AgentStagedOutput).where(AgentStagedOutput.agent_run_id == run.id)).all()
+            )
+            return _activity_result_from_run(run, staged_output_count=staged_output_count)
+        _activity_checkpoint("duplicate_activity_waiting_for_running_run")
+        time.sleep(1)
+    from app.agents.graph import AgentGraphConflict
+
+    raise AgentGraphConflict("Agent run is already running")
 
 
 def execute_agent_graph_activity_with_settings(
@@ -371,6 +414,19 @@ def execute_agent_graph_activity_with_settings(
 
             if run.status == AgentRunStatus.cancelled.value:
                 return _activity_result_from_run(run)
+
+            if not payload.get("explicit_resume") and run.status in {
+                AgentRunStatus.succeeded.value,
+                AgentRunStatus.failed.value,
+                AgentRunStatus.waiting_for_user.value,
+            }:
+                staged_output_count = len(
+                    db.scalars(select(AgentStagedOutput).where(AgentStagedOutput.agent_run_id == run.id)).all()
+                )
+                return _activity_result_from_run(run, staged_output_count=staged_output_count)
+
+            if run.status == AgentRunStatus.running.value:
+                return _wait_for_existing_agent_run_activity(db, run=run, payload=payload, settings=settings)
 
             if payload.get("explicit_resume"):
                 apply_agent_run_budget_override(

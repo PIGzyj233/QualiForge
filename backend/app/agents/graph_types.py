@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.agents import (
     AgentRepositorySandbox,
@@ -89,6 +89,20 @@ class GeneratedModuleDraftItem(BaseModel):
     rationale: str = Field(min_length=1, max_length=700)
     confidence: int = Field(default=70, ge=0, le=100)
     evidence_refs: list[EvidenceRef] = Field(min_length=1)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def normalize_confidence(cls, value: Any) -> int | Any:
+        if value is None or value == "":
+            return 70
+        raw = value.strip().rstrip("%") if isinstance(value, str) else value
+        try:
+            numeric = float(raw)
+        except (TypeError, ValueError):
+            return value
+        if 0 <= numeric <= 1:
+            numeric *= 100
+        return max(0, min(100, round(numeric)))
 
 
 class GeneratedModuleTreeDraftEnvelope(BaseModel):

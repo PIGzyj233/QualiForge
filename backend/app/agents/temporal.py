@@ -58,7 +58,7 @@ def _workflow_payload(
         "candidate_limit": candidate_limit,
         "actor_email": actor_email,
         "activity_start_to_close_timeout_seconds": settings.agent_activity_start_to_close_timeout_minutes * 60,
-        "activity_heartbeat_timeout_seconds": settings.agent_activity_heartbeat_timeout_seconds,
+        "activity_heartbeat_timeout_seconds": _agent_activity_heartbeat_timeout_seconds(settings),
         "activity_retry_attempts": settings.agent_activity_retry_attempts,
     }
 
@@ -81,9 +81,17 @@ def _ai_suggestion_workflow_payload(
         "actor_email": actor_email,
         "force": force,
         "activity_start_to_close_timeout_seconds": settings.agent_activity_start_to_close_timeout_minutes * 60,
-        "activity_heartbeat_timeout_seconds": settings.agent_activity_heartbeat_timeout_seconds,
+        "activity_heartbeat_timeout_seconds": _agent_activity_heartbeat_timeout_seconds(settings),
         "activity_retry_attempts": settings.agent_activity_retry_attempts,
     }
+
+
+def _agent_activity_heartbeat_timeout_seconds(settings: Settings) -> int:
+    configured_timeout = max(1, int(settings.agent_activity_heartbeat_timeout_seconds))
+    model_timeout = max(1, int(settings.model_gateway_timeout_seconds))
+    model_attempts = max(1, min(int(settings.model_gateway_max_attempts), 3))
+    model_retry_window = model_timeout * model_attempts + 30
+    return max(configured_timeout, model_retry_window)
 
 
 def _workflow_child_tasks(run: AgentRun) -> list[dict[str, Any]]:
