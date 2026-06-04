@@ -73,6 +73,39 @@ export type AISuggestionStatus = "suggested" | "accepted" | "ignored" | "modifie
 
 export type AISuggestionType = "regression" | "case_candidate";
 
+export type CoverageDecisionRecommendation = "reuse_existing_coverage" | "extend_existing_coverage" | "stage_new_candidate" | string;
+
+export type CoverageDecisionMatch = {
+  source_type?: string;
+  source_id?: string;
+  coverage_state?: string;
+  module_key?: string;
+  title?: string;
+  behavior_summary?: string;
+  confidence?: string;
+  text_overlap?: number;
+  signal_overlap?: string[];
+  evidence_overlap?: string[];
+};
+
+export type CoverageDecision = {
+  source?: string;
+  classification?: string;
+  recommendation?: CoverageDecisionRecommendation;
+  matches?: CoverageDecisionMatch[];
+};
+
+export type DraftQuality = {
+  passed?: boolean;
+  checks?: string[];
+  issues?: string[];
+};
+
+export type AISuggestionSourceDiff = Record<string, unknown> & {
+  coverage_decision?: CoverageDecision;
+  draft_quality?: DraftQuality;
+};
+
 export type AISuggestionRecord = {
   id: string;
   workspace_id: string;
@@ -85,7 +118,7 @@ export type AISuggestionRecord = {
   confidence: number;
   module_id: string | null;
   module_key: string;
-  source_diff: Record<string, unknown>;
+  source_diff: AISuggestionSourceDiff;
   mapping_evidence: string[];
   code_paths: string[];
   interfaces: string[];

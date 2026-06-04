@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { BrainCircuit, ChevronRight, Sparkles } from "lucide-react";
+import { AlertTriangle, BrainCircuit, CheckCircle2, ChevronRight, FilePlus2, Sparkles } from "lucide-react";
 import {
-  type AISuggestionRecord, createCandidateFromSuggestion, createSuggestionPlanItems,
+  type AISuggestionRecord, type CoverageDecision, type DraftQuality, createCandidateFromSuggestion, createSuggestionPlanItems,
   type DiffAnalysisRecord, generateAISuggestions, getAISuggestionStatus, listDiffAnalyses,
   listTestCases, type TestCaseRecord, updateAISuggestion
 } from "@/api/cases";
@@ -17,6 +17,41 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+
+const coverageDecisionLabel: Record<string, string> = {
+  reuse_existing_coverage: "复用已有覆盖",
+  extend_existing_coverage: "扩展已有覆盖",
+  stage_new_candidate: "新增候选用例",
+  coverage_gap: "新增候选用例"
+};
+
+const coverageDecisionTone: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
+  reuse_existing_coverage: "secondary",
+  extend_existing_coverage: "outline",
+  stage_new_candidate: "default"
+};
+
+function coverageDecisionOf(suggestion: AISuggestionRecord): CoverageDecision {
+  return suggestion.source_diff.coverage_decision ?? {};
+}
+
+function draftQualityOf(suggestion: AISuggestionRecord): DraftQuality {
+  return suggestion.source_diff.draft_quality ?? {};
+}
+
+function coverageRecommendationLabel(decision: CoverageDecision): string {
+  const recommendation = decision.recommendation || "";
+  return coverageDecisionLabel[recommendation] ?? (recommendation || "覆盖待判断");
+}
+
+function coverageRecommendationTone(decision: CoverageDecision): "default" | "secondary" | "destructive" | "outline" {
+  const recommendation = decision.recommendation || "";
+  return coverageDecisionTone[recommendation] ?? "outline";
+}
+
+function caseTitle(caseId: string, cases: TestCaseRecord[]) {
+  return cases.find((item) => item.id === caseId)?.title ?? caseId;
+}
 
 export function AISuggestionAdmin() {
   const session = useSessionStore((s) => s.session);
@@ -40,6 +75,9 @@ export function AISuggestionAdmin() {
   const [message, setMessage] = useState<string | null>(null);
 
   const selectedSuggestion = suggestions.find((s) => s.id === selectedSuggestionId);
+  const selectedCoverageDecision = selectedSuggestion ? coverageDecisionOf(selectedSuggestion) : {};
+  const selectedDraftQuality = selectedSuggestion ? draftQualityOf(selectedSuggestion) : {};
+  const matchedCoverage = selectedCoverageDecision.matches ?? [];
   const generationRunning = Boolean(
     jobRun &&
     ["queued", "running"].includes(jobRun.status) &&
@@ -102,7 +140,7 @@ export function AISuggestionAdmin() {
       setJobRun(job.agent_run);
       applySuggestions(job.suggestions);
       if (job.agent_run && ["queued", "running"].includes(job.agent_run.status)) {
-        setMessage(job.reused_running ? "AI 建议已在后台生成中" : "AI 建议已提交后台生成");
+        setMessage(job.reused_running ? "Agent 推荐输出已在后台生成中" : "Agent 推荐输出已提交后台生成");
       } else {
         setMessage(`已加载 ${job.suggestions.length} 条建议`);
       }
@@ -126,7 +164,7 @@ export function AISuggestionAdmin() {
     setBusy(true);
     try {
       const r = await createCandidateFromSuggestion(wid, pid, selectedSuggestion.id, actorEmail);
-      setMessage(`已创建 AI 候选草稿 "${r.test_case.title}"`);
+      setMessage(`已创建 Agent 候选草稿 "${r.test_case.title}"`);
       await loadSuggestionStatus(selectedAnalysisId);
     } catch (err) { setMessage(err instanceof Error ? err.message : "创建失败"); }
     finally { setBusy(false); }
@@ -149,9 +187,9 @@ export function AISuggestionAdmin() {
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)] mb-1">AI Suggestions</p>
-          <h1 className="font-heading text-2xl font-bold">AI 智能推荐</h1>
-          <p className="mt-1 text-sm text-[var(--muted-foreground)]">基于 Diff 分析为本次发布生成回归用例和候选用例，仍需人工评审入库。</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)] mb-1">Agent Outputs</p>
+          <h1 className="font-heading text-2xl font-bold">Agent 推荐输出</h1>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">基于 Diff 分析为本次发布生成回归推荐和候选用例，候选仍需人工评审入库。</p>
         </div>
         <BrainCircuit size={20} className="text-[var(--muted-foreground)]" />
       </div>
@@ -178,7 +216,7 @@ export function AISuggestionAdmin() {
           )}
           <div className="flex flex-wrap items-center gap-3">
             <Button disabled={busy || generationRunning || !selectedAnalysisId} onClick={generate} className="self-start">
-              <Sparkles size={14} />{generationRunning ? "AI 建议生成中" : suggestions.length ? "重新生成 AI 建议" : "生成 AI 建议"}
+              <Sparkles size={14} />{generationRunning ? "推荐输出生成中" : suggestions.length ? "重新生成推荐输出" : "生成推荐输出"}
             </Button>
             {jobRun && (
               <Badge variant={jobRun.status === "failed" ? "destructive" : "secondary"}>
@@ -193,7 +231,7 @@ export function AISuggestionAdmin() {
       {suggestions.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 items-start">
           <Card>
-            <CardHeader><CardTitle className="text-sm">2 · 建议列表 ({suggestions.length})</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-sm">2 · 推荐输出 ({suggestions.length})</CardTitle></CardHeader>
             <CardContent className="p-0">
               {suggestions.map((s) => (
                 <button key={s.id} type="button" onClick={() => { setSelectedSuggestionId(s.id); setSelectedCaseIds(s.selected_case_ids); setFeedbackText(""); }}
@@ -201,7 +239,12 @@ export function AISuggestionAdmin() {
                   <ChevronRight size={14} className="mt-0.5 shrink-0" />
                   <div className="min-w-0">
                     <p className="text-sm font-semibold truncate">{suggestionTypeLabel[s.suggestion_type]} · {s.title}</p>
-                    <p className="text-xs text-[var(--muted-foreground)]">模块 {s.module_key} · 置信度 {s.confidence}% · {statusLabel[s.status]}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <Badge variant={coverageRecommendationTone(coverageDecisionOf(s))} className="text-[11px]">
+                        {coverageRecommendationLabel(coverageDecisionOf(s))}
+                      </Badge>
+                      <span className="text-xs text-[var(--muted-foreground)]">模块 {s.module_key} · 置信度 {s.confidence}% · {statusLabel[s.status]}</span>
+                    </div>
                   </div>
                 </button>
               ))}
@@ -213,7 +256,56 @@ export function AISuggestionAdmin() {
               <Card>
                 <CardHeader><CardTitle>{selectedSuggestion.title}</CardTitle></CardHeader>
                 <CardContent className="flex flex-col gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary">{suggestionTypeLabel[selectedSuggestion.suggestion_type]}</Badge>
+                    <Badge variant={coverageRecommendationTone(selectedCoverageDecision)}>
+                      {coverageRecommendationLabel(selectedCoverageDecision)}
+                    </Badge>
+                    <Badge variant={selectedDraftQuality.passed === false ? "destructive" : "outline"}>
+                      {selectedDraftQuality.passed === false ? "草稿需复核" : "草稿质量通过"}
+                    </Badge>
+                    <span className="text-xs text-[var(--muted-foreground)]">模块 {selectedSuggestion.module_key} · 置信度 {selectedSuggestion.confidence}%</span>
+                  </div>
                   <p className="text-sm text-[var(--muted-foreground)]">{selectedSuggestion.rationale}</p>
+                  {selectedDraftQuality.issues && selectedDraftQuality.issues.length > 0 && (
+                    <Alert variant="destructive">
+                      <AlertTriangle size={14} />
+                      <AlertDescription>
+                        草稿质量问题：{selectedDraftQuality.issues.join("、")}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                  {(selectedSuggestion.selected_case_ids.length > 0 || matchedCoverage.length > 0) && (
+                    <div className="rounded-[var(--radius-sm)] border bg-[var(--muted)]/20 p-3">
+                      <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+                        <CheckCircle2 size={13} /> 覆盖依据
+                      </p>
+                      <div className="flex flex-col gap-1.5">
+                        {selectedSuggestion.selected_case_ids.map((caseId) => (
+                          <label key={caseId} className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={selectedCaseIds.includes(caseId)}
+                              onChange={(event) => {
+                                setSelectedCaseIds((ids) => event.target.checked ? Array.from(new Set([...ids, caseId])) : ids.filter((id) => id !== caseId));
+                              }}
+                              className="accent-[var(--primary)]"
+                            />
+                            <span>{caseTitle(caseId, approvedCases)}</span>
+                          </label>
+                        ))}
+                        {matchedCoverage
+                          .filter((match) => match.source_id && !selectedSuggestion.selected_case_ids.includes(String(match.source_id)))
+                          .slice(0, 4)
+                          .map((match) => (
+                            <div key={`${match.source_type}-${match.source_id}`} className="text-sm text-[var(--muted-foreground)]">
+                              {match.source_type === "formal_case" ? "正式用例" : match.source_type || "覆盖记录"} · {match.title || match.source_id}
+                              {match.confidence && <span> · {match.confidence}</span>}
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
                   {selectedSuggestion.mapping_evidence.length > 0 && (
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)] mb-1.5">证据</p>
@@ -239,7 +331,9 @@ export function AISuggestionAdmin() {
                     <Button variant="outline" disabled={busy} onClick={() => void feedback("modified")}>修改后采纳</Button>
                     <Button variant="outline" disabled={busy} onClick={() => void feedback("ignored")}>忽略</Button>
                     {selectedSuggestion.suggestion_type === "case_candidate" && (
-                      <Button variant="outline" disabled={busy} onClick={createCandidate}>创建 AI 候选草稿</Button>
+                      <Button variant="outline" disabled={busy} onClick={createCandidate}>
+                        <FilePlus2 size={14} />创建候选草稿
+                      </Button>
                     )}
                   </div>
                 </CardContent>
@@ -252,8 +346,10 @@ export function AISuggestionAdmin() {
                     <SelectContent>{plans.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
                   </Select>
                   <div className="flex gap-2">
-                    <Button disabled={busy || !selectedPlanId} onClick={() => void addToPlan(false)}>加入已选用例</Button>
-                    <Button variant="outline" disabled={busy || !selectedPlanId} onClick={() => void addToPlan(true)}>加入 AI 候选</Button>
+                    <Button disabled={busy || !selectedPlanId || selectedCaseIds.length === 0} onClick={() => void addToPlan(false)}>加入已选用例</Button>
+                    {selectedSuggestion.suggestion_type === "case_candidate" && (
+                      <Button variant="outline" disabled={busy || !selectedPlanId} onClick={() => void addToPlan(true)}>加入候选草稿</Button>
+                    )}
                   </div>
                 </CardContent>
               </Card>
