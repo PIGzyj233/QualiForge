@@ -8,10 +8,11 @@ from typing import Any
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.agents import AgentRun, AgentRunStatus
+from app.agents import AgentRun, AgentRunStatus, AgentStagedOutput, AgentStagedOutputType
 from app.agents.workflow_gateway import AgentWorkflowUnavailable
 from app.cases.ai_suggestions import (
     AI_SUGGESTION_STALE_MINUTES,
+    AISuggestion,
     create_ai_suggestion_agent_run,
     execute_ai_suggestion_generation,
     parse_llm_suggestion_json,
@@ -164,7 +165,17 @@ def successful_ai_suggestion_transport(model_calls: list[dict[str, Any]]):
     return transport
 
 
-def create_approved_case(client: TestClient, workspace_id: str, project_id: str, module_id: str) -> dict:
+def create_approved_case(
+    client: TestClient,
+    workspace_id: str,
+    project_id: str,
+    module_id: str,
+    *,
+    title: str = "Approved checkout payment regression",
+    steps: list[str] | None = None,
+    expected_result: str = "Order is paid",
+    tags: list[str] | None = None,
+) -> dict:
     settings = client.put(
         f"/api/workspaces/{workspace_id}/review-settings?actor_email={OWNER}",
         json={"allow_self_review": True, "require_review_on_case_update": True},
@@ -174,12 +185,12 @@ def create_approved_case(client: TestClient, workspace_id: str, project_id: str,
         f"/api/workspaces/{workspace_id}/projects/{project_id}/test-cases?actor_email={OWNER}",
         json={
             "module_id": module_id,
-            "title": "Approved checkout payment regression",
-            "steps": ["Open checkout", "Pay order"],
-            "expected_result": "Order is paid",
+            "title": title,
+            "steps": steps or ["Open checkout", "Pay order"],
+            "expected_result": expected_result,
             "priority": "P1",
             "risk": "high",
-            "tags": ["checkout", "payment"],
+            "tags": tags or ["checkout", "payment"],
             "custom_fields": {"source": "manual"},
         },
     )
@@ -197,7 +208,7 @@ def create_approved_case(client: TestClient, workspace_id: str, project_id: str,
     fetched = client.get(f"/api/workspaces/{workspace_id}/projects/{project_id}/test-cases/{test_case['id']}")
     assert fetched.status_code == 200
     assert fetched.json()["lifecycle_status"] == "active"
-    assert fetched.json()["current_revision"]["content_snapshot"]["title"] == "Approved checkout payment regression"
+    assert fetched.json()["current_revision"]["content_snapshot"]["title"] == title
     return fetched.json()
 
 
@@ -246,6 +257,21 @@ def test_ai_suggestions_link_diff_mapping_cases_feedback_and_plan_items(tmp_path
     assert len(gateway.started) == 1
     result = execute_ai_suggestion_job(client, workspace["id"], project["id"], analysis["id"], queued["agent_run"]["id"])
     assert result["status"] == "succeeded"
+    database = client.app.state.database
+    database.init()
+    with database.session_factory() as db:
+        legacy_rows = db.scalars(select(AISuggestion).where(AISuggestion.diff_analysis_id == analysis["id"])).all()
+        assert legacy_rows == []
+        staged_outputs = db.scalars(
+            select(AgentStagedOutput)
+            .where(AgentStagedOutput.agent_run_id == queued["agent_run"]["id"])
+            .order_by(AgentStagedOutput.output_type)
+        ).all()
+        assert {output.output_type for output in staged_outputs} == {
+            AgentStagedOutputType.case_candidate.value,
+            AgentStagedOutputType.regression_recommendation.value,
+        }
+        assert all(output.payload["diff_analysis_id"] == analysis["id"] for output in staged_outputs)
     status_response = client.get(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions/status?actor_email={OWNER}"
     )
@@ -312,7 +338,12 @@ def test_ai_suggestions_link_diff_mapping_cases_feedback_and_plan_items(tmp_path
     assert candidate_case.status_code == 201
     created_case = candidate_case.json()["test_case"]
     assert created_case["lifecycle_status"] == "draft"
+    assert created_case["source_ref"]["staged_output_id"] == candidate["id"]
+    assert created_case["source_ref"]["agent_run_id"] == candidate["source_diff"]["agent_run_id"]
+    assert created_case["source_ref"]["diff_analysis_id"] == analysis["id"]
     assert created_case["active_draft"]["custom_fields"]["source"] == "ai_suggestion"
+    assert created_case["active_draft"]["source_ref"]["staged_output_id"] == candidate["id"]
+    assert candidate_case.json()["suggestion"]["candidate_case_id"] == created_case["id"]
 
     temp_plan_item = client.post(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/ai-suggestions/{candidate['id']}/plan-items?actor_email={OWNER}",
@@ -326,6 +357,56 @@ def test_ai_suggestions_link_diff_mapping_cases_feedback_and_plan_items(tmp_path
 
     approved_cases = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases?lifecycle_status=active").json()
     assert [item["id"] for item in approved_cases] == [formal_case["id"]]
+
+
+def test_ai_suggestions_reuse_existing_business_coverage_instead_of_duplicate_candidate(tmp_path: Path) -> None:
+    model_calls: list[dict[str, Any]] = []
+    settings_overrides = {
+        "model_gateway_api_base_url": "http://model-endpoint:4000/v1",
+        "model_gateway_api_key": "test-model-key",
+        "model_gateway_default_model": "deepseek-v4-pro",
+        "model_gateway_reasoning_effort": "high",
+    }
+    client = make_client(tmp_path, successful_ai_suggestion_transport(model_calls), settings_overrides=settings_overrides)
+    workspace, project = create_workspace_project(client)
+    module = create_module_with_rules(client, workspace["id"], project["id"])
+    formal_case = create_approved_case(
+        client,
+        workspace["id"],
+        project["id"],
+        module["id"],
+        title="验证退款接口与支付超时配置",
+        steps=["调用 POST /checkout/refund 发起退款", "关闭 refund_enabled 后再次发起退款"],
+        expected_result="接口返回退款成功，关闭配置后系统按配置拒绝或降级处理退款请求",
+        tags=["refund", "payment", "checkout"],
+    )
+    source = create_diff_fixture_repo(tmp_path)
+    repository = bind_and_sync_repository(client, workspace["id"], project["id"], source)
+    analysis_response = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses?actor_email={OWNER}",
+        json={"repository_id": repository["id"], "base_ref": "v1", "target_ref": "v2"},
+    )
+    assert analysis_response.status_code == 201
+    analysis = analysis_response.json()
+    gateway = install_fake_ai_suggestion_gateway(client)
+
+    queued = client.post(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions?actor_email={OWNER}"
+    ).json()
+    assert len(gateway.started) == 1
+    execute_ai_suggestion_job(client, workspace["id"], project["id"], analysis["id"], queued["agent_run"]["id"])
+
+    suggestions = client.get(
+        f"/api/workspaces/{workspace['id']}/projects/{project['id']}/diff-analyses/{analysis['id']}/ai-suggestions/status?actor_email={OWNER}"
+    ).json()["suggestions"]
+    payment_suggestions = [item for item in suggestions if item["module_key"] == "PAYMENT"]
+    payment_types = {item["suggestion_type"] for item in payment_suggestions}
+    regression = next(item for item in payment_suggestions if item["suggestion_type"] == "regression")
+
+    assert payment_types == {"regression"}
+    assert formal_case["id"] in regression["selected_case_ids"]
+    assert regression["source_diff"]["coverage_decision"]["recommendation"] == "reuse_existing_coverage"
+    assert regression["source_diff"]["coverage_decision"]["classification"] == "high_confidence_duplicate"
 
 
 def test_ai_suggestions_are_idempotent_for_same_diff_analysis(tmp_path: Path) -> None:

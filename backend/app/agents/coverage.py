@@ -13,11 +13,20 @@ from app.agents.serializers import coverage_snapshot, evidence_refs_to_json
 
 
 def normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", value.lower())).strip()
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", value.lower())).strip()
 
 
 def token_set(value: str) -> set[str]:
-    return {token for token in normalize_text(value).split() if len(token) >= 3}
+    tokens: set[str] = set()
+    for token in normalize_text(value).split():
+        if len(token) >= 3:
+            tokens.add(token)
+        if re.search(r"[\u4e00-\u9fff]", token):
+            if len(token) >= 2:
+                tokens.update(token[index : index + 2] for index in range(len(token) - 1))
+            if token:
+                tokens.add(token)
+    return tokens
 
 
 def jaccard(left: set[str], right: set[str]) -> float:

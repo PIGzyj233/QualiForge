@@ -1051,6 +1051,11 @@ def decide_staged_output(
 
             acceptance_result = accept_module_mapping_suggestions_output(db, output=output, actor_email=actor_email)
             output.payload = {**dict(output.payload or {}), "acceptance_result": acceptance_result}
+        elif output.output_type == AgentStagedOutputType.case_candidate.value:
+            from app.cases.ai_suggestions import accept_case_candidate_staged_output
+
+            acceptance_result = accept_case_candidate_staged_output(db, output=output, actor_email=actor_email)
+            output.payload = {**dict(output.payload or {}), "acceptance_result": acceptance_result}
     elif payload.status == AgentStagedOutputStatus.rejected:
         output.rejected_at = now
         action = "agent_staged_output.rejected"

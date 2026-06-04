@@ -476,8 +476,19 @@ def test_agent_conversation_run_staged_output_and_coverage_flow() -> None:
     accepted = accepted_response.json()
     assert accepted["status"] == "accepted"
     assert accepted["decision_summary"] == "Looks useful for refund regression"
+    accepted_case_id = accepted["payload"]["acceptance_result"]["test_case_id"]
+    assert accepted["payload"]["acceptance_result"]["source_ref"]["staged_output_id"] == staged["id"]
     assert accepted["coverage_entries"][0]["coverage_state"] == "candidate"
     assert accepted["coverage_entries"][0]["verified_by_human"] is True
+
+    case_response = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases/{accepted_case_id}")
+    assert case_response.status_code == 200
+    created_case = case_response.json()
+    assert created_case["lifecycle_status"] == "draft"
+    assert created_case["source_ref"]["staged_output_id"] == staged["id"]
+    assert created_case["source_ref"]["agent_run_id"] == run["id"]
+    assert created_case["active_draft"]["title"] == "Validate checkout refund audit trail"
+    assert created_case["active_draft"]["source_ref"]["staged_output_id"] == staged["id"]
 
     coverage_response = client.get(
         f"/api/workspaces/{workspace['id']}/projects/{project['id']}/coverage-index?coverage_state=candidate&module_key=CHECKOUT"
@@ -520,6 +531,8 @@ def test_rejecting_staged_output_marks_coverage_rejected_and_blocks_second_decis
     )
     assert rejected_response.status_code == 200
     assert rejected_response.json()["coverage_entries"][0]["coverage_state"] == "rejected"
+    cases = client.get(f"/api/workspaces/{workspace['id']}/projects/{project['id']}/test-cases").json()
+    assert cases == []
 
     second_decision = client.patch(
         f"/api/workspaces/{workspace['id']}/agent/staged-outputs/{staged['id']}?actor_email={OWNER}",

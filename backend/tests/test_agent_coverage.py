@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.agents.coverage import classify_candidate_coverage, lookup_coverage_records, transition_staged_output_coverage
+from app.agents.coverage import classify_candidate_coverage, lookup_coverage_records, token_set, transition_staged_output_coverage
 from app.agents.graph_types import GeneratedCaseCandidate
 from app.agents.models import AgentRun, AgentStagedOutput, AgentStagedOutputStatus, AgentStagedOutputType, CoverageIndexEntry
 from app.cases.ai_suggestions import AISuggestion, AISuggestionStatus, AISuggestionType
@@ -191,6 +191,60 @@ def test_classify_candidate_coverage_uses_coverage_index_interface() -> None:
     assert duplicate["classification"] == "high_confidence_duplicate"
     assert duplicate["recommendation"] == "reuse_existing_coverage"
     assert duplicate["matches"][0]["source_type"] == "formal_case"
+
+
+def test_classify_candidate_coverage_uses_chinese_business_text() -> None:
+    candidate = GeneratedCaseCandidate.model_validate(
+        {
+            "title": "验证退款接口与支付超时配置",
+            "steps": ["调用退款接口", "调整支付超时配置后重试"],
+            "expected_result": "退款成功且支付超时配置生效",
+            "risk": "high",
+            "priority": "P1",
+            "module_key": "PAYMENT",
+            "observability": {"signals": []},
+            "evidence_refs": [{"kind": "code_file", "ref_id": "repo:v2:src/payment/checkout.py", "label": "src/payment/checkout.py"}],
+            "duplicate_result": {},
+            "coverage_entries": [{"module_key": "PAYMENT", "behavior_summary": "退款接口与支付超时配置被覆盖"}],
+        }
+    )
+
+    unrelated = classify_candidate_coverage(
+        candidate,
+        [
+            {
+                "source_type": "formal_case",
+                "source_id": "case_login",
+                "coverage_state": "active",
+                "module_key": "PAYMENT",
+                "title": "验证登录流程",
+                "behavior_summary": "登录验证码流程被覆盖",
+                "tokens": sorted(token_set("验证登录流程 登录验证码流程被覆盖")),
+                "signals": [],
+                "evidence_paths": [],
+            }
+        ],
+    )
+    duplicate = classify_candidate_coverage(
+        candidate,
+        [
+            {
+                "source_type": "formal_case",
+                "source_id": "case_refund",
+                "coverage_state": "active",
+                "module_key": "PAYMENT",
+                "title": "验证退款接口与支付超时配置",
+                "behavior_summary": "退款成功且支付超时配置生效",
+                "tokens": sorted(token_set("验证退款接口与支付超时配置 退款成功且支付超时配置生效")),
+                "signals": [],
+                "evidence_paths": ["src/payment/checkout.py"],
+            }
+        ],
+    )
+
+    assert unrelated["classification"] == "coverage_gap"
+    assert duplicate["classification"] == "high_confidence_duplicate"
+    assert duplicate["recommendation"] == "reuse_existing_coverage"
 
 
 def test_graph_analysis_compat_aliases_point_to_coverage_index_interface() -> None:

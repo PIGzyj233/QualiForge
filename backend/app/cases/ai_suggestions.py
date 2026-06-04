@@ -23,8 +23,17 @@ from app.agents import (
     AgentRun,
     AgentRunMode,
     AgentRunStatus,
+    AgentStagedOutput,
+    AgentStagedOutputStatus,
+    AgentStagedOutputType,
+    CoverageIndexEntry,
+    EvidenceKind,
+    add_coverage_entries,
+    coverage_snapshot,
 )
-from app.agents.schemas import AgentRunResponse
+from app.agents.coverage import transition_staged_output_coverage
+from app.agents.graph_policy import staged_output_idempotency_key
+from app.agents.schemas import AgentRunResponse, CoverageEntryCreate, EvidenceRef
 from app.agents.serializers import run_to_response
 from app.agents.graph_budget import BudgetTracker
 from app.agents.graph_types import AgentBudgetExceeded
@@ -37,6 +46,7 @@ from app.git.sandbox import ensure_safe_sandbox_path, remove_tree_readonly, run_
 from app.platform.config import Settings
 from app.platform.database import Base, Database
 from app.cases.diff_models import DiffAnalysis, DiffAnalysisStatus
+from app.cases.recommendation_drafts import DiffRecommendationDraft, build_diff_recommendation_drafts
 from app.planning.test_plans import (
     PlanItem,
     PlanItemSource,
@@ -179,6 +189,10 @@ AI_SUGGESTION_TOOL_BUDGET = {
     "max_wall_time_minutes": 4,
 }
 AI_SUGGESTION_STALE_MINUTES = max(10, int(AI_SUGGESTION_TOOL_BUDGET["max_wall_time_minutes"]) * 2)
+AI_SUGGESTION_STAGED_OUTPUT_TYPES = {
+    AgentStagedOutputType.regression_recommendation.value,
+    AgentStagedOutputType.case_candidate.value,
+}
 
 AI_SUGGESTION_CODE_TOOLS: list[dict[str, Any]] = [
     {
@@ -293,6 +307,99 @@ def suggestion_to_response(suggestion: AISuggestion) -> AISuggestionResponse:
     )
 
 
+def compact_list(value: Any, *, limit: int | None = None) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    items = list(value)
+    return items[:limit] if limit is not None else items
+
+
+def compact_string_list(value: Any, *, limit: int | None = None) -> list[str]:
+    return [str(item) for item in compact_list(value, limit=limit) if str(item).strip()]
+
+
+def output_suggestion_type(output: AgentStagedOutput) -> str:
+    if output.output_type == AgentStagedOutputType.case_candidate.value:
+        return AISuggestionType.case_candidate.value
+    return AISuggestionType.regression.value
+
+
+def output_compat_status(output: AgentStagedOutput) -> str:
+    payload = output.payload if isinstance(output.payload, dict) else {}
+    compat_status = str(payload.get("compat_status") or "")
+    if compat_status in {item.value for item in AISuggestionStatus}:
+        return compat_status
+    if output.status == AgentStagedOutputStatus.accepted.value:
+        return AISuggestionStatus.accepted.value
+    if output.status == AgentStagedOutputStatus.rejected.value:
+        return AISuggestionStatus.ignored.value
+    return AISuggestionStatus.suggested.value
+
+
+def output_candidate_payload(output: AgentStagedOutput) -> dict[str, Any]:
+    payload = output.payload if isinstance(output.payload, dict) else {}
+    candidate_payload = payload.get("candidate_payload")
+    if isinstance(candidate_payload, dict):
+        return dict(candidate_payload)
+    if output.output_type != AgentStagedOutputType.case_candidate.value:
+        return {}
+    return {
+        "module_id": payload.get("module_id"),
+        "title": str(payload.get("title") or output.title),
+        "steps": compact_list(payload.get("steps")),
+        "expected_result": str(payload.get("expected_result") or ""),
+        "priority": str(payload.get("priority") or "P2"),
+        "risk": str(payload.get("risk") or "medium"),
+        "tags": compact_string_list(payload.get("tags")),
+        "custom_fields": dict(payload.get("custom_fields") or {}),
+    }
+
+
+def staged_output_to_suggestion_response(output: AgentStagedOutput) -> AISuggestionResponse:
+    payload = output.payload if isinstance(output.payload, dict) else {}
+    source_diff = dict(payload.get("source_diff") or {})
+    if output.agent_run_id and not source_diff.get("agent_run_id"):
+        source_diff["agent_run_id"] = output.agent_run_id
+    acceptance_result = dict(payload.get("acceptance_result") or {})
+    candidate_payload = output_candidate_payload(output)
+    coverage_entries = compact_list(output.coverage_entries)
+    primary_coverage = coverage_entries[0] if coverage_entries and isinstance(coverage_entries[0], dict) else {}
+    updated_at = output.accepted_at or output.rejected_at or output.created_at
+    return AISuggestionResponse(
+        id=output.id,
+        workspace_id=output.workspace_id,
+        project_id=output.project_id or "",
+        diff_analysis_id=str(payload.get("diff_analysis_id") or source_diff.get("analysis_id") or ""),
+        suggestion_type=str(payload.get("suggestion_type") or output_suggestion_type(output)),
+        status=output_compat_status(output),
+        title=output.title,
+        rationale=str(payload.get("rationale") or primary_coverage.get("behavior_summary") or output.title),
+        confidence=clamp_confidence(payload.get("confidence") or primary_coverage.get("confidence"), 70),
+        module_id=payload.get("module_id") or candidate_payload.get("module_id"),
+        module_key=str(payload.get("module_key") or primary_coverage.get("module_key") or "UNMAPPED"),
+        source_diff=source_diff,
+        mapping_evidence=compact_string_list(payload.get("mapping_evidence")),
+        code_paths=compact_string_list(payload.get("code_paths")),
+        interfaces=compact_string_list(payload.get("interfaces")),
+        config_keys=compact_string_list(payload.get("config_keys")),
+        related_case_ids=compact_string_list(payload.get("related_case_ids")),
+        selected_case_ids=compact_string_list(payload.get("selected_case_ids")),
+        candidate_payload=candidate_payload,
+        candidate_case_id=str(acceptance_result.get("test_case_id") or payload.get("candidate_case_id") or "") or None,
+        plan_item_ids=compact_string_list(payload.get("plan_item_ids")),
+        feedback_history=[item for item in compact_list(payload.get("feedback_history")) if isinstance(item, dict)],
+        created_by=str(payload.get("created_by") or ""),
+        created_at=output.created_at,
+        updated_at=updated_at,
+    )
+
+
+def ai_suggestion_compat_to_response(suggestion: AISuggestion | AgentStagedOutput) -> AISuggestionResponse:
+    if isinstance(suggestion, AgentStagedOutput):
+        return staged_output_to_suggestion_response(suggestion)
+    return suggestion_to_response(suggestion)
+
+
 def get_diff_analysis_or_404(db: Session, workspace_id: str, project_id: str, analysis_id: str) -> DiffAnalysis:
     analysis = db.scalar(
         select(DiffAnalysis).where(
@@ -319,6 +426,17 @@ def get_suggestion_or_404(db: Session, workspace_id: str, project_id: str, sugge
     return suggestion
 
 
+def get_staged_ai_suggestion_or_none(db: Session, workspace_id: str, project_id: str, output_id: str) -> AgentStagedOutput | None:
+    return db.scalar(
+        select(AgentStagedOutput).where(
+            AgentStagedOutput.id == output_id,
+            AgentStagedOutput.workspace_id == workspace_id,
+            AgentStagedOutput.project_id == project_id,
+            AgentStagedOutput.output_type.in_(AI_SUGGESTION_STAGED_OUTPUT_TYPES),
+        )
+    )
+
+
 def list_ai_suggestion_models(db: Session, workspace_id: str, project_id: str, analysis_id: str) -> list[AISuggestion]:
     return list(
         db.scalars(
@@ -329,24 +447,63 @@ def list_ai_suggestion_models(db: Session, workspace_id: str, project_id: str, a
     )
 
 
+def staged_output_matches_diff_analysis(output: AgentStagedOutput, analysis_id: str) -> bool:
+    payload = output.payload if isinstance(output.payload, dict) else {}
+    source_diff = payload.get("source_diff") if isinstance(payload.get("source_diff"), dict) else {}
+    return str(payload.get("diff_analysis_id") or source_diff.get("analysis_id") or "") == analysis_id
+
+
+def list_ai_suggestion_staged_outputs(db: Session, analysis: DiffAnalysis) -> list[AgentStagedOutput]:
+    runs = ai_suggestion_runs_for_analysis(db, analysis)
+    run_ids = [run.id for run in runs]
+    if not run_ids:
+        return []
+    outputs = db.scalars(
+        select(AgentStagedOutput)
+        .where(
+            AgentStagedOutput.workspace_id == analysis.workspace_id,
+            AgentStagedOutput.project_id == analysis.project_id,
+            AgentStagedOutput.agent_run_id.in_(run_ids),
+            AgentStagedOutput.output_type.in_(AI_SUGGESTION_STAGED_OUTPUT_TYPES),
+        )
+        .order_by(AgentStagedOutput.created_at, AgentStagedOutput.output_type, AgentStagedOutput.id)
+    ).all()
+    return [output for output in outputs if staged_output_matches_diff_analysis(output, analysis.id)]
+
+
+def list_ai_suggestion_compat_models(db: Session, analysis: DiffAnalysis) -> list[AISuggestion | AgentStagedOutput]:
+    staged_outputs = list_ai_suggestion_staged_outputs(db, analysis)
+    if staged_outputs:
+        return list(staged_outputs)
+    return list_ai_suggestion_models(db, analysis.workspace_id, analysis.project_id, analysis.id)
+
+
 def ai_suggestion_job_response(
     *,
     run: AgentRun | None,
-    suggestions: list[AISuggestion],
+    suggestions: list[AISuggestion | AgentStagedOutput],
     reused_existing: bool = False,
     reused_running: bool = False,
     message: str,
 ) -> AISuggestionJobResponse:
     return AISuggestionJobResponse(
         agent_run=run_to_response(run) if run is not None else None,
-        suggestions=[suggestion_to_response(suggestion) for suggestion in suggestions],
+        suggestions=[ai_suggestion_compat_to_response(suggestion) for suggestion in suggestions],
         reused_existing=reused_existing,
         reused_running=reused_running,
         message=message,
     )
 
 
-def ai_suggestion_is_locked(suggestion: AISuggestion) -> bool:
+def ai_suggestion_is_locked(suggestion: AISuggestion | AgentStagedOutput) -> bool:
+    if isinstance(suggestion, AgentStagedOutput):
+        payload = suggestion.payload if isinstance(suggestion.payload, dict) else {}
+        return (
+            suggestion.status != AgentStagedOutputStatus.staged.value
+            or bool(payload.get("acceptance_result"))
+            or bool(payload.get("plan_item_ids"))
+            or bool(payload.get("feedback_history"))
+        )
     return (
         suggestion.status != AISuggestionStatus.suggested.value
         or bool(suggestion.candidate_case_id)
@@ -355,12 +512,28 @@ def ai_suggestion_is_locked(suggestion: AISuggestion) -> bool:
     )
 
 
-def assert_ai_suggestions_can_regenerate(existing: list[AISuggestion]) -> None:
+def assert_ai_suggestions_can_regenerate(existing: list[AISuggestion | AgentStagedOutput]) -> None:
     if any(ai_suggestion_is_locked(suggestion) for suggestion in existing):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot regenerate AI suggestions after feedback, candidate creation, or plan item creation",
         )
+
+
+def delete_ai_suggestion_compat_models(db: Session, existing: list[AISuggestion | AgentStagedOutput]) -> None:
+    for suggestion in existing:
+        if isinstance(suggestion, AgentStagedOutput):
+            coverage_entries = db.scalars(
+                select(CoverageIndexEntry).where(
+                    CoverageIndexEntry.source_type == "staged_output",
+                    CoverageIndexEntry.source_id == suggestion.id,
+                )
+            ).all()
+            for entry in coverage_entries:
+                db.delete(entry)
+            db.delete(suggestion)
+        else:
+            db.delete(suggestion)
 
 
 def agent_run_matches_ai_suggestion_analysis(run: AgentRun, analysis_id: str) -> bool:
@@ -1271,94 +1444,358 @@ def build_suggestions(
     analysis: DiffAnalysis,
     actor_email: str,
     *,
+    run: AgentRun | None = None,
     llm_overrides: dict[tuple[str, str], dict[str, Any]] | None = None,
     llm_prompt_hash: str = "",
     llm_source_metadata: dict[str, Any] | None = None,
 ) -> list[AISuggestion]:
-    existing = db.scalars(select(AISuggestion).where(AISuggestion.diff_analysis_id == analysis.id)).all()
-    if existing:
-        return list(existing)
+    drafts = build_diff_recommendation_drafts(
+        db,
+        analysis,
+        actor_email,
+        run=run,
+        llm_overrides=llm_overrides,
+        llm_prompt_hash=llm_prompt_hash,
+        llm_source_metadata=llm_source_metadata,
+    )
+    return [draft_to_ai_suggestion(draft, analysis, actor_email) for draft in drafts]
 
-    suggestions: list[AISuggestion] = []
-    for impact in analysis.module_impacts:
-        module_id = impact.get("module_id")
-        module_key = str(impact.get("module_key") or "UNMAPPED")
-        files = [file for file in analysis.file_changes if (file.get("module_id") or "UNMAPPED") == (module_id or "UNMAPPED")]
-        code_paths = [str(file["path"]) for file in files]
-        interfaces = structure_names(files, "api_route")
-        config_keys = structure_names(files, "config_key")
-        mapping_evidence = list(dict.fromkeys(str(entry) for file in files for entry in file.get("evidence", [])))
-        related_cases = related_approved_cases(db, analysis.workspace_id, analysis.project_id, module_id, module_key)
-        related_case_ids = [case.id for case in related_cases]
-        source_diff = {
-            "analysis_id": analysis.id,
-            "base_ref": analysis.base_ref,
-            "target_ref": analysis.target_ref,
-            "risk_level": impact.get("risk_level"),
-            "changed_file_count": impact.get("changed_file_count"),
-        }
 
-        regression = AISuggestion(
+def draft_to_ai_suggestion(draft: DiffRecommendationDraft, analysis: DiffAnalysis, actor_email: str) -> AISuggestion:
+    source_diff = {
+        **draft.source_diff,
+        "coverage_decision": draft.coverage_decision.model_dump(mode="json"),
+        "draft_quality": draft.quality_result.model_dump(mode="json"),
+    }
+    candidate_payload = dict(draft.candidate_payload or {})
+    if draft.draft_type == AISuggestionType.case_candidate.value:
+        custom_fields = dict(candidate_payload.get("custom_fields") or {})
+        custom_fields["coverage_decision"] = draft.coverage_decision.recommendation
+        candidate_payload["custom_fields"] = custom_fields
+    return AISuggestion(
+        workspace_id=analysis.workspace_id,
+        project_id=analysis.project_id,
+        diff_analysis_id=analysis.id,
+        suggestion_type=draft.draft_type.value,
+        title=draft.title,
+        rationale=draft.rationale,
+        confidence=draft.confidence,
+        module_id=draft.module_id,
+        module_key=draft.module_key,
+        source_diff=source_diff,
+        mapping_evidence=draft.mapping_evidence,
+        code_paths=draft.code_paths,
+        interfaces=draft.interfaces,
+        config_keys=draft.config_keys,
+        related_case_ids=draft.related_case_ids,
+        selected_case_ids=draft.selected_case_ids,
+        candidate_payload=candidate_payload,
+        created_by=actor_email,
+    )
+
+
+def suggestion_evidence_refs(suggestion: AISuggestion, analysis: DiffAnalysis) -> list[EvidenceRef]:
+    confidence = max(0.0, min(1.0, suggestion.confidence / 100))
+    refs = [
+        EvidenceRef(
+            kind=EvidenceKind.diff_analysis,
+            ref_id=analysis.id,
+            label=f"{analysis.base_ref}..{analysis.target_ref}",
+            confidence=confidence,
+            summary=suggestion.rationale[:700],
+            source="ai_suggestion",
+        )
+    ]
+    for path in compact_string_list(suggestion.code_paths)[:8]:
+        refs.append(
+            EvidenceRef(
+                kind=EvidenceKind.code_file,
+                ref_id=f"repo:{analysis.target_ref}:{path}",
+                label=path[:300],
+                confidence=confidence,
+                summary=f"Changed file for {suggestion.module_key}",
+                source="diff_analysis",
+            )
+        )
+    for index, evidence in enumerate(compact_string_list(suggestion.mapping_evidence)[:6]):
+        refs.append(
+            EvidenceRef(
+                kind=EvidenceKind.diff_hunk,
+                ref_id=f"{analysis.id}:evidence:{index}",
+                label=evidence[:300],
+                confidence=confidence,
+                summary=evidence[:700],
+                source="diff_analysis",
+            )
+        )
+    for case_id in compact_string_list(suggestion.related_case_ids)[:5]:
+        refs.append(
+            EvidenceRef(
+                kind=EvidenceKind.test_case,
+                ref_id=case_id,
+                label=case_id,
+                confidence=confidence,
+                summary="Related approved case selected by AI suggestion compatibility flow",
+                source="coverage_lookup",
+            )
+        )
+    return refs
+
+
+def suggestion_coverage_entries(suggestion: AISuggestion, analysis: DiffAnalysis) -> list[CoverageEntryCreate]:
+    signals: list[dict[str, Any]] = []
+    for value in compact_string_list(suggestion.interfaces):
+        signals.append({"signal_type": "api_route", "value": value, "source": "diff_analysis", "confidence": suggestion.confidence})
+    for value in compact_string_list(suggestion.config_keys):
+        signals.append({"signal_type": "config_key", "value": value, "source": "diff_analysis", "confidence": suggestion.confidence})
+    behavior_summary = suggestion.rationale or suggestion.title
+    return [
+        CoverageEntryCreate(
+            module_id=suggestion.module_id,
+            module_key=suggestion.module_key or "UNMAPPED",
+            behavior_summary=behavior_summary[:700],
+            signals=signals,
+            evidence_refs=suggestion_evidence_refs(suggestion, analysis)[:8],
+            confidence=suggestion.confidence,
+        )
+    ]
+
+
+def suggestion_payload(suggestion: AISuggestion, run: AgentRun, analysis: DiffAnalysis, actor_email: str) -> dict[str, Any]:
+    candidate_payload = dict(suggestion.candidate_payload or {})
+    source_diff = {
+        **dict(suggestion.source_diff or {}),
+        "analysis_id": analysis.id,
+        "base_ref": analysis.base_ref,
+        "target_ref": analysis.target_ref,
+        "agent_run_id": run.id,
+    }
+    payload: dict[str, Any] = {
+        "diff_analysis_id": analysis.id,
+        "suggestion_type": suggestion.suggestion_type,
+        "rationale": suggestion.rationale,
+        "confidence": suggestion.confidence,
+        "module_id": suggestion.module_id,
+        "module_key": suggestion.module_key,
+        "source_diff": source_diff,
+        "mapping_evidence": compact_string_list(suggestion.mapping_evidence),
+        "code_paths": compact_string_list(suggestion.code_paths),
+        "interfaces": compact_string_list(suggestion.interfaces),
+        "config_keys": compact_string_list(suggestion.config_keys),
+        "related_case_ids": compact_string_list(suggestion.related_case_ids),
+        "selected_case_ids": compact_string_list(suggestion.selected_case_ids),
+        "candidate_payload": candidate_payload,
+        "candidate_case_id": suggestion.candidate_case_id,
+        "plan_item_ids": compact_string_list(suggestion.plan_item_ids),
+        "feedback_history": [item for item in compact_list(suggestion.feedback_history) if isinstance(item, dict)],
+        "created_by": actor_email,
+        "compat_status": AISuggestionStatus.suggested.value,
+        "generated_by": "ai_suggestion_agent_run_v1",
+    }
+    if suggestion.source_diff.get("coverage_decision"):
+        payload["coverage_decision"] = dict(suggestion.source_diff.get("coverage_decision") or {})
+    if suggestion.source_diff.get("draft_quality"):
+        payload["draft_quality"] = dict(suggestion.source_diff.get("draft_quality") or {})
+    if suggestion.suggestion_type == AISuggestionType.case_candidate.value:
+        payload.update(
+            {
+                "title": suggestion.title,
+                "steps": compact_list(candidate_payload.get("steps")),
+                "expected_result": str(candidate_payload.get("expected_result") or ""),
+                "priority": str(candidate_payload.get("priority") or "P2"),
+                "risk": str(candidate_payload.get("risk") or "medium"),
+                "tags": compact_string_list(candidate_payload.get("tags")),
+                "custom_fields": dict(candidate_payload.get("custom_fields") or {}),
+            }
+        )
+    return payload
+
+
+def write_ai_suggestion_staged_outputs(
+    db: Session,
+    *,
+    run: AgentRun,
+    analysis: DiffAnalysis,
+    suggestions: list[AISuggestion],
+    actor_email: str,
+) -> list[AgentStagedOutput]:
+    outputs: list[AgentStagedOutput] = []
+    for suggestion in suggestions:
+        output_type = (
+            AgentStagedOutputType.case_candidate.value
+            if suggestion.suggestion_type == AISuggestionType.case_candidate.value
+            else AgentStagedOutputType.regression_recommendation.value
+        )
+        payload = suggestion_payload(suggestion, run, analysis, actor_email)
+        evidence_refs = suggestion_evidence_refs(suggestion, analysis)
+        coverage_entries = suggestion_coverage_entries(suggestion, analysis)
+        idempotency_key = staged_output_idempotency_key(
+            run.id,
+            output_type,
+            {
+                "title": suggestion.title,
+                "payload": payload,
+                "evidence_refs": [ref.model_dump(mode="json") for ref in evidence_refs],
+                "coverage_entries": [entry.model_dump(mode="json") for entry in coverage_entries],
+            },
+        )
+        existing_output = db.scalar(
+            select(AgentStagedOutput).where(
+                AgentStagedOutput.agent_run_id == run.id,
+                AgentStagedOutput.idempotency_key == idempotency_key,
+            )
+        )
+        if existing_output is not None:
+            outputs.append(existing_output)
+            continue
+        output = AgentStagedOutput(
+            agent_run_id=run.id,
             workspace_id=analysis.workspace_id,
             project_id=analysis.project_id,
-            diff_analysis_id=analysis.id,
-            suggestion_type=AISuggestionType.regression.value,
-            title=f"Run {module_key} regression for {analysis.target_ref}",
-            rationale=(
-                f"{module_key} has {impact.get('changed_file_count')} changed files with {impact.get('risk_level')} risk; "
-                "reuse approved cases that cover the impacted module before release."
+            output_type=output_type,
+            idempotency_key=idempotency_key,
+            title=suggestion.title,
+            payload=payload,
+            evidence_refs=[ref.model_dump(mode="json") for ref in evidence_refs],
+            quality_result=dict(
+                payload.get("draft_quality")
+                or {"passed": True, "checks": ["diff_analysis_present", "llm_or_rule_generated", "coverage_entry_present"]}
             ),
-            confidence=int(impact.get("confidence") or 70),
-            module_id=str(module_id) if module_id else None,
-            module_key=module_key,
-            source_diff=source_diff,
-            mapping_evidence=mapping_evidence,
-            code_paths=code_paths,
-            interfaces=interfaces,
-            config_keys=config_keys,
-            related_case_ids=related_case_ids,
-            selected_case_ids=related_case_ids,
-            created_by=actor_email,
+            duplicate_result=dict(payload.get("coverage_decision") or {"source": "ai_suggestion_diff_analysis"}),
         )
-        candidate_payload = build_candidate_payload(impact, files, analysis)
-        candidate = AISuggestion(
+        db.add(output)
+        db.flush()
+        coverage_models = add_coverage_entries(
+            db,
             workspace_id=analysis.workspace_id,
             project_id=analysis.project_id,
-            diff_analysis_id=analysis.id,
-            suggestion_type=AISuggestionType.case_candidate.value,
-            title=str(candidate_payload["title"]),
-            rationale=(
-                f"Generate a temporary case because {module_key} changed code/config surfaces "
-                f"({', '.join(code_paths[:3])}). It must pass review before entering the formal library."
-            ),
-            confidence=max(65, int(impact.get("confidence") or 70) - 5),
-            module_id=str(module_id) if module_id else None,
-            module_key=module_key,
-            source_diff=source_diff,
-            mapping_evidence=mapping_evidence,
-            code_paths=code_paths,
-            interfaces=interfaces,
-            config_keys=config_keys,
-            candidate_payload=candidate_payload,
-            created_by=actor_email,
+            source_type="staged_output",
+            source_id=output.id,
+            coverage_state=AgentStagedOutputStatus.staged.value,
+            entries=coverage_entries,
         )
-        if llm_prompt_hash:
-            apply_llm_override(
-                regression,
-                (llm_overrides or {}).get((AISuggestionType.regression.value, module_key)),
-                prompt_hash=llm_prompt_hash,
-                source_metadata=llm_source_metadata,
-            )
-            apply_llm_override(
-                candidate,
-                (llm_overrides or {}).get((AISuggestionType.case_candidate.value, module_key)),
-                prompt_hash=llm_prompt_hash,
-                source_metadata=llm_source_metadata,
-            )
-        db.add_all([regression, candidate])
-        suggestions.extend([regression, candidate])
+        db.flush()
+        output.coverage_entries = [coverage_snapshot(entry) for entry in coverage_models]
+        audit(
+            db,
+            workspace_id=analysis.workspace_id,
+            actor_email=actor_email,
+            action="agent_staged_output.created",
+            entity_type="AgentStagedOutput",
+            entity_id=output.id,
+            summary=f"Created AI suggestion staged output: {output.title}",
+            after={"agent_run_id": run.id, "output_type": output.output_type, "diff_analysis_id": analysis.id},
+        )
+        outputs.append(output)
+    return outputs
+
+
+def staged_output_source_ref(output: AgentStagedOutput) -> dict[str, Any]:
+    payload = output.payload if isinstance(output.payload, dict) else {}
+    source_diff = dict(payload.get("source_diff") or {})
+    diff_analysis_id = str(payload.get("diff_analysis_id") or source_diff.get("analysis_id") or "")
+    source_ref: dict[str, Any] = {
+        "staged_output_id": output.id,
+        "agent_run_id": output.agent_run_id,
+    }
+    if diff_analysis_id:
+        source_ref["diff_analysis_id"] = diff_analysis_id
+    if source_diff:
+        source_ref["source_diff"] = source_diff
+    return source_ref
+
+
+def case_candidate_create_payload(output: AgentStagedOutput) -> TestCaseCreate:
+    payload = output.payload if isinstance(output.payload, dict) else {}
+    candidate_payload = output_candidate_payload(output)
+    raw_payload = {
+        "module_id": candidate_payload.get("module_id") or payload.get("module_id"),
+        "title": candidate_payload.get("title") or payload.get("title") or output.title,
+        "steps": candidate_payload.get("steps") or payload.get("steps") or [],
+        "expected_result": candidate_payload.get("expected_result") or payload.get("expected_result") or "",
+        "priority": candidate_payload.get("priority") or payload.get("priority") or "P2",
+        "risk": candidate_payload.get("risk") or payload.get("risk") or "medium",
+        "tags": candidate_payload.get("tags") or payload.get("tags") or [],
+        "custom_fields": candidate_payload.get("custom_fields") or payload.get("custom_fields") or {},
+        "source_type": CaseDraftSource.ai_suggestion.value,
+        "source_ref": staged_output_source_ref(output),
+    }
+    if raw_payload["module_id"] == "":
+        raw_payload["module_id"] = None
+    return TestCaseCreate(**raw_payload)
+
+
+def accept_case_candidate_staged_output(db: Session, *, output: AgentStagedOutput, actor_email: str) -> dict[str, Any]:
+    if output.output_type != AgentStagedOutputType.case_candidate.value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only case_candidate staged outputs can create AI cases")
+    payload = dict(output.payload or {})
+    existing_result = dict(payload.get("acceptance_result") or {})
+    existing_case_id = str(existing_result.get("test_case_id") or "")
+    if existing_case_id:
+        test_case = db.get(TestCase, existing_case_id)
+        if test_case is not None and test_case.workspace_id == output.workspace_id and test_case.project_id == output.project_id:
+            return existing_result
+
+    case_payload = case_candidate_create_payload(output)
+    source_ref = staged_output_source_ref(output)
+    test_case = TestCase(
+        workspace_id=output.workspace_id,
+        project_id=output.project_id or "",
+        lifecycle_status=TestCaseLifecycle.draft.value,
+        source_type=CaseDraftSource.ai_suggestion.value,
+        source_ref=source_ref,
+        created_by=actor_email,
+    )
+    db.add(test_case)
     db.flush()
-    return suggestions
+    steps = [step.model_dump() for step in case_payload.steps]
+    case_draft = CaseDraft(
+        workspace_id=output.workspace_id,
+        project_id=output.project_id or "",
+        test_case_id=test_case.id,
+        module_id=case_payload.module_id,
+        title=case_payload.title,
+        steps=steps,
+        expected_result=case_payload.expected_result or steps_expected_text(steps),
+        priority=case_payload.priority,
+        risk=case_payload.risk,
+        tags=case_payload.tags,
+        custom_fields=case_payload.custom_fields,
+        source_type=CaseDraftSource.ai_suggestion.value,
+        source_ref=source_ref,
+        created_by=actor_email,
+        updated_by=actor_email,
+    )
+    db.add(case_draft)
+    db.flush()
+    acceptance_result = {
+        "test_case_id": test_case.id,
+        "case_draft_id": case_draft.id,
+        "lifecycle_status": test_case.lifecycle_status,
+        "source_ref": source_ref,
+    }
+    output.payload = {
+        **payload,
+        "acceptance_result": acceptance_result,
+        "candidate_case_id": test_case.id,
+        "compat_status": AISuggestionStatus.accepted.value,
+    }
+    audit(
+        db,
+        workspace_id=output.workspace_id,
+        actor_email=actor_email,
+        action="ai_candidate.created",
+        entity_type="TestCase",
+        entity_id=test_case.id,
+        summary=f"Created draft AI candidate {case_draft.title}",
+        after={
+            "staged_output_id": output.id,
+            "agent_run_id": output.agent_run_id,
+            "draft_id": case_draft.id,
+            "lifecycle_status": test_case.lifecycle_status,
+        },
+    )
+    return acceptance_result
 
 
 def execute_ai_suggestion_generation(
@@ -1383,11 +1820,10 @@ def execute_ai_suggestion_generation(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Diff analysis must succeed before AI suggestions")
 
         mark_ai_suggestion_agent_run_running(db, run)
-        existing = list_ai_suggestion_models(db, workspace_id, project_id, analysis.id)
+        existing = list_ai_suggestion_compat_models(db, analysis)
         if existing and force:
             assert_ai_suggestions_can_regenerate(existing)
-            for suggestion in existing:
-                db.delete(suggestion)
+            delete_ai_suggestion_compat_models(db, existing)
             db.flush()
         elif existing:
             mark_ai_suggestion_agent_run(db, run, AgentRunStatus.succeeded.value)
@@ -1410,9 +1846,17 @@ def execute_ai_suggestion_generation(
             db,
             analysis,
             actor_email,
+            run=run,
             llm_overrides=llm_overrides,
             llm_prompt_hash=llm_prompt_hash,
             llm_source_metadata=llm_source_metadata,
+        )
+        outputs = write_ai_suggestion_staged_outputs(
+            db,
+            run=run,
+            analysis=analysis,
+            suggestions=suggestions,
+            actor_email=actor_email,
         )
         audit(
             db,
@@ -1421,15 +1865,15 @@ def execute_ai_suggestion_generation(
             action="ai_suggestions.generated",
             entity_type="DiffAnalysis",
             entity_id=analysis.id,
-            summary=f"Generated {len(suggestions)} AI suggestions from diff",
-            after={"diff_analysis_id": analysis.id, "suggestion_count": len(suggestions), "agent_run_id": run.id},
+            summary=f"Generated {len(outputs)} AI suggestion staged outputs from diff",
+            after={"diff_analysis_id": analysis.id, "suggestion_count": len(outputs), "agent_run_id": run.id},
         )
         mark_ai_suggestion_agent_run(db, run, AgentRunStatus.succeeded.value)
         return {
             "run_id": run.id,
             "status": run.status,
-            "summary": f"Generated {len(suggestions)} AI suggestions from diff",
-            "suggestion_count": len(suggestions),
+            "summary": f"Generated {len(outputs)} AI suggestion staged outputs from diff",
+            "suggestion_count": len(outputs),
         }
     except HTTPException as exc:
         detail = str(exc.detail)
@@ -1490,7 +1934,7 @@ def generate_ai_suggestions(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Diff analysis must succeed before AI suggestions")
 
     cleanup_stale_ai_suggestion_runs(db, analysis, actor_email=actor_email)
-    existing = list_ai_suggestion_models(db, workspace_id, project_id, analysis.id)
+    existing = list_ai_suggestion_compat_models(db, analysis)
     if existing and not force:
         response.status_code = status.HTTP_200_OK
         return ai_suggestion_job_response(
@@ -1541,9 +1985,9 @@ def generate_ai_suggestions(
 
 @router.get("/diff-analyses/{analysis_id}/ai-suggestions", response_model=list[AISuggestionResponse])
 def list_ai_suggestions(workspace_id: str, project_id: str, analysis_id: str, db: DbSession) -> list[AISuggestionResponse]:
-    get_diff_analysis_or_404(db, workspace_id, project_id, analysis_id)
-    suggestions = list_ai_suggestion_models(db, workspace_id, project_id, analysis_id)
-    return [suggestion_to_response(suggestion) for suggestion in suggestions]
+    analysis = get_diff_analysis_or_404(db, workspace_id, project_id, analysis_id)
+    suggestions = list_ai_suggestion_compat_models(db, analysis)
+    return [ai_suggestion_compat_to_response(suggestion) for suggestion in suggestions]
 
 
 @router.get("/diff-analyses/{analysis_id}/ai-suggestions/status", response_model=AISuggestionJobResponse)
@@ -1556,7 +2000,7 @@ def get_ai_suggestion_status(
 ) -> AISuggestionJobResponse:
     analysis = get_diff_analysis_or_404(db, workspace_id, project_id, analysis_id)
     cleanup_stale_ai_suggestion_runs(db, analysis, actor_email=actor_email)
-    suggestions = list_ai_suggestion_models(db, workspace_id, project_id, analysis_id)
+    suggestions = list_ai_suggestion_compat_models(db, analysis)
     run = latest_ai_suggestion_run(db, analysis)
     reused_running = bool(run and run.status in {AgentRunStatus.queued.value, AgentRunStatus.running.value})
     if reused_running:
@@ -1587,6 +2031,77 @@ def update_ai_suggestion(
     db: DbSession,
     actor_email: ActorEmail,
 ) -> AISuggestionResponse:
+    staged_output = get_staged_ai_suggestion_or_none(db, workspace_id, project_id, suggestion_id)
+    if staged_output is not None:
+        output_payload = dict(staged_output.payload or {})
+        now = now_utc()
+        if payload.title is not None:
+            staged_output.title = payload.title
+            output_payload["title"] = payload.title
+            if payload.status is None:
+                output_payload["compat_status"] = AISuggestionStatus.modified.value
+        if payload.selected_case_ids is not None:
+            output_payload["selected_case_ids"] = payload.selected_case_ids
+        if payload.feedback_comment:
+            output_payload["feedback_history"] = [
+                *compact_list(output_payload.get("feedback_history")),
+                {"actor_email": actor_email, "comment": payload.feedback_comment, "created_at": now.isoformat()},
+            ]
+        if payload.status is not None:
+            output_payload["compat_status"] = payload.status.value
+            if payload.status in {AISuggestionStatus.accepted, AISuggestionStatus.ignored}:
+                target_status = (
+                    AgentStagedOutputStatus.accepted.value
+                    if payload.status == AISuggestionStatus.accepted
+                    else AgentStagedOutputStatus.rejected.value
+                )
+                if staged_output.status != AgentStagedOutputStatus.staged.value and staged_output.status != target_status:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Staged output has already been decided")
+                if staged_output.status == AgentStagedOutputStatus.staged.value:
+                    staged_output.status = target_status
+                    staged_output.decided_by = actor_email
+                    staged_output.decision_summary = payload.feedback_comment or f"{payload.status.value} via AI suggestion compatibility endpoint"
+                    if target_status == AgentStagedOutputStatus.accepted.value:
+                        staged_output.accepted_at = now
+                        if staged_output.output_type == AgentStagedOutputType.case_candidate.value:
+                            staged_output.payload = output_payload
+                            accept_case_candidate_staged_output(db, output=staged_output, actor_email=actor_email)
+                            output_payload = dict(staged_output.payload or {})
+                        transition_staged_output_coverage(
+                            db,
+                            output=staged_output,
+                            decision_status=AgentStagedOutputStatus.accepted,
+                            changed_at=now,
+                        )
+                    else:
+                        staged_output.rejected_at = now
+                        transition_staged_output_coverage(
+                            db,
+                            output=staged_output,
+                            decision_status=AgentStagedOutputStatus.rejected,
+                            changed_at=now,
+                        )
+            elif payload.status == AISuggestionStatus.modified:
+                staged_output.decision_summary = payload.feedback_comment or staged_output.decision_summary
+        staged_output.payload = {**dict(staged_output.payload or {}), **output_payload}
+        audit(
+            db,
+            workspace_id=workspace_id,
+            actor_email=actor_email,
+            action="ai_suggestion.feedback",
+            entity_type="AgentStagedOutput",
+            entity_id=staged_output.id,
+            summary=f"Updated AI suggestion staged output {staged_output.title}",
+            after={
+                "status": staged_output.status,
+                "compat_status": output_payload.get("compat_status"),
+                "selected_case_ids": output_payload.get("selected_case_ids", []),
+            },
+        )
+        db.commit()
+        db.refresh(staged_output)
+        return staged_output_to_suggestion_response(staged_output)
+
     suggestion = get_suggestion_or_404(db, workspace_id, project_id, suggestion_id)
     if payload.status is not None:
         suggestion.status = payload.status.value
@@ -1624,6 +2139,45 @@ def create_candidate_from_ai_suggestion(
     db: DbSession,
     actor_email: ActorEmail,
 ) -> dict:
+    staged_output = get_staged_ai_suggestion_or_none(db, workspace_id, project_id, suggestion_id)
+    if staged_output is not None:
+        if staged_output.output_type != AgentStagedOutputType.case_candidate.value:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only case_candidate suggestions can create AI cases")
+        if staged_output.status == AgentStagedOutputStatus.rejected.value:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Rejected staged output cannot create AI cases")
+        was_staged = staged_output.status == AgentStagedOutputStatus.staged.value
+        now = now_utc()
+        if was_staged:
+            staged_output.status = AgentStagedOutputStatus.accepted.value
+            staged_output.accepted_at = now
+            staged_output.decided_by = actor_email
+            staged_output.decision_summary = "Accepted via AI suggestion compatibility endpoint"
+        acceptance_result = accept_case_candidate_staged_output(db, output=staged_output, actor_email=actor_email)
+        if was_staged:
+            transition_staged_output_coverage(
+                db,
+                output=staged_output,
+                decision_status=AgentStagedOutputStatus.accepted,
+                changed_at=now,
+            )
+            audit(
+                db,
+                workspace_id=workspace_id,
+                actor_email=actor_email,
+                action="agent_staged_output.accepted",
+                entity_type="AgentStagedOutput",
+                entity_id=staged_output.id,
+                summary=f"Accepted AI suggestion staged output {staged_output.title}",
+                after={"status": staged_output.status, "coverage_state": "candidate"},
+            )
+        db.commit()
+        test_case = db.get(TestCase, str(acceptance_result.get("test_case_id") or ""))
+        if test_case is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Created AI candidate case not found")
+        db.refresh(test_case)
+        db.refresh(staged_output)
+        return {"test_case": build_case_response(db, test_case), "suggestion": staged_output_to_suggestion_response(staged_output)}
+
     suggestion = get_suggestion_or_404(db, workspace_id, project_id, suggestion_id)
     if suggestion.suggestion_type != AISuggestionType.case_candidate.value:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only case_candidate suggestions can create AI cases")
@@ -1695,23 +2249,31 @@ def create_plan_items_from_ai_suggestion(
     db: DbSession,
     actor_email: ActorEmail,
 ) -> AISuggestionPlanItemResponse:
-    suggestion = get_suggestion_or_404(db, workspace_id, project_id, suggestion_id)
+    staged_output = get_staged_ai_suggestion_or_none(db, workspace_id, project_id, suggestion_id)
+    legacy_suggestion: AISuggestion | None = None
+    if staged_output is None:
+        legacy_suggestion = get_suggestion_or_404(db, workspace_id, project_id, suggestion_id)
+    if staged_output is not None:
+        suggestion_response = staged_output_to_suggestion_response(staged_output)
+    else:
+        assert legacy_suggestion is not None
+        suggestion_response = suggestion_to_response(legacy_suggestion)
     plan: TestPlan
     if payload.plan_id:
         plan = get_plan_or_404(db, workspace_id, project_id, payload.plan_id)
     else:
-        version_ref = payload.version_ref or str(suggestion.source_diff.get("target_ref") or "")
+        version_ref = payload.version_ref or str(suggestion_response.source_diff.get("target_ref") or "")
         plan = get_or_create_release_plan(
             db,
             workspace_id=workspace_id,
             project_id=project_id,
             actor_email=actor_email,
             version_ref=version_ref,
-            scope_summary=f"AI suggestions from diff {suggestion.diff_analysis_id}",
+            scope_summary=f"AI suggestions from diff {suggestion_response.diff_analysis_id}",
         )
 
     items: list[PlanItem] = []
-    for case_id in payload.test_case_ids or suggestion.selected_case_ids:
+    for case_id in payload.test_case_ids or suggestion_response.selected_case_ids:
         test_case = db.get(TestCase, case_id)
         if test_case is None or test_case.workspace_id != workspace_id or test_case.project_id != project_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Test case not found: {case_id}")
@@ -1726,7 +2288,7 @@ def create_plan_items_from_ai_suggestion(
                 source_id=test_case.id,
                 title=str(snapshot.get("title") or "Formal case"),
                 snapshot=snapshot,
-                rationale=f"{suggestion.title}: {suggestion.rationale}",
+                rationale=f"{suggestion_response.title}: {suggestion_response.rationale}",
                 actor_email=actor_email,
             )
         )
@@ -1737,15 +2299,15 @@ def create_plan_items_from_ai_suggestion(
                 db,
                 plan=plan,
                 source_type=PlanItemSource.ai_temp,
-                source_id=suggestion.id,
-                title=suggestion.title,
-                snapshot=suggestion.candidate_payload or {
-                    "title": suggestion.title,
-                    "code_paths": suggestion.code_paths,
-                    "interfaces": suggestion.interfaces,
-                    "config_keys": suggestion.config_keys,
+                source_id=suggestion_response.id,
+                title=suggestion_response.title,
+                snapshot=suggestion_response.candidate_payload or {
+                    "title": suggestion_response.title,
+                    "code_paths": suggestion_response.code_paths,
+                    "interfaces": suggestion_response.interfaces,
+                    "config_keys": suggestion_response.config_keys,
                 },
-                rationale=f"Temporary AI plan item from suggestion {suggestion.id}; formal library entry requires review approval.",
+                rationale=f"Temporary AI plan item from suggestion {suggestion_response.id}; formal library entry requires review approval.",
                 actor_email=actor_email,
             )
         )
@@ -1753,23 +2315,37 @@ def create_plan_items_from_ai_suggestion(
     if not items:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No plan items requested")
 
-    suggestion.plan_item_ids = [*suggestion.plan_item_ids, *(item.id for item in items)]
-    suggestion.status = AISuggestionStatus.accepted.value
-    suggestion.updated_at = now_utc()
+    plan_item_ids = [*suggestion_response.plan_item_ids, *(item.id for item in items)]
+    if staged_output is not None:
+        staged_payload = dict(staged_output.payload or {})
+        staged_payload["plan_item_ids"] = plan_item_ids
+        staged_payload["compat_status"] = AISuggestionStatus.accepted.value
+        staged_output.payload = staged_payload
+        suggestion_response = staged_output_to_suggestion_response(staged_output)
+    elif legacy_suggestion is not None:
+        legacy_suggestion.plan_item_ids = plan_item_ids
+        legacy_suggestion.status = AISuggestionStatus.accepted.value
+        legacy_suggestion.updated_at = now_utc()
+        suggestion_response = suggestion_to_response(legacy_suggestion)
     plan.updated_at = now_utc()
     audit(
         db,
         workspace_id=workspace_id,
         actor_email=actor_email,
         action="ai_suggestion.plan_items_created",
-        entity_type="AISuggestion",
-        entity_id=suggestion.id,
+        entity_type="AgentStagedOutput" if staged_output is not None else "AISuggestion",
+        entity_id=suggestion_response.id,
         summary=f"Added {len(items)} AI suggestion items to {plan.name}",
         after={"plan_id": plan.id, "plan_item_ids": [item.id for item in items]},
     )
     db.commit()
     db.refresh(plan)
-    db.refresh(suggestion)
+    if staged_output is not None:
+        db.refresh(staged_output)
+        suggestion_response = staged_output_to_suggestion_response(staged_output)
+    elif legacy_suggestion is not None:
+        db.refresh(legacy_suggestion)
+        suggestion_response = suggestion_to_response(legacy_suggestion)
     for item in items:
         db.refresh(item)
     return {
@@ -1781,5 +2357,5 @@ def create_plan_items_from_ai_suggestion(
             "version_ref": plan.version_ref,
         },
         "items": [plan_item_to_response(item).model_dump(mode="json") for item in items],
-        "suggestion": suggestion_to_response(suggestion),
+        "suggestion": suggestion_response,
     }
